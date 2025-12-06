@@ -23,6 +23,7 @@ const validateUser = (userJson: string | undefined): string | null => {
  */
 const sanitizeFilename = (name: string | undefined | null): string => {
     if (!name) return 'untitled';
+    // Ensure we don't end up with an empty string after sanitization
     return name.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 255) || 'untitled';
 };
 
@@ -38,10 +39,13 @@ export interface BuildS3KeyParams {
  * Format: {brand}/original/{userId}/{year}/{month}/{day}/{timestamp}/{filename}
  */
 export const buildS3Key = ({ req, filename, metadata }: BuildS3KeyParams): string => {
-    const sanitizedFilename = sanitizeFilename(filename);
+    // Try to find a valid filename from various sources
+    const candidateName = filename || (metadata?.name as string) || (metadata?.filename as string);
+    const sanitizedFilename = sanitizeFilename(candidateName);
 
-    if (!sanitizedFilename) {
-        throw new Error('Invalid filename');
+    if (!sanitizedFilename || sanitizedFilename === 'untitled') {
+        // Only log warning if we really couldn't find a name, but proceed with 'untitled' to avoid crash
+        if (!candidateName) console.warn('[s3] Filename missing in buildS3Key, using untitled');
     }
 
     // Get brand from request or metadata
