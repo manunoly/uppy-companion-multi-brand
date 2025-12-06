@@ -39,12 +39,14 @@ export const createServer = (): ServerResult => {
     app.use(express.urlencoded({ extended: false }));
     app.use(cookieParser());
     app.use(session({
+        name: 'companion.sid',
         secret: env.secret,
         resave: false,
-        saveUninitialized: false,
+        saveUninitialized: true, // Needed to ensure session exists before OAuth redirect
+        proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
         cookie: {
             secure: env.protocol === 'https',
-            sameSite: env.protocol === 'https' ? 'none' : 'lax', // Required for cross-site redirects in some contexts (though this is same-site, 'none' is safer for OAuth flows if secure)
+            sameSite: env.protocol === 'https' ? 'none' : 'lax',
             httpOnly: true,
             maxAge: 24 * 60 * 60 * 1000 // 1 day
         }
