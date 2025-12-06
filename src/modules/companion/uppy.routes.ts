@@ -135,8 +135,10 @@ export const serveUppyPage = async (
     }
 };
 
+import { transform } from 'esbuild';
+
 /**
- * Serves the uppyModal.js file
+ * Serves the uppyModal.js file (transpiled from TS)
  */
 export const serveUppyModalJs = async (
     _req: AppRequest,
@@ -144,10 +146,17 @@ export const serveUppyModalJs = async (
     _next: NextFunction
 ): Promise<void> => {
     try {
-        const jsPath = path.join(__dirname, 'uppyModal.js');
-        const js = await fs.readFile(jsPath, 'utf8');
+        const tsPath = path.join(__dirname, 'uppyModal.ts');
+        const ts = await fs.readFile(tsPath, 'utf8');
+
+        const result = await transform(ts, {
+            loader: 'ts',
+            target: 'es2020',
+            format: 'esm', // Use ESM for module support
+        });
+
         res.setHeader('Content-Type', 'application/javascript');
-        res.send(js);
+        res.send(result.code);
     } catch (error) {
         console.error('[uppy] Error serving uppyModal.js:', error);
         res.status(500).send('Error loading script');
