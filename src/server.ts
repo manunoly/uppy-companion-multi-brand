@@ -31,6 +31,10 @@ export const createServer = (): ServerResult => {
     const app = express();
 
     // Basic middleware
+    // Trust proxy for proper IP detection (Standard for Railway/AWS/Heroku)
+    app.set('trust proxy', 1);
+
+    // Basic middleware
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
     app.use(cookieParser());
@@ -40,12 +44,11 @@ export const createServer = (): ServerResult => {
         saveUninitialized: false,
         cookie: {
             secure: env.protocol === 'https',
+            sameSite: env.protocol === 'https' ? 'none' : 'lax', // Required for cross-site redirects in some contexts (though this is same-site, 'none' is safer for OAuth flows if secure)
+            httpOnly: true,
             maxAge: 24 * 60 * 60 * 1000 // 1 day
         }
     }));
-
-    // Trust proxy for proper IP detection
-    app.set('trust proxy', true);
 
     // Create brand registry
     const brandRegistry: BrandRegistry = createBrandRegistry({
