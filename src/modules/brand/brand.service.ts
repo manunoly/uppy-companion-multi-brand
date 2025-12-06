@@ -154,6 +154,8 @@ export const createBrand = (
         corsOrigins: parseCorsOrigins(slug, defaults.corsOrigins),
         uploadUrls: (readBrandEnv(slug, 'COMPANION_UPLOAD_URLS', '*') ?? '*').split(',').map(s => s.trim()).filter(Boolean),
 
+        publicBackendUrl: readBrandEnv(slug, 'PUBLIC_BACKEND_URL', process.env.PUBLIC_BACKEND_URL ?? 'http://localhost') ?? 'http://localhost',
+
         // Server
         secret: readBrandEnv(slug, 'COMPANION_SECRET', defaults.secret) ?? defaults.secret,
         server: {

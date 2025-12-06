@@ -36,7 +36,7 @@ export interface UppyModalOptions {
     SERVER_URL?: string;
     COMPANION_URL?: string;
     COMPANION_ALLOWED_HOSTS?: RegExp;
-    LARAVEL_PUBLIC_BACKEND_URL?: string;
+    PUBLIC_BACKEND_URL?: string;
     GOOGLE_API_KEY?: string | null;
     GOOGLE_DRIVE_CLIENT_ID?: string | null;
     bearerToken?: string | null;
@@ -121,7 +121,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         SERVER_URL: 'http://localhost:3000',
         COMPANION_URL: 'http://localhost:3020',
         COMPANION_ALLOWED_HOSTS: /.*/,
-        LARAVEL_PUBLIC_BACKEND_URL: 'http://localhost',
+        PUBLIC_BACKEND_URL: 'http://localhost',
         GOOGLE_API_KEY: null,
         GOOGLE_DRIVE_CLIENT_ID: null,
         callbackFn: undefined,
@@ -135,7 +135,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     const SERVER_URL = readOption(merged, 'SERVER_URL', 'http://localhost:3000');
     const COMPANION_URL = readOption(merged, 'COMPANION_URL', 'http://localhost:3020');
     const COMPANION_ALLOWED_HOSTS = merged.COMPANION_ALLOWED_HOSTS ?? /.*/;
-    const LARAVEL_PUBLIC_BACKEND_URL = readOption(merged, 'LARAVEL_PUBLIC_BACKEND_URL', 'http://localhost');
+    const PUBLIC_BACKEND_URL = readOption(merged, 'PUBLIC_BACKEND_URL', readOption(merged, 'PUBLIC_BACKEND_URL', 'http://localhost'));
 
     const GOOGLE_API_KEY = readOption(merged, 'GOOGLE_API_KEY', null);
     const GOOGLE_DRIVE_CLIENT_ID = readOption(merged, 'GOOGLE_DRIVE_CLIENT_ID', null);
@@ -419,7 +419,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         if (!imagesData || imagesData.length === 0) throw new Error('imagesData is empty');
         try {
             const currentFolder = uppy.getState().meta?.folder || '';
-            const response = await fetchWithAuth(`${LARAVEL_PUBLIC_BACKEND_URL}/api/frame/contents/upload/public`, {
+            const response = await fetchWithAuth(`${PUBLIC_BACKEND_URL}/api/frame/contents/upload/public`, {
                 method: 'POST',
                 body: serialize({ images: imagesData, folder: currentFolder }) as any,
             });

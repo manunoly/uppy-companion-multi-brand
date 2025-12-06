@@ -58,6 +58,9 @@ export interface Brand {
     /** Secret for companion encryption */
     secret: string;
 
+    /** Public Backend URL for saving files (Laravel/API) */
+    publicBackendUrl: string;
+
     /** Companion server settings */
     server: {
         host: string;

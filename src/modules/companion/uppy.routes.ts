@@ -108,7 +108,7 @@ export const serveUppyPage = async (
         html = html.replace(/BRAND_USER_ENDPOINT_VALUE/g, toJsStringLiteral(brand.authUrl ?? ''));
         html = html.replace(/COMPANION_URL_VALUE/g, toJsStringLiteral(companionUrl));
         html = html.replace(/SERVER_URL_VALUE/g, toJsStringLiteral(`/${brand.id}/proxy`));
-        html = html.replace(/LARAVEL_PUBLIC_BACKEND_URL_VALUE/g, toJsStringLiteral(`/${brand.id}/proxy`));
+        html = html.replace(/PUBLIC_BACKEND_URL_VALUE/g, toJsStringLiteral(brand.publicBackendUrl));
         html = html.replace(/GOOGLE_API_KEY_VALUE/g, toJsStringLiteral(brand.providers.google?.key ?? ''));
         html = html.replace(/GOOGLE_DRIVE_CLIENT_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.key ?? ''));
 
