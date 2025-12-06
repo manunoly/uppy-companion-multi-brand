@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <title>Upload Images</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="https://releases.transloadit.com/uppy/v5.1.8/uppy.min.css" rel="stylesheet" />
+</head>
+
+<body style="display: flex; justify-content: center; align-items: center; height: 100vh;">
+    <noscript>You need JavaScript enabled for this example to work.</noscript>
+
+    <input id="companionToken" style="display: none;" value="" />
+    <input id="companionUser" style="display: none;" value='' />
+    <input id="brandSlug" style="display: none;" value="BRAND_SLUG_VALUE" />
+    <input id="brandName" style="display: none;" value="BRAND_NAME_VALUE" />
+    <input id="brandLogoUrl" style="display: none;" value="BRAND_LOGO_URL_VALUE" />
+    <input id="brandUserEndpoint" style="display: none;" value="BRAND_USER_ENDPOINT_VALUE" />
+    <input id="googleApiKey" style="display: none;" value="GOOGLE_API_KEY_VALUE" />
+    <input id="googleDriveClientId" style="display: none;" value="GOOGLE_DRIVE_CLIENT_ID_VALUE" />
+
+    <script>
+        // ... (script de DOMContentLoaded comentado)
+    </script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/sweetalert2/11.23.0/sweetalert2.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sweetalert2/11.23.0/sweetalert2.min.js"></script>
+
+    <script type="module">
+        import uppyModal from './uppyModal.js';
+        
+        // El servidor reemplazará estos valores
+        const bearerToken = BEARER_TOKEN_VALUE ? BEARER_TOKEN_VALUE : '';
+        const serverUrl = SERVER_URL_VALUE || 'http://localhost:3000';
+        const companionUrl = COMPANION_URL_VALUE || 'http://localhost:3020';
+        const laravelUrl = LARAVEL_PUBLIC_BACKEND_URL_VALUE || 'http://localhost';
+        const googleApiKey = GOOGLE_API_KEY_VALUE || '';
+        const googleDriveClientId = GOOGLE_DRIVE_CLIENT_ID_VALUE || '';
+        const brandSlug = BRAND_SLUG_VALUE || 'default';
+        const brandName = BRAND_NAME_VALUE || '';
+        const brandLogoUrl = BRAND_LOGO_URL_VALUE || '';
+        const brandUserEndpoint = BRAND_USER_ENDPOINT_VALUE || '';
+
+        if (brandName && brandName.toLowerCase() !== 'default') {
+            document.title = `${brandName} Upload`;
+        }
+
+        uppyModal({
+            bearerToken: bearerToken,
+            inline: true,
+            redirect: true,
+            plugins: [
+                'Facebook', 
+                'Dropbox', 
+                'GoogleDrive', 
+                'Url',
+                'Instagram',
+                'OneDrive',
+                'Box',
+                'Unsplash',
+                'Zoom',
+                'GoogleDrivePicker',
+                'GooglePhotosPicker'
+            ],
+            SERVER_URL: serverUrl,
+            COMPANION_URL: companionUrl,
+            LARAVEL_PUBLIC_BACKEND_URL: laravelUrl,
+            GOOGLE_API_KEY: googleApiKey,
+            GOOGLE_DRIVE_CLIENT_ID: googleDriveClientId,
+            brand: brandSlug,
+            brandName,
+            brandLogoUrl,
+            brandUserEndpoint,
+            trigger: '#uppyModalOpener',
+        })
+    </script>
+
+    <script nomodule src="https://releases.transloadit.com/uppy/v5.1.8/uppy.min.js"></script>
+</body>
+
+</html>

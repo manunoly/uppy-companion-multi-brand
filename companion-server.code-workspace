@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../companion-server"
+		},
+		{
+			"path": "../companion-uppy-abeduls"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}
