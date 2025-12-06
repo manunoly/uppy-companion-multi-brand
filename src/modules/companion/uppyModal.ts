@@ -424,7 +424,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
                 body: serialize({ images: imagesData, folder: currentFolder }) as any,
             });
             if (!response.ok) {
-                alert('There was an error saving the images. Please contact support.');
+                console.warn('saveFileToDB', response);
             }
         } catch (error) {
             console.error('saveFileToDB', error);
