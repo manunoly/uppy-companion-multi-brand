@@ -15,6 +15,7 @@ import {
     attachCompanionSocket,
     serveUppyPage,
     serveUppyModalJs,
+    apiRouter,
     type CompanionInstance
 } from './modules/companion/index.js';
 
@@ -112,6 +113,9 @@ export const createServer = (): ServerResult => {
         // Uppy upload page - shows plugins based on brand providers
         app.get(`/${brand.id}/uppy`, serveUppyPage);
         app.get(`/${brand.id}/uppyModal.js`, serveUppyModalJs);
+
+        // Mount custom API (S3 signing, etc.)
+        app.use(`/${brand.id}/api`, apiRouter);
 
         // Mount companion at brand path
         app.use(brand.server.path, instance.app);

@@ -427,8 +427,8 @@ const uppyModal = (options: UppyModalOptions = {}) => {
                 console.warn('saveFileToDB', response);
             }
         } catch (error) {
-            console.error('saveFileToDB', error);
-            alert('There was an unexpected error saving the images. Please contact support.');
+            console.warn('saveFileToDB ERROR', error);
+            // alert('There was an unexpected error saving the images. Please contact support.');
         }
     };
 
