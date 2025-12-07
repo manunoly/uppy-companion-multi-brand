@@ -1,4 +1,4 @@
-import type { Brand, BrandRegistry, BrandS3Config, BrandProviderConfig } from './brand.types.js';
+import type { Brand, BrandRegistry, BrandS3Config, BrandProviderConfig, BrandConfigJSON } from './brand.types.js';
 import { getS3Client } from '../../lib/aws/s3Client.js';
 
 /**
@@ -9,68 +9,56 @@ export const normalizeBrandSlug = (value: string | undefined | null): string => 
 };
 
 /**
- * Converts a brand slug to an environment variable prefix
- * e.g., "my-brand" -> "MY_BRAND"
+ * Parses the JSON configuration for a brand from the environment variable
  */
-const slugToEnvPrefix = (slug: string): string => {
-    return normalizeBrandSlug(slug).replace(/-/g, '_').toUpperCase();
+const parseBrandConfig = (slug: string): BrandConfigJSON | null => {
+    const envKey = normalizeBrandSlug(slug).replace(/-/g, '_').toUpperCase();
+    const rawConfig = process.env[envKey];
+
+    if (!rawConfig) return null;
+
+    try {
+        return JSON.parse(rawConfig) as BrandConfigJSON;
+    } catch (error) {
+        console.error(`[brand] Failed to parse JSON configuration for brand "${slug}" (Env: ${envKey})`, error);
+        return null;
+    }
 };
 
 /**
- * Reads a brand-specific environment variable
- */
-const readBrandEnv = (
-    slug: string,
-    suffix: string,
-    fallback: string | null = null
-): string | null => {
-    const envKey = `${slugToEnvPrefix(slug)}_${suffix}`;
-    const value = process.env[envKey];
-    if (value == null || value === '') return fallback;
-    return value;
-};
-
-/**
- * Parses a boolean from environment variable
- */
-const parseBoolean = (value: string | null | undefined, fallback: boolean): boolean => {
-    if (value == null) return fallback;
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) return fallback;
-    return ['true', '1', 'yes', 'y', 'on'].includes(normalized);
-};
-
-/**
- * Creates provider configuration if keys exist
+ * Creates provider configuration from JSON or Global Defaults
  */
 const createProviderConfig = (
-    slug: string,
-    providerName: string,
+    providerConfig: BrandProviderConfig | undefined,
     globalKeyEnv: string,
     globalSecretEnv: string
 ): BrandProviderConfig | undefined => {
-    const key = readBrandEnv(slug, `COMPANION_${providerName.toUpperCase()}_KEY`, process.env[globalKeyEnv] ?? null);
-    const secret = readBrandEnv(slug, `COMPANION_${providerName.toUpperCase()}_SECRET`, process.env[globalSecretEnv] ?? null);
-
-    if (key && secret) {
-        return { key, secret };
+    // Prefer brand specific config
+    if (providerConfig?.key && providerConfig?.secret) {
+        return providerConfig;
     }
+
+    // Fallback to global env
+    const globalKey = process.env[globalKeyEnv];
+    const globalSecret = process.env[globalSecretEnv];
+
+    if (globalKey && globalSecret) {
+        return { key: globalKey, secret: globalSecret };
+    }
+
     return undefined;
 };
 
 /**
  * Creates S3 configuration for a brand
  */
-const createS3Config = (slug: string): BrandS3Config => {
+const createS3Config = (s3Config: BrandConfigJSON['s3'] | undefined): BrandS3Config => {
     const config: BrandS3Config = {
-        bucket: readBrandEnv(slug, 'AWS_BUCKET_NAME', process.env.AWS_BUCKET_NAME ?? '') ?? '',
-        region: readBrandEnv(slug, 'AWS_REGION', process.env.AWS_REGION ?? '') ?? '',
-        accessKey: readBrandEnv(slug, 'AWS_ACCESS_KEY_ID', process.env.AWS_ACCESS_KEY_ID ?? null) ?? undefined,
-        secretKey: readBrandEnv(slug, 'AWS_SECRET_ACCESS_KEY', process.env.AWS_SECRET_ACCESS_KEY ?? null) ?? undefined,
-        useAccelerateEndpoint: parseBoolean(
-            readBrandEnv(slug, 'COMPANION_AWS_ACCELERATE_ENDPOINT', null),
-            false
-        ),
+        bucket: s3Config?.bucket ?? process.env.AWS_BUCKET_NAME ?? '',
+        region: s3Config?.region ?? process.env.AWS_REGION ?? '',
+        accessKey: s3Config?.accessKey ?? process.env.AWS_ACCESS_KEY_ID ?? undefined,
+        secretKey: s3Config?.secretKey ?? process.env.AWS_SECRET_ACCESS_KEY ?? undefined,
+        useAccelerateEndpoint: s3Config?.useAccelerateEndpoint ?? false,
     };
 
     if (config.accessKey && config.secretKey) {
@@ -85,32 +73,20 @@ const createS3Config = (slug: string): BrandS3Config => {
 };
 
 /**
- * Parses CORS origins from environment
+ * Parses CORS origins
  */
-const parseCorsOrigins = (slug: string, defaults: (string | RegExp)[]): (string | RegExp)[] => {
-    const raw = readBrandEnv(slug, 'COMPANION_CORS_ORIGINS_JSON', null);
-    if (!raw) return defaults;
-
-    try {
-        const parsed = JSON.parse(raw) as unknown[];
-        if (!Array.isArray(parsed)) return defaults;
-
-        return parsed.map((entry) => {
-            if (typeof entry === 'string') return entry;
-            if (entry && typeof entry === 'object' && 'regex' in entry) {
-                const regexEntry = entry as { regex: string; flags?: string };
-                return new RegExp(regexEntry.regex, regexEntry.flags ?? undefined);
-            }
-            return null;
-        }).filter((x): x is string | RegExp => x !== null);
-    } catch {
-        console.warn(`[brand] Invalid CORS origins JSON for brand "${slug}"`);
-        return defaults;
+const parseCorsOrigins = (
+    configuredOrigins: string[] | undefined,
+    defaults: (string | RegExp)[]
+): (string | RegExp)[] => {
+    if (configuredOrigins && Array.isArray(configuredOrigins)) {
+        return configuredOrigins;
     }
+    return defaults;
 };
 
 /**
- * Creates a brand descriptor from environment variables
+ * Creates a brand descriptor from environment variables and JSON config
  */
 export const createBrand = (
     slug: string,
@@ -123,47 +99,51 @@ export const createBrand = (
     }
 ): Brand => {
     const mountPath = `/${slug}`;
-    const serverHost = readBrandEnv(slug, 'COMPANION_HOST', defaults.host) ?? defaults.host;
-    const serverProtocol = (readBrandEnv(slug, 'COMPANION_PROTOCOL', defaults.protocol) ?? defaults.protocol) as 'http' | 'https';
+
+    // Load JSON config
+    const config = parseBrandConfig(slug) ?? {};
+
+    const serverHost = defaults.host;
+    const serverProtocol = defaults.protocol;
 
     return {
         id: slug,
-        displayName: readBrandEnv(slug, 'DISPLAY_NAME', slug) ?? slug,
+        displayName: slug, // JSON config could add displayName if needed, for now using slug
 
         // Auth
-        authUrl: readBrandEnv(slug, 'AUTH_URL', process.env.AUTH_URL ?? null),
-        authCookieName: readBrandEnv(slug, 'AUTH_COOKIE_NAME', 'session') ?? 'session',
-        projectCookieName: readBrandEnv(slug, 'PROJECT_COOKIE_NAME', 'frame_project_id') ?? 'frame_project_id',
+        authUrl: config.authUrl ?? null,
+        authCookieName: config.authCookieName ?? 'session',
+        projectCookieName: config.projectCookieName ?? 'frame_project_id',
 
         // S3
-        s3: createS3Config(slug),
+        s3: createS3Config(config.s3),
 
         // Providers
         providers: {
-            google: createProviderConfig(slug, 'google', 'COMPANION_GOOGLE_KEY', 'COMPANION_GOOGLE_SECRET'),
-            dropbox: createProviderConfig(slug, 'dropbox', 'COMPANION_DROPBOX_KEY', 'COMPANION_DROPBOX_SECRET'),
-            facebook: createProviderConfig(slug, 'facebook', 'COMPANION_FACEBOOK_KEY', 'COMPANION_FACEBOOK_SECRET'),
-            instagram: createProviderConfig(slug, 'instagram', 'COMPANION_INSTAGRAM_KEY', 'COMPANION_INSTAGRAM_SECRET'),
-            onedrive: createProviderConfig(slug, 'onedrive', 'COMPANION_ONEDRIVE_KEY', 'COMPANION_ONEDRIVE_SECRET'),
-            box: createProviderConfig(slug, 'box', 'COMPANION_BOX_KEY', 'COMPANION_BOX_SECRET'),
-            unsplash: createProviderConfig(slug, 'unsplash', 'COMPANION_UNSPLASH_KEY', 'COMPANION_UNSPLASH_SECRET'),
-            zoom: createProviderConfig(slug, 'zoom', 'COMPANION_ZOOM_KEY', 'COMPANION_ZOOM_SECRET'),
+            google: createProviderConfig(config.providers?.google, 'COMPANION_GOOGLE_KEY', 'COMPANION_GOOGLE_SECRET'),
+            dropbox: createProviderConfig(config.providers?.dropbox, 'COMPANION_DROPBOX_KEY', 'COMPANION_DROPBOX_SECRET'),
+            facebook: createProviderConfig(config.providers?.facebook, 'COMPANION_FACEBOOK_KEY', 'COMPANION_FACEBOOK_SECRET'),
+            instagram: createProviderConfig(config.providers?.instagram, 'COMPANION_INSTAGRAM_KEY', 'COMPANION_INSTAGRAM_SECRET'),
+            onedrive: createProviderConfig(config.providers?.onedrive, 'COMPANION_ONEDRIVE_KEY', 'COMPANION_ONEDRIVE_SECRET'),
+            box: createProviderConfig(config.providers?.box, 'COMPANION_BOX_KEY', 'COMPANION_BOX_SECRET'),
+            unsplash: createProviderConfig(config.providers?.unsplash, 'COMPANION_UNSPLASH_KEY', 'COMPANION_UNSPLASH_SECRET'),
+            zoom: createProviderConfig(config.providers?.zoom, 'COMPANION_ZOOM_KEY', 'COMPANION_ZOOM_SECRET'),
         },
 
         // CORS & Upload
-        corsOrigins: parseCorsOrigins(slug, defaults.corsOrigins),
-        uploadUrls: (readBrandEnv(slug, 'COMPANION_UPLOAD_URLS', '*') ?? '*').split(',').map(s => s.trim()).filter(Boolean),
+        corsOrigins: parseCorsOrigins(config.corsOrigins, defaults.corsOrigins),
+        uploadUrls: config.uploadUrls ?? ['*'],
 
-        publicBackendUrl: readBrandEnv(slug, 'PUBLIC_BACKEND_URL', process.env.PUBLIC_BACKEND_URL ?? 'http://localhost') ?? 'http://localhost',
+        publicBackendUrl: config.publicBackendUrl ?? process.env.PUBLIC_BACKEND_URL ?? 'http://localhost',
 
         // Server
-        secret: readBrandEnv(slug, 'COMPANION_SECRET', defaults.secret) ?? defaults.secret,
+        secret: defaults.secret,
         server: {
             host: serverHost,
             protocol: serverProtocol,
             path: mountPath,
         },
-        filePath: readBrandEnv(slug, 'COMPANION_FILE_PATH', defaults.filePath) ?? defaults.filePath,
+        filePath: defaults.filePath,
     };
 };
 

@@ -1,6 +1,9 @@
 {
-    "name": "companion-platform",
-    "version": "1.0.0",
+    "name": "uppy-companion-multi-brand",
+    "version": "0.1.0",
+    "author": "Manuel Almaguer",
+    "website": "https://manuel-almaguer.web.app",
+    "license": "MIT",
     "private": true,
     "type": "module",
     "main": "dist/index.js",

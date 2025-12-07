@@ -18,6 +18,32 @@ export interface BrandS3Config {
     client?: S3Client;
 }
 
+export interface BrandConfigJSON {
+    authUrl?: string;
+    authCookieName?: string;
+    projectCookieName?: string;
+    publicBackendUrl?: string;
+    corsOrigins?: string[];
+    uploadUrls?: string[];
+    s3?: {
+        bucket?: string;
+        region?: string;
+        accessKey?: string;
+        secretKey?: string;
+        useAccelerateEndpoint?: boolean;
+    };
+    providers?: {
+        google?: BrandProviderConfig;
+        dropbox?: BrandProviderConfig;
+        facebook?: BrandProviderConfig;
+        instagram?: BrandProviderConfig;
+        onedrive?: BrandProviderConfig;
+        box?: BrandProviderConfig;
+        unsplash?: BrandProviderConfig;
+        zoom?: BrandProviderConfig;
+    };
+}
+
 export interface Brand {
     /** Unique identifier for the brand (slug) */
     id: string;
