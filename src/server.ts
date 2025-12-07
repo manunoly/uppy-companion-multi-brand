@@ -89,15 +89,7 @@ export const createServer = (): ServerResult => {
 
     // Root endpoint
     app.get('/', (_req, res) => {
-        res.json({
-            service: 'companion-platform',
-            version: '1.0.0',
-            brands: getAllBrands(brandRegistry).map(b => ({
-                id: b.id,
-                path: b.server.path,
-                uppy: `/${b.id}/uppy`,
-            })),
-        });
+        res.send('Hello World');
     });
 
     // Mount companion for each brand
