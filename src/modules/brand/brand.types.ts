@@ -7,8 +7,13 @@ import type { S3Client } from '@aws-sdk/client-s3';
 export interface BrandProviderConfig {
     key: string;
     secret: string;
-    apiKeyDrive?: string;
-    apiKeyPhotos?: string;
+}
+
+export interface BrandGoogleProviderConfig {
+    clientId: string;
+    clientSecret?: string;
+    driveApiKey?: string;
+    photosApiKey?: string;
     appId?: string;
 }
 
@@ -48,7 +53,7 @@ export interface BrandConfigJSON {
         useAccelerateEndpoint?: boolean;
     };
     providers?: {
-        google?: BrandProviderConfig;
+        google?: BrandGoogleProviderConfig;
         dropbox?: BrandProviderConfig;
         facebook?: BrandProviderConfig;
         instagram?: BrandProviderConfig;
@@ -82,7 +87,7 @@ export interface Brand {
 
     /** OAuth provider configurations */
     providers: {
-        google?: BrandProviderConfig;
+        google?: BrandGoogleProviderConfig;
         dropbox?: BrandProviderConfig;
         facebook?: BrandProviderConfig;
         instagram?: BrandProviderConfig;

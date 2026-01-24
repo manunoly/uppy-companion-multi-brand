@@ -148,6 +148,13 @@ The platform uses a **multi-tenant architecture** where a single Express server 
 - `COMPANION_HOST`, `COMPANION_PROTOCOL`: Public base used for OAuth and callback URLs if no `companionUrl` is set.
 - `CORS_ALLOWED_ORIGINS`: Comma-separated list, used for Companion CORS.
 
+### Global Google (default brand)
+- `COMPANION_GOOGLE_CLIENT_ID`
+- `COMPANION_GOOGLE_CLIENT_SECRET`
+- `COMPANION_GOOGLE_DRIVE_API_KEY`
+- `COMPANION_GOOGLE_PHOTOS_API_KEY`
+- `COMPANION_GOOGLE_APP_ID`
+
 ### Brand JSON (per-brand override)
 Preferred fields:
 - `auth`: block with `url`, `cookieName`, `projectCookieName`.
@@ -160,11 +167,11 @@ Legacy fields are still supported for backwards compatibility:
 - `authUrl`, `authCookieName`, `projectCookieName`, `publicBackendUrl`, `publicUploadUrl`.
 
 Google Picker notes:
-- `providers.google.key` = OAuth Client ID
-- `providers.google.apiKeyDrive` = Google Drive Picker API key
-- `providers.google.apiKeyPhotos` = Google Photos Picker API key
+- `providers.google.clientId` = OAuth Client ID
+- `providers.google.driveApiKey` = Google Drive Picker API key
+- `providers.google.photosApiKey` = Google Photos Picker API key
 - `providers.google.appId` = Google project number (App ID)
-- `providers.google.secret` = OAuth Client Secret (used by classic Google Drive/Photos providers, not by Picker)
+- `providers.google.clientSecret` = OAuth Client Secret (used by classic Google Drive/Photos providers, not by Picker)
 
 ## Operational Troubleshooting
 

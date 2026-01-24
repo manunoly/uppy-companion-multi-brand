@@ -13,10 +13,10 @@ const buildProviderOptions = (brand: Brand): Record<string, CompanionProviderOpt
 
     if (brand.providers.google) {
         providers.drive = {
-            key: brand.providers.google.key,
-            secret: brand.providers.google.secret,
-            apiKeyDrive: brand.providers.google.apiKeyDrive,
-            apiKeyPhotos: brand.providers.google.apiKeyPhotos,
+            key: brand.providers.google.clientId,
+            secret: brand.providers.google.clientSecret ?? '',
+            apiKeyDrive: brand.providers.google.driveApiKey,
+            apiKeyPhotos: brand.providers.google.photosApiKey,
             appId: brand.providers.google.appId,
         };
     }

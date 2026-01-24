@@ -1,4 +1,4 @@
-import type { Brand, BrandRegistry, BrandS3Config, BrandProviderConfig, BrandConfigJSON } from './brand.types.js';
+import type { Brand, BrandRegistry, BrandS3Config, BrandProviderConfig, BrandConfigJSON, BrandGoogleProviderConfig } from './brand.types.js';
 import { getS3Client } from '../../lib/aws/s3Client.js';
 
 /**
@@ -50,6 +50,31 @@ const createProviderConfig = (
     }
 
     return undefined;
+};
+
+const createGoogleProviderConfig = (
+    providerConfig: BrandGoogleProviderConfig | undefined
+): BrandGoogleProviderConfig | undefined => {
+    const clientId = providerConfig?.clientId
+        ?? process.env.COMPANION_GOOGLE_CLIENT_ID;
+
+    if (!clientId) return undefined;
+
+    const clientSecret = providerConfig?.clientSecret
+        ?? process.env.COMPANION_GOOGLE_CLIENT_SECRET
+        ?? '';
+
+    const driveApiKey = providerConfig?.driveApiKey ?? process.env.COMPANION_GOOGLE_DRIVE_API_KEY;
+    const photosApiKey = providerConfig?.photosApiKey ?? process.env.COMPANION_GOOGLE_PHOTOS_API_KEY;
+    const appId = providerConfig?.appId ?? process.env.COMPANION_GOOGLE_APP_ID;
+
+    return {
+        clientId,
+        clientSecret,
+        driveApiKey,
+        photosApiKey,
+        appId,
+    };
 };
 
 /**
@@ -131,12 +156,7 @@ export const createBrand = (
         // Providers
         providers: {
             google: (() => {
-                const p = createProviderConfig(
-                    config.providers?.google,
-                    'COMPANION_GOOGLE_KEY',
-                    'COMPANION_GOOGLE_SECRET',
-                    { allowKeyOnly: true }
-                );
+                const p = createGoogleProviderConfig(config.providers?.google);
                 if (slug === 'abeduls') console.log('[DEBUG] Abeduls Google Config:', p ? 'Found' : 'Missing', config.providers?.google);
                 return p;
             })(),

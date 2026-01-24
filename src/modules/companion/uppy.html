@@ -19,7 +19,7 @@
     <input id="brandUserEndpoint" style="display: none;" value="BRAND_USER_ENDPOINT_VALUE" />
     <input id="googleDriveApiKey" style="display: none;" value="GOOGLE_API_KEY_DRIVE_VALUE" />
     <input id="googlePhotosApiKey" style="display: none;" value="GOOGLE_API_KEY_PHOTOS_VALUE" />
-    <input id="googleDriveClientId" style="display: none;" value="GOOGLE_DRIVE_CLIENT_ID_VALUE" />
+    <input id="googleClientId" style="display: none;" value="GOOGLE_CLIENT_ID_VALUE" />
     <input id="googleAppId" style="display: none;" value="GOOGLE_APP_ID_VALUE" />
     <input id="publicUploadUrl" style="display: none;" value="PUBLIC_UPLOAD_URL_VALUE" />
 
@@ -41,7 +41,7 @@
         const publicUploadUrl = PUBLIC_UPLOAD_URL_VALUE || `${publicBackendUrl}/api/frame/contents/upload/public`;
         const googleDriveApiKey = GOOGLE_API_KEY_DRIVE_VALUE || '';
         const googlePhotosApiKey = GOOGLE_API_KEY_PHOTOS_VALUE || '';
-        const googleDriveClientId = GOOGLE_DRIVE_CLIENT_ID_VALUE || '';
+        const googleClientId = GOOGLE_CLIENT_ID_VALUE || '';
         const googleAppId = GOOGLE_APP_ID_VALUE || '';
         const brandSlug = BRAND_SLUG_VALUE || 'default';
         const brandName = BRAND_NAME_VALUE || '';
@@ -75,7 +75,7 @@
             PUBLIC_UPLOAD_URL: publicUploadUrl,
             GOOGLE_API_KEY_DRIVE: googleDriveApiKey,
             GOOGLE_API_KEY_PHOTOS: googlePhotosApiKey,
-            GOOGLE_DRIVE_CLIENT_ID: googleDriveClientId,
+            GOOGLE_CLIENT_ID: googleClientId,
             GOOGLE_APP_ID: googleAppId,
             brand: brandSlug,
             brandName,

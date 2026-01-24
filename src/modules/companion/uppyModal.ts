@@ -40,7 +40,7 @@ export interface UppyModalOptions {
     PUBLIC_UPLOAD_URL?: string;
     GOOGLE_API_KEY_DRIVE?: string | null;
     GOOGLE_API_KEY_PHOTOS?: string | null;
-    GOOGLE_DRIVE_CLIENT_ID?: string | null;
+    GOOGLE_CLIENT_ID?: string | null;
     GOOGLE_APP_ID?: string | null;
     bearerToken?: string | null;
     callbackFn?: (result: any) => void;
@@ -129,7 +129,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         PUBLIC_UPLOAD_URL: undefined,
         GOOGLE_API_KEY_DRIVE: null,
         GOOGLE_API_KEY_PHOTOS: null,
-        GOOGLE_DRIVE_CLIENT_ID: null,
+        GOOGLE_CLIENT_ID: null,
         GOOGLE_APP_ID: null,
         callbackFn: undefined,
         brand: 'default',
@@ -148,7 +148,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
 
     const GOOGLE_API_KEY_DRIVE = readOption(merged, 'GOOGLE_API_KEY_DRIVE', null);
     const GOOGLE_API_KEY_PHOTOS = readOption(merged, 'GOOGLE_API_KEY_PHOTOS', null);
-    const GOOGLE_DRIVE_CLIENT_ID = readOption(merged, 'GOOGLE_DRIVE_CLIENT_ID', null);
+    const GOOGLE_CLIENT_ID = readOption(merged, 'GOOGLE_CLIENT_ID', null);
     const GOOGLE_APP_ID = readOption(merged, 'GOOGLE_APP_ID', null);
     const BEARER_TOKEN = readOption(merged, 'bearerToken', null);
 
@@ -238,7 +238,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     if (merged.plugins?.includes('GoogleDrivePicker')) {
         uppy.use(GoogleDrivePicker, {
             target: Dashboard,
-            clientId: GOOGLE_DRIVE_CLIENT_ID,
+            clientId: GOOGLE_CLIENT_ID,
             apiKey: GOOGLE_API_KEY_DRIVE,
             appId: GOOGLE_APP_ID,
             companionUrl: COMPANION_URL,
@@ -247,7 +247,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     if (merged.plugins?.includes('GooglePhotosPicker')) {
         uppy.use(GooglePhotosPicker, {
             target: Dashboard,
-            clientId: GOOGLE_DRIVE_CLIENT_ID,
+            clientId: GOOGLE_CLIENT_ID,
             apiKey: GOOGLE_API_KEY_PHOTOS,
             companionUrl: COMPANION_URL,
         });
