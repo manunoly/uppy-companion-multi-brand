@@ -250,8 +250,12 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         waitForThumbnailsBeforeUpload: false,
     });
 
+    const generatedThumbnailFor = new Set<string>();
+
     uppy.on('thumbnail:generated', async (file: any, preview: string) => {
         if (file.meta.isThumbnail) return;
+        if (generatedThumbnailFor.has(file.id)) return;
+        generatedThumbnailFor.add(file.id);
 
         try {
             const response = await fetch(preview);
@@ -268,6 +272,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
                 meta: {
                     ...file.meta,
                     isThumbnail: true,
+                    originalFileId: file.id,
                     originalFileName: file.name,
                 },
             });
