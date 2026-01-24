@@ -19,10 +19,21 @@ export interface BrandS3Config {
 }
 
 export interface BrandConfigJSON {
+    /** Preferred: auth configuration block */
+    auth?: {
+        url?: string;
+        cookieName?: string;
+    };
+    /** Preferred: public URLs configuration block */
+    public?: {
+        backendUrl?: string;
+        uploadUrl?: string;
+    };
+    /** Legacy fields (kept for backwards compatibility) */
     authUrl?: string;
     authCookieName?: string;
-    projectCookieName?: string;
     publicBackendUrl?: string;
+    publicUploadUrl?: string;
     companionUrl?: string; // [NEW] Override for proxy URL
     corsOrigins?: string[];
     uploadUrls?: string[];
@@ -55,14 +66,13 @@ export interface Brand {
     /** [NEW] Explicit public URL for Companion (e.g. for proxies) */
     companionUrl?: string;
 
-    /** URL to validate authentication tokens. If null, auth is disabled */
-    authUrl: string | null;
-
-    /** Cookie name for storing auth token */
-    authCookieName: string;
-
-    /** Cookie name for storing project ID */
-    projectCookieName: string;
+    /** Auth configuration */
+    auth: {
+        /** URL to validate authentication tokens. If null, auth is disabled */
+        url: string | null;
+        /** Cookie name for storing auth token */
+        cookieName: string;
+    };
 
     /** S3 configuration for file uploads */
     s3: BrandS3Config;
@@ -88,8 +98,13 @@ export interface Brand {
     /** Secret for companion encryption */
     secret: string;
 
-    /** Public Backend URL for saving files (Laravel/API) */
-    publicBackendUrl: string;
+    /** Public URLs */
+    public: {
+        /** Public Backend URL for saving files (Laravel/API) */
+        backendUrl: string;
+        /** Public Upload URL override per brand */
+        uploadUrl: string;
+    };
 
     /** Companion server settings */
     server: {

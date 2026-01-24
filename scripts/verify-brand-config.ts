@@ -25,8 +25,8 @@ try {
         for (const brand of brands) {
             console.log(`[Brand: ${brand.id}]`);
             console.log(`  - Name: ${brand.displayName}`);
-            console.log(`  - Auth URL: ${brand.authUrl || '(Not configured) ⚠️'}`);
-            console.log(`  - Public Backend: ${brand.publicBackendUrl}`);
+            console.log(`  - Auth URL: ${brand.auth.url || '(Not configured) ⚠️'}`);
+            console.log(`  - Public Backend: ${brand.public.backendUrl}`);
 
             // 1. Analyze Active Providers (from Registry)
             const activeProviders: string[] = [];

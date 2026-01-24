@@ -26,7 +26,7 @@ export const extractToken = (req: AppRequest, brand: Brand): string | null => {
 
     // 2. Brand-specific cookie
     const cookies = req.cookies as Record<string, string> | undefined;
-    const cookieToken = cookies?.[brand.authCookieName];
+    const cookieToken = cookies?.[brand.auth.cookieName];
     if (cookieToken) {
         return cookieToken;
     }
@@ -44,8 +44,8 @@ export const extractToken = (req: AppRequest, brand: Brand): string | null => {
  * Authenticates a token against the brand's auth URL
  * 
  * Flow:
- * 1. If brand has no authUrl, authentication is disabled (returns authenticated)
- * 2. Calls brand.authUrl with token in Authorization header
+ * 1. If brand has no auth.url, authentication is disabled (returns authenticated)
+ * 2. Calls brand.auth.url with token in Authorization header
  * 3. If response is 200, user is authenticated
  * 4. Any other response = not authenticated
  */
@@ -54,18 +54,18 @@ export const authenticate = async (
     brand: Brand
 ): Promise<AuthResult> => {
     // If brand has no auth URL, authentication is disabled
-    if (!brand.authUrl) {
+    if (!brand.auth.url) {
         return { authenticated: true, user: null };
     }
 
     try {
-        const response = await fetch(brand.authUrl, {
+        const response = await fetch(brand.auth.url, {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Accept': 'application/json',
                 // Forward session cookie for cookie-based auth endpoints
-                'Cookie': `${brand.authCookieName}=${token}`,
+                'Cookie': `${brand.auth.cookieName}=${token}`,
             },
             signal: AbortSignal.timeout(5000),
         });

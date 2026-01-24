@@ -37,6 +37,7 @@ export interface UppyModalOptions {
     COMPANION_URL?: string;
     COMPANION_ALLOWED_HOSTS?: RegExp;
     PUBLIC_BACKEND_URL?: string;
+    PUBLIC_UPLOAD_URL?: string;
     GOOGLE_API_KEY?: string | null;
     GOOGLE_DRIVE_CLIENT_ID?: string | null;
     bearerToken?: string | null;
@@ -122,6 +123,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         COMPANION_URL: 'http://localhost:3020',
         COMPANION_ALLOWED_HOSTS: /.*/,
         PUBLIC_BACKEND_URL: 'http://localhost',
+        PUBLIC_UPLOAD_URL: undefined,
         GOOGLE_API_KEY: null,
         GOOGLE_DRIVE_CLIENT_ID: null,
         callbackFn: undefined,
@@ -136,6 +138,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     const COMPANION_URL = readOption(merged, 'COMPANION_URL', 'http://localhost:3020');
     const COMPANION_ALLOWED_HOSTS = merged.COMPANION_ALLOWED_HOSTS ?? /.*/;
     const PUBLIC_BACKEND_URL = readOption(merged, 'PUBLIC_BACKEND_URL', readOption(merged, 'PUBLIC_BACKEND_URL', 'http://localhost'));
+    const PUBLIC_UPLOAD_URL = readOption(merged, 'PUBLIC_UPLOAD_URL', `${PUBLIC_BACKEND_URL}/api/frame/contents/upload/public`);
 
     const GOOGLE_API_KEY = readOption(merged, 'GOOGLE_API_KEY', null);
     const GOOGLE_DRIVE_CLIENT_ID = readOption(merged, 'GOOGLE_DRIVE_CLIENT_ID', null);
@@ -420,9 +423,14 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         try {
             const currentFolder = uppy.getState().meta?.folder || '';
             // TODO:Arreglar para que llame a la URL correcta segun el entorno y brand
-            const response = await fetchWithAuth(`${PUBLIC_BACKEND_URL}/api/frame/contents/upload/public`, {
+            const response = await fetchWithAuth(`${PUBLIC_UPLOAD_URL}`, {
                 method: 'POST',
-                body: serialize({ images: imagesData, folder: currentFolder }) as any,
+                body: serialize({
+                    images: imagesData,
+                    folder: currentFolder,
+                    brand: merged.brand ?? 'default',
+                    brandName: merged.brandName ?? merged.brand ?? 'default',
+                }) as any,
             });
             if (!response.ok) {
                 console.warn('saveFileToDB', response);

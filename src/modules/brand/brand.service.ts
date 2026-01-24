@@ -117,9 +117,10 @@ export const createBrand = (
         companionUrl: config.companionUrl,
 
         // Auth
-        authUrl: config.authUrl ?? null,
-        authCookieName: config.authCookieName ?? 'session',
-        projectCookieName: config.projectCookieName ?? 'frame_project_id',
+        auth: {
+            url: config.auth?.url ?? config.authUrl ?? null,
+            cookieName: config.auth?.cookieName ?? config.authCookieName ?? 'session',
+        },
 
         // S3
         s3: createS3Config(config.s3),
@@ -148,7 +149,22 @@ export const createBrand = (
         corsOrigins: parseCorsOrigins(config.corsOrigins, defaults.corsOrigins),
         uploadUrls: config.uploadUrls ?? ['*'],
 
-        publicBackendUrl: config.publicBackendUrl ?? process.env.PUBLIC_BACKEND_URL ?? 'http://localhost',
+        public: (() => {
+            const backendUrl = config.public?.backendUrl
+                ?? config.publicBackendUrl
+                ?? process.env.PUBLIC_BACKEND_URL
+                ?? 'http://localhost';
+
+            const uploadUrl = config.public?.uploadUrl
+                ?? config.publicUploadUrl
+                ?? process.env.PUBLIC_UPLOAD_URL
+                ?? `${backendUrl}/api/frame/contents/upload/public`;
+
+            return {
+                backendUrl,
+                uploadUrl,
+            };
+        })(),
 
         // Server
         secret: defaults.secret,

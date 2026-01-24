@@ -77,11 +77,11 @@ export const serveUppyPage = async (
 
     // Get bearer token
     const queryToken = typeof req.query.bearerToken === 'string' ? req.query.bearerToken : null;
-    const cookieToken = (req.cookies as Record<string, string>)?.[brand.authCookieName] ?? null;
+    const cookieToken = (req.cookies as Record<string, string>)?.[brand.auth.cookieName] ?? null;
     const bearerToken = queryToken ?? cookieToken ?? '';
 
-    // Verify authentication if brand has authUrl
-    if (brand.authUrl && bearerToken) {
+    // Verify authentication if brand has auth.url
+    if (brand.auth.url && bearerToken) {
         const result = await authenticate(bearerToken, brand);
         if (!result.authenticated) {
             res.status(401).send('Unauthorized');
@@ -107,10 +107,11 @@ export const serveUppyPage = async (
         html = html.replace(/BRAND_SLUG_VALUE/g, toJsStringLiteral(brand.id));
         html = html.replace(/BRAND_NAME_VALUE/g, toJsStringLiteral(brand.displayName));
         html = html.replace(/BRAND_LOGO_URL_VALUE/g, toJsStringLiteral(''));
-        html = html.replace(/BRAND_USER_ENDPOINT_VALUE/g, toJsStringLiteral(brand.authUrl ?? ''));
+        html = html.replace(/BRAND_USER_ENDPOINT_VALUE/g, toJsStringLiteral(brand.auth.url ?? ''));
         html = html.replace(/COMPANION_URL_VALUE/g, toJsStringLiteral(companionUrl));
         html = html.replace(/SERVER_URL_VALUE/g, toJsStringLiteral(`/${brand.id}`));
-        html = html.replace(/PUBLIC_BACKEND_URL_VALUE/g, toJsStringLiteral(brand.publicBackendUrl));
+        html = html.replace(/PUBLIC_BACKEND_URL_VALUE/g, toJsStringLiteral(brand.public.backendUrl));
+        html = html.replace(/PUBLIC_UPLOAD_URL_VALUE/g, toJsStringLiteral(brand.public.uploadUrl));
         html = html.replace(/GOOGLE_API_KEY_VALUE/g, toJsStringLiteral(brand.providers.google?.key ?? ''));
         html = html.replace(/GOOGLE_DRIVE_CLIENT_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.key ?? ''));
 
@@ -122,7 +123,7 @@ export const serveUppyPage = async (
 
         // Set cookie if token was provided
         if (bearerToken && queryToken) {
-            res.cookie(brand.authCookieName, bearerToken, {
+            res.cookie(brand.auth.cookieName, bearerToken, {
                 httpOnly: false,
                 secure: brand.server.protocol === 'https',
                 maxAge: 12 * 60 * 60 * 1000, // 12 hours

@@ -67,7 +67,7 @@ const buildProviderOptions = (brand: Brand): Record<string, CompanionProviderOpt
         };
     }
 
-    // [NEW] Use companionUrl or authUrl to determine the public domain for OAuth redirects
+    // [NEW] Use companionUrl to determine the public domain for OAuth redirects
     // This fixes the issue where implicit path construction adds extra segments like /default/
     const oauthDomain = brand.companionUrl
         ? new URL(brand.companionUrl).host

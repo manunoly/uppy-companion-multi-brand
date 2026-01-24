@@ -149,11 +149,15 @@ The platform uses a **multi-tenant architecture** where a single Express server 
 - `CORS_ALLOWED_ORIGINS`: Comma-separated list, used for Companion CORS.
 
 ### Brand JSON (per-brand override)
-Common fields:
-- `authUrl`: enables auth (if missing, auth is treated as disabled for that brand).
+Preferred fields:
+- `auth`: block with `url`, `cookieName`.
+- `public`: block with `backendUrl`, `uploadUrl`.
 - `companionUrl`: explicit public URL for Companion per brand (recommended behind proxies).
 - `providers`: provider credentials by brand (Dropbox, Google, etc.).
 - `s3`: bucket/region/credentials override.
+
+Legacy fields are still supported for backwards compatibility:
+- `authUrl`, `authCookieName`, `publicBackendUrl`, `publicUploadUrl`.
 
 ## Operational Troubleshooting
 
