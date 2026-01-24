@@ -3,9 +3,9 @@ import cookieParser from 'cookie-parser';
 import session from 'express-session';
 
 import { env } from './config/index.js';
+import type { AppRequest } from './core/types/express.js';
 import {
     createBrandRegistry,
-    createBrandMiddleware,
     getAllBrands,
     type BrandRegistry
 } from './modules/brand/index.js';
@@ -96,8 +96,23 @@ export const createServer = (): ServerResult => {
     for (const instance of companionInstances) {
         const brand = instance.brand;
 
-        // Brand middleware for routes under /:brand
-        app.use(`/${brand.id}`, createBrandMiddleware(brandRegistry));
+        // Attach the concrete brand for routes under /{brandId}
+        // NOTE: Using createBrandMiddleware() here would fall back to defaultBrand because
+        // req.params.brand is not populated when mounting on a literal path like '/acme'.
+        app.use(`/${brand.id}`, (req, _res, next) => {
+            (req as AppRequest).brand = brand;
+            next();
+        });
+
+        // Fix unexpected /default segment in OAuth callbacks for non-default brands
+        if (brand.id !== brandRegistry.defaultBrand?.id) {
+            app.use(`/${brand.id}`, (req, _res, next) => {
+                if (req.url.startsWith('/default/')) {
+                    req.url = req.url.replace(/^\/default/, '');
+                }
+                next();
+            });
+        }
 
         // Optional user attachment
         app.use(`/${brand.id}`, attachUser);

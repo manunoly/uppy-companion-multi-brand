@@ -61,7 +61,10 @@ const createS3Config = (s3Config: BrandConfigJSON['s3'] | undefined): BrandS3Con
         useAccelerateEndpoint: s3Config?.useAccelerateEndpoint ?? false,
     };
 
-    if (config.accessKey && config.secretKey) {
+    // Always create a client when region is known.
+    // If accessKey/secretKey are missing, the SDK will use the Default Credential Provider Chain
+    // (e.g. IAM Task Role on ECS/Fargate) as implemented in getS3Client().
+    if (config.region) {
         config.client = getS3Client({
             regionParam: config.region,
             accessKeyIdParam: config.accessKey,
@@ -110,6 +113,9 @@ export const createBrand = (
         id: slug,
         displayName: slug, // JSON config could add displayName if needed, for now using slug
 
+        // Proxy Support
+        companionUrl: config.companionUrl,
+
         // Auth
         authUrl: config.authUrl ?? null,
         authCookieName: config.authCookieName ?? 'session',
@@ -120,8 +126,16 @@ export const createBrand = (
 
         // Providers
         providers: {
-            google: createProviderConfig(config.providers?.google, 'COMPANION_GOOGLE_KEY', 'COMPANION_GOOGLE_SECRET'),
-            dropbox: createProviderConfig(config.providers?.dropbox, 'COMPANION_DROPBOX_KEY', 'COMPANION_DROPBOX_SECRET'),
+            google: (() => {
+                const p = createProviderConfig(config.providers?.google, 'COMPANION_GOOGLE_KEY', 'COMPANION_GOOGLE_SECRET');
+                if (slug === 'abeduls') console.log('[DEBUG] Abeduls Google Config:', p ? 'Found' : 'Missing', config.providers?.google);
+                return p;
+            })(),
+            dropbox: (() => {
+                const p = createProviderConfig(config.providers?.dropbox, 'COMPANION_DROPBOX_KEY', 'COMPANION_DROPBOX_SECRET');
+                if (slug === 'abeduls') console.log('[DEBUG] Abeduls Dropbox Config:', p ? 'Found' : 'Missing', p?.key);
+                return p;
+            })(),
             facebook: createProviderConfig(config.providers?.facebook, 'COMPANION_FACEBOOK_KEY', 'COMPANION_FACEBOOK_SECRET'),
             instagram: createProviderConfig(config.providers?.instagram, 'COMPANION_INSTAGRAM_KEY', 'COMPANION_INSTAGRAM_SECRET'),
             onedrive: createProviderConfig(config.providers?.onedrive, 'COMPANION_ONEDRIVE_KEY', 'COMPANION_ONEDRIVE_SECRET'),

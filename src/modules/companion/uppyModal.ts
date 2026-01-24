@@ -419,6 +419,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         if (!imagesData || imagesData.length === 0) throw new Error('imagesData is empty');
         try {
             const currentFolder = uppy.getState().meta?.folder || '';
+            // TODO:Arreglar para que llame a la URL correcta segun el entorno y brand
             const response = await fetchWithAuth(`${PUBLIC_BACKEND_URL}/api/frame/contents/upload/public`, {
                 method: 'POST',
                 body: serialize({ images: imagesData, folder: currentFolder }) as any,

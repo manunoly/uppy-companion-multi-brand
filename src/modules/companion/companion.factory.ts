@@ -67,6 +67,24 @@ const buildProviderOptions = (brand: Brand): Record<string, CompanionProviderOpt
         };
     }
 
+    // [NEW] Use companionUrl or authUrl to determine the public domain for OAuth redirects
+    // This fixes the issue where implicit path construction adds extra segments like /default/
+    const oauthDomain = brand.companionUrl
+        ? new URL(brand.companionUrl).host
+        : brand.server.host;
+    const oauthPath = brand.companionUrl
+        ? new URL(brand.companionUrl).pathname.replace(/\/$/, '') || '/'
+        : brand.server.path;
+
+    // We attach it to every provider so Companion uses it for redirect_uri generation
+    Object.keys(providers).forEach((key) => {
+        providers[key].oauthDomain = oauthDomain;
+        providers[key].oauthProtocol = brand.companionUrl
+            ? (new URL(brand.companionUrl).protocol.replace(':', '') as 'http' | 'https')
+            : brand.server.protocol;
+        providers[key].oauthPath = oauthPath;
+    });
+
     return providers;
 };
 
@@ -74,13 +92,29 @@ const buildProviderOptions = (brand: Brand): Record<string, CompanionProviderOpt
  * Builds companion options for a brand
  */
 export const buildCompanionOptions = (brand: Brand): CompanionOptions => {
+    let serverOptions = {
+        host: brand.server.host,
+        protocol: brand.server.protocol,
+        path: brand.server.path,
+    };
+
+    // [NEW] Use companionUrl to override server settings for public URLs (e.g. Proxy)
+    if (brand.companionUrl) {
+        try {
+            const url = new URL(brand.companionUrl);
+            serverOptions = {
+                host: url.host, // includes port if present
+                protocol: url.protocol.replace(':', '') as 'http' | 'https',
+                path: url.pathname.replace(/\/$/, ''), // remove trailing slash
+            };
+        } catch (err) {
+            console.error(`[companion] Invalid companionUrl for brand ${brand.id}:`, brand.companionUrl);
+        }
+    }
+
     const options: CompanionOptions = {
         providerOptions: buildProviderOptions(brand),
-        server: {
-            host: brand.server.host,
-            protocol: brand.server.protocol,
-            path: brand.server.path,
-        },
+        server: serverOptions,
         filePath: brand.filePath,
         secret: brand.secret,
         uploadUrls: brand.uploadUrls,
@@ -115,6 +149,11 @@ export interface CompanionInstance {
  */
 export const createCompanionForBrand = (brand: Brand): CompanionInstance => {
     const options = buildCompanionOptions(brand);
+
+    if (brand.id === 'abeduls') {
+        console.log('[DEBUG] Companion Factory Options for Abeduls:', JSON.stringify(options.providerOptions?.dropbox, null, 2));
+    }
+
     const { app: companionApp } = companion.app(options as Parameters<typeof companion.app>[0]);
 
     // Create a router that injects brand into request

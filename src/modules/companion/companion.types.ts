@@ -14,6 +14,9 @@ export interface AwsGetKeyParams {
 export interface CompanionProviderOptions {
     key: string;
     secret: string;
+    oauthDomain?: string;
+    oauthProtocol?: 'http' | 'https';
+    oauthPath?: string;
 }
 
 export interface CompanionS3Options {

@@ -97,8 +97,10 @@ export const serveUppyPage = async (
         // Get enabled plugins for this brand
         const enabledPlugins = getEnabledPlugins(brand);
 
-        // Build companion URL
-        const companionUrl = `${brand.server.protocol}://${brand.server.host}${brand.server.path}`;
+        // Build companion URL (Prefer explicit override for Proxies)
+        const companionUrl = brand.companionUrl
+            ? brand.companionUrl
+            : `${brand.server.protocol}://${brand.server.host}${brand.server.path}`;
 
         // Replace placeholders
         html = html.replace(/BEARER_TOKEN_VALUE/g, toJsStringLiteral(bearerToken));

@@ -1,0 +1,73 @@
+[
+    {
+        "source": "Dropbox",
+        "id": "id:LDIhHa_dgLAAAAAAAAAAxQ",
+        "name": "amenazas.png",
+        "extension": "png",
+        "meta": {
+            "brand": "default",
+            "brandName": "default",
+            "folder": "home",
+            "relativePath": null,
+            "absolutePath": "/amenazas.png",
+            "name": "amenazas.png",
+            "type": "image/png"
+        },
+        "type": "image/png",
+        "progress": {
+            "uploadStarted": 1765054012267,
+            "uploadComplete": false,
+            "bytesUploaded": 575350,
+            "bytesTotal": 575350,
+            "percentage": 100
+        },
+        "size": 575350,
+        "isGhost": false,
+        "isRemote": true,
+        "remote": {
+            "companionUrl": "http://localhost:3020/default",
+            "url": "http://localhost:3020/default/dropbox/get/%2Famenazas.png",
+            "body": {
+                "fileId": "id:LDIhHa_dgLAAAAAAAAAAxQ"
+            },
+            "providerName": "Dropbox",
+            "provider": "dropbox",
+            "requestClientId": "dropbox"
+        },
+        "data": {
+            "isFolder": false,
+            "icon": "file",
+            "name": "amenazas.png",
+            "mimeType": "image/png",
+            "id": "id:LDIhHa_dgLAAAAAAAAAAxQ",
+            "thumbnail": "http://localhost:3020/default/dropbox/thumbnail/%2Famenazas.png",
+            "requestPath": "%2Famenazas.png",
+            "modifiedDate": "2015-07-17T21:00:52Z",
+            "size": 575350,
+            "absDirPath": "/amenazas.png"
+        },
+        "preview": "http://localhost:3020/default/dropbox/thumbnail/%2Famenazas.png",
+        "serverToken": "2f169df9-62d2-4b28-849f-6dea3972959d",
+        "uploadAwsUrl": "https://abeduls.s3.us-east-1.amazonaws.com/default/original/3/2025/12/6/154653451/untitled",
+        "response": {
+            "uploadURL": "https://abeduls.s3.us-east-1.amazonaws.com/default/original/3/2025/12/6/154653451/untitled",
+            "status": 200,
+            "body": {
+                "ETag": "\"a2c8e973d6ed82b3773312341fed5a02\"",
+                "ChecksumCRC32": "8GASDA==",
+                "ChecksumType": "FULL_OBJECT",
+                "ServerSideEncryption": "AES256",
+                "$metadata": {
+                    "httpStatusCode": 200,
+                    "requestId": "SNT71AF9AN6XD3DQ",
+                    "extendedRequestId": "caRipRE4QJ8HvEXZ5WzrJ0db/aI8ogMG/jXuXrxKLJ9ygCxWniViIRyT4WSgVNYOm0ejrog3pro=",
+                    "attempts": 1,
+                    "totalRetryDelay": 0
+                },
+                "Bucket": "abeduls",
+                "Key": "default/original/3/2025/12/6/154653451/untitled",
+                "Location": "https://abeduls.s3.us-east-1.amazonaws.com/default/original/3/2025/12/6/154653451/untitled"
+            }
+        }
+    }
+]

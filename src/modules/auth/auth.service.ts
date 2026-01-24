@@ -64,6 +64,8 @@ export const authenticate = async (
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Accept': 'application/json',
+                // Forward session cookie for cookie-based auth endpoints
+                'Cookie': `${brand.authCookieName}=${token}`,
             },
             signal: AbortSignal.timeout(5000),
         });

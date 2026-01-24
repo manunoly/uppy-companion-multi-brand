@@ -23,6 +23,7 @@ export interface BrandConfigJSON {
     authCookieName?: string;
     projectCookieName?: string;
     publicBackendUrl?: string;
+    companionUrl?: string; // [NEW] Override for proxy URL
     corsOrigins?: string[];
     uploadUrls?: string[];
     s3?: {
@@ -50,6 +51,9 @@ export interface Brand {
 
     /** Display name for the brand */
     displayName: string;
+
+    /** [NEW] Explicit public URL for Companion (e.g. for proxies) */
+    companionUrl?: string;
 
     /** URL to validate authentication tokens. If null, auth is disabled */
     authUrl: string | null;
