@@ -7,6 +7,9 @@ import type { S3Client } from '@aws-sdk/client-s3';
 export interface BrandProviderConfig {
     key: string;
     secret: string;
+    apiKeyDrive?: string;
+    apiKeyPhotos?: string;
+    appId?: string;
 }
 
 export interface BrandS3Config {

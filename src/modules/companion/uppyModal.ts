@@ -38,14 +38,17 @@ export interface UppyModalOptions {
     COMPANION_ALLOWED_HOSTS?: RegExp;
     PUBLIC_BACKEND_URL?: string;
     PUBLIC_UPLOAD_URL?: string;
-    GOOGLE_API_KEY?: string | null;
+    GOOGLE_API_KEY_DRIVE?: string | null;
+    GOOGLE_API_KEY_PHOTOS?: string | null;
     GOOGLE_DRIVE_CLIENT_ID?: string | null;
+    GOOGLE_APP_ID?: string | null;
     bearerToken?: string | null;
     callbackFn?: (result: any) => void;
     brand?: string;
     brandName?: string | null;
     brandLogoUrl?: string | null;
     brandUserEndpoint?: string | null;
+    enableThumbnails?: boolean;
     [key: string]: any;
 }
 
@@ -124,13 +127,16 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         COMPANION_ALLOWED_HOSTS: /.*/,
         PUBLIC_BACKEND_URL: 'http://localhost',
         PUBLIC_UPLOAD_URL: undefined,
-        GOOGLE_API_KEY: null,
+        GOOGLE_API_KEY_DRIVE: null,
+        GOOGLE_API_KEY_PHOTOS: null,
         GOOGLE_DRIVE_CLIENT_ID: null,
+        GOOGLE_APP_ID: null,
         callbackFn: undefined,
         brand: 'default',
         brandName: null,
         brandLogoUrl: null,
         brandUserEndpoint: null,
+        enableThumbnails: true,
         ...options,
     };
 
@@ -140,8 +146,10 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     const PUBLIC_BACKEND_URL = readOption(merged, 'PUBLIC_BACKEND_URL', readOption(merged, 'PUBLIC_BACKEND_URL', 'http://localhost'));
     const PUBLIC_UPLOAD_URL = readOption(merged, 'PUBLIC_UPLOAD_URL', `${PUBLIC_BACKEND_URL}/api/frame/contents/upload/public`);
 
-    const GOOGLE_API_KEY = readOption(merged, 'GOOGLE_API_KEY', null);
+    const GOOGLE_API_KEY_DRIVE = readOption(merged, 'GOOGLE_API_KEY_DRIVE', null);
+    const GOOGLE_API_KEY_PHOTOS = readOption(merged, 'GOOGLE_API_KEY_PHOTOS', null);
     const GOOGLE_DRIVE_CLIENT_ID = readOption(merged, 'GOOGLE_DRIVE_CLIENT_ID', null);
+    const GOOGLE_APP_ID = readOption(merged, 'GOOGLE_APP_ID', null);
     const BEARER_TOKEN = readOption(merged, 'bearerToken', null);
 
     const authHeaders = BEARER_TOKEN ? { Authorization: `Bearer ${BEARER_TOKEN}` } : {};
@@ -231,7 +239,8 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         uppy.use(GoogleDrivePicker, {
             target: Dashboard,
             clientId: GOOGLE_DRIVE_CLIENT_ID,
-            apiKey: GOOGLE_API_KEY,
+            apiKey: GOOGLE_API_KEY_DRIVE,
+            appId: GOOGLE_APP_ID,
             companionUrl: COMPANION_URL,
         });
     }
@@ -239,47 +248,49 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         uppy.use(GooglePhotosPicker, {
             target: Dashboard,
             clientId: GOOGLE_DRIVE_CLIENT_ID,
-            apiKey: GOOGLE_API_KEY,
+            apiKey: GOOGLE_API_KEY_PHOTOS,
             companionUrl: COMPANION_URL,
         });
     }
 
-    // --- Thumbnail Generator ---
-    uppy.use(ThumbnailGenerator, {
-        thumbnailWidth: 200,
-        waitForThumbnailsBeforeUpload: false,
-    });
+    if (merged.enableThumbnails !== false) {
+        // --- Thumbnail Generator ---
+        uppy.use(ThumbnailGenerator, {
+            thumbnailWidth: 200,
+            waitForThumbnailsBeforeUpload: false,
+        });
 
-    const generatedThumbnailFor = new Set<string>();
+        const generatedThumbnailFor = new Set<string>();
 
-    uppy.on('thumbnail:generated', async (file: any, preview: string) => {
-        if (file.meta.isThumbnail) return;
-        if (generatedThumbnailFor.has(file.id)) return;
-        generatedThumbnailFor.add(file.id);
+        uppy.on('thumbnail:generated', async (file: any, preview: string) => {
+            if (file.meta.isThumbnail) return;
+            if (generatedThumbnailFor.has(file.id)) return;
+            generatedThumbnailFor.add(file.id);
 
-        try {
-            const response = await fetch(preview);
-            const blob = await response.blob();
+            try {
+                const response = await fetch(preview);
+                const blob = await response.blob();
 
-            const thumbnailFile = new File([blob], `thumb_${file.name}`, {
-                type: blob.type
-            });
+                const thumbnailFile = new File([blob], `thumb_${file.name}`, {
+                    type: blob.type
+                });
 
-            uppy.addFile({
-                name: thumbnailFile.name,
-                type: thumbnailFile.type,
-                data: thumbnailFile,
-                meta: {
-                    ...file.meta,
-                    isThumbnail: true,
-                    originalFileId: file.id,
-                    originalFileName: file.name,
-                },
-            });
-        } catch (err) {
-            console.error('Error creating thumbnail file:', err);
-        }
-    });
+                uppy.addFile({
+                    name: thumbnailFile.name,
+                    type: thumbnailFile.type,
+                    data: thumbnailFile,
+                    meta: {
+                        ...file.meta,
+                        isThumbnail: true,
+                        originalFileId: file.id,
+                        originalFileName: file.name,
+                    },
+                });
+            } catch (err) {
+                console.error('Error creating thumbnail file:', err);
+            }
+        });
+    }
 
     // --- AWS S3 ---
     const ensureFolderSelect = () => createFolderSelect(uppy);

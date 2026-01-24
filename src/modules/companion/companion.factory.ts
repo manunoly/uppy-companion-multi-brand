@@ -15,6 +15,9 @@ const buildProviderOptions = (brand: Brand): Record<string, CompanionProviderOpt
         providers.drive = {
             key: brand.providers.google.key,
             secret: brand.providers.google.secret,
+            apiKeyDrive: brand.providers.google.apiKeyDrive,
+            apiKeyPhotos: brand.providers.google.apiKeyPhotos,
+            appId: brand.providers.google.appId,
         };
     }
 
@@ -121,6 +124,7 @@ export const buildCompanionOptions = (brand: Brand): CompanionOptions => {
         corsOrigins: brand.corsOrigins,
         metrics: false,
         allowLocalUrls: true, // Allow uploads to localhost
+        enableGooglePickerEndpoint: true,
     };
 
     // Add S3 config if available

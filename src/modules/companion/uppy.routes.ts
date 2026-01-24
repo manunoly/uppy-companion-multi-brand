@@ -27,7 +27,8 @@ const getEnabledPlugins = (brand: Brand): string[] => {
 
     // Add plugins based on configured providers
     if (brand.providers.google) {
-        plugins.push('GoogleDrive');
+        // this is the legacy plugin, avoid using it for Picker flows
+        // plugins.push('GoogleDrive');
         plugins.push('GoogleDrivePicker');
         plugins.push('GooglePhotosPicker');
     }
@@ -112,8 +113,10 @@ export const serveUppyPage = async (
         html = html.replace(/SERVER_URL_VALUE/g, toJsStringLiteral(`/${brand.id}`));
         html = html.replace(/PUBLIC_BACKEND_URL_VALUE/g, toJsStringLiteral(brand.public.backendUrl));
         html = html.replace(/PUBLIC_UPLOAD_URL_VALUE/g, toJsStringLiteral(brand.public.uploadUrl));
-        html = html.replace(/GOOGLE_API_KEY_VALUE/g, toJsStringLiteral(brand.providers.google?.key ?? ''));
+        html = html.replace(/GOOGLE_API_KEY_DRIVE_VALUE/g, toJsStringLiteral(brand.providers.google?.apiKeyDrive ?? ''));
+        html = html.replace(/GOOGLE_API_KEY_PHOTOS_VALUE/g, toJsStringLiteral(brand.providers.google?.apiKeyPhotos ?? ''));
         html = html.replace(/GOOGLE_DRIVE_CLIENT_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.key ?? ''));
+        html = html.replace(/GOOGLE_APP_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.appId ?? ''));
 
         // Replace plugins array
         html = html.replace(

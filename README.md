@@ -120,9 +120,9 @@ The platform uses a **multi-tenant architecture** where a single Express server 
 
 ### 4) Auth flow (cookie + bearer)
 - The UI passes a bearer token (optional) to the `/uppy` page.
-- The server also accepts auth via a cookie (the cookie name defaults to `session` or brand `authCookieName`).
+- The server also accepts auth via a cookie (the cookie name defaults to `session` or brand `auth.cookieName`).
 - Token extraction order: Authorization header → brand cookie → `bearerToken` query param.
-- Auth check is performed in [src/modules/auth/auth.service.ts](src/modules/auth/auth.service.ts) against `brand.authUrl`.
+- Auth check is performed in [src/modules/auth/auth.service.ts](src/modules/auth/auth.service.ts) against `brand.auth.url`.
 - When authenticating against a cookie-based backend, the cookie is forwarded in the auth request headers.
 
 ### 5) OAuth redirect flow per brand
@@ -150,14 +150,21 @@ The platform uses a **multi-tenant architecture** where a single Express server 
 
 ### Brand JSON (per-brand override)
 Preferred fields:
-- `auth`: block with `url`, `cookieName`.
+- `auth`: block with `url`, `cookieName`, `projectCookieName`.
 - `public`: block with `backendUrl`, `uploadUrl`.
 - `companionUrl`: explicit public URL for Companion per brand (recommended behind proxies).
 - `providers`: provider credentials by brand (Dropbox, Google, etc.).
 - `s3`: bucket/region/credentials override.
 
 Legacy fields are still supported for backwards compatibility:
-- `authUrl`, `authCookieName`, `publicBackendUrl`, `publicUploadUrl`.
+- `authUrl`, `authCookieName`, `projectCookieName`, `publicBackendUrl`, `publicUploadUrl`.
+
+Google Picker notes:
+- `providers.google.key` = OAuth Client ID
+- `providers.google.apiKeyDrive` = Google Drive Picker API key
+- `providers.google.apiKeyPhotos` = Google Photos Picker API key
+- `providers.google.appId` = Google project number (App ID)
+- `providers.google.secret` = OAuth Client Secret (used by classic Google Drive/Photos providers, not by Picker)
 
 ## Operational Troubleshooting
 
@@ -170,8 +177,8 @@ Legacy fields are still supported for backwards compatibility:
 - Confirm the provider options are built with `oauthDomain`, `oauthProtocol`, and `oauthPath` in [src/modules/companion/companion.factory.ts](src/modules/companion/companion.factory.ts).
 
 ### /uppy returns Unauthorized
-- Ensure `authUrl` is reachable and returns 200 for the session.
-- Confirm the auth cookie name matches `authCookieName` (default `session`).
+- Ensure `auth.url` is reachable and returns 200 for the session.
+- Confirm the auth cookie name matches `auth.cookieName` (default `session`).
 
 ### Default Brand & Configuration
 
@@ -181,7 +188,7 @@ Legacy fields are still supported for backwards compatibility:
     1. **Brand JSON**: Values defined in the brand's JSON environment variable (e.g., `MYBRAND='{"..."}'`) take precedence.
     2. **Global Fallback**:
         - **Providers/S3**: If missing in JSON, the system falls back to global environment variables (e.g., `COMPANION_GOOGLE_KEY`, `AWS_BUCKET_NAME`).
-        - **Auth URL**: **Must** be defined in the brand's JSON to enable auth. If `authUrl` is missing, auth is considered disabled for that brand.
+        - **Auth URL**: **Must** be defined in the brand's JSON to enable auth. If `auth.url` (or legacy `authUrl`) is missing, auth is considered disabled for that brand.
 
 ## Project Structure
 

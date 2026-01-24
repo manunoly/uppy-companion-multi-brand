@@ -31,10 +31,13 @@ const parseBrandConfig = (slug: string): BrandConfigJSON | null => {
 const createProviderConfig = (
     providerConfig: BrandProviderConfig | undefined,
     globalKeyEnv: string,
-    globalSecretEnv: string
+    globalSecretEnv: string,
+    options: { allowKeyOnly?: boolean } = {}
 ): BrandProviderConfig | undefined => {
+    const allowKeyOnly = options.allowKeyOnly ?? false;
+
     // Prefer brand specific config
-    if (providerConfig?.key && providerConfig?.secret) {
+    if (providerConfig?.key && (providerConfig.secret || allowKeyOnly)) {
         return providerConfig;
     }
 
@@ -42,8 +45,8 @@ const createProviderConfig = (
     const globalKey = process.env[globalKeyEnv];
     const globalSecret = process.env[globalSecretEnv];
 
-    if (globalKey && globalSecret) {
-        return { key: globalKey, secret: globalSecret };
+    if (globalKey && (globalSecret || allowKeyOnly)) {
+        return { key: globalKey, secret: globalSecret ?? '' };
     }
 
     return undefined;
@@ -128,7 +131,12 @@ export const createBrand = (
         // Providers
         providers: {
             google: (() => {
-                const p = createProviderConfig(config.providers?.google, 'COMPANION_GOOGLE_KEY', 'COMPANION_GOOGLE_SECRET');
+                const p = createProviderConfig(
+                    config.providers?.google,
+                    'COMPANION_GOOGLE_KEY',
+                    'COMPANION_GOOGLE_SECRET',
+                    { allowKeyOnly: true }
+                );
                 if (slug === 'abeduls') console.log('[DEBUG] Abeduls Google Config:', p ? 'Found' : 'Missing', config.providers?.google);
                 return p;
             })(),

@@ -17,6 +17,9 @@ export interface CompanionProviderOptions {
     oauthDomain?: string;
     oauthProtocol?: 'http' | 'https';
     oauthPath?: string;
+    apiKeyDrive?: string;
+    apiKeyPhotos?: string;
+    appId?: string;
 }
 
 export interface CompanionS3Options {
@@ -45,4 +48,5 @@ export interface CompanionOptions {
     s3?: CompanionS3Options;
     metrics?: boolean;
     allowLocalUrls?: boolean;
+    enableGooglePickerEndpoint?: boolean;
 }
