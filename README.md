@@ -1,6 +1,6 @@
-# Companion Platform
+# Companion Platform Multi-Brand
 
-Multi-brand Companion server with TypeScript.
+Multi-brand Uppy Companion server with TypeScript. A single Express server hosts multiple isolated Uppy Companion instances, each configured for a specific "Brand".
 
 ## Requirements
 
@@ -24,194 +24,393 @@ pnpm build
 pnpm start
 ```
 
-## Environment Variables
+---
 
-```env
-# Server
-COMPANION_PORT=3020
-COMPANION_BIND_HOST=0.0.0.0
-COMPANION_HOST=localhost:3020
-COMPANION_PROTOCOL=http
-COMPANION_SECRET=your-secret-at-least-16-chars
+## Architecture Overview
 
-# Brands (comma-separated)
-COMPANION_BRANDS=brand-a,brand-b
-
-# ===========================================
-# BRAND CONFIGURATION (JSON)
-# ===========================================
-# Each brand is configured via a JSON string stored in an environment variable.
-#
-# ENV VAR NAME RULES (same logic as in src/modules/brand/brand.service.ts):
-# - Take the brand slug from COMPANION_BRANDS
-# - Normalize: lowercase, trim, replace non [a-z0-9-] with '-'
-# - Convert '-' to '_' and uppercase
-#
-# Examples:
-#   "brand-a"        -> BRAND_A
-#   "another-brand"  -> ANOTHER_BRAND
-#
-# The JSON can include authUrl, companionUrl (proxy/public URL override), corsOrigins,
-# uploadUrls, s3 config, and provider credentials.
-BRAND_A='{
-    "authUrl": "https://api.brand-a.com/api/user",
-    "companionUrl": "https://companion.brand-a.com/brand-a",
-    "authCookieName": "session",
-    "corsOrigins": ["https://app.brand-a.com"],
-    "uploadUrls": ["https://my-bucket.s3.amazonaws.com"],
-    "s3": {
-        "bucket": "my-bucket",
-        "region": "us-east-1",
-        "useAccelerateEndpoint": false
-    },
-    "providers": {
-        "google": { "key": "...", "secret": "..." },
-        "dropbox": { "key": "...", "secret": "..." }
-    }
-}'
-
-# S3 (global defaults)
-AWS_BUCKET_NAME=your-bucket
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=your-access-key
-AWS_SECRET_ACCESS_KEY=your-secret-key
-
-# Providers (global defaults)
-COMPANION_GOOGLE_KEY=your-google-client-id
-COMPANION_GOOGLE_SECRET=your-google-client-secret
-COMPANION_DROPBOX_KEY=your-dropbox-key
-COMPANION_DROPBOX_SECRET=your-dropbox-secret
 ```
-
-## Architecture
-
-The platform uses a **multi-tenant architecture** where a single Express server hosts multiple isolated Uppy Companion instances, each configured for a specific "Brand".
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           Express Server                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │                        Brand Registry                                ││
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              ││
+│  │  │   Brand A    │  │   Brand B    │  │   Brand C    │  ...         ││
+│  │  │  Companion   │  │  Companion   │  │  Companion   │              ││
+│  │  │  Instance    │  │  Instance    │  │  Instance    │              ││
+│  │  └──────────────┘  └──────────────┘  └──────────────┘              ││
+│  └─────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────┘
+         │                     │                     │
+         ▼                     ▼                     ▼
+    ┌─────────┐           ┌─────────┐           ┌─────────┐
+    │ AWS S3  │           │ OAuth   │           │ Auth    │
+    │ Bucket  │           │Providers│           │ Backend │
+    └─────────┘           └─────────┘           └─────────┘
+```
 
 ### Key Concepts
 
-- **Brand Registry**: Initializes and holds configuration for all active brands. Brands are defined via environment variables (e.g., `BRAND_A_...`).
-- **Brand Middleware**: Identifies the target brand from the URL (e.g., `/:brandId/...`) and attaches the `Brand` object to the request.
-- **Companion Factory**: Creates a dedicated standard Uppy Companion Express app instance for each brand, injecting brand-specific keys (S3, Drive, Dropbox, etc.).
+| Concept | Description |
+|---------|-------------|
+| **Brand Registry** | Initializes and holds configuration for all active brands from environment variables |
+| **Brand Middleware** | Identifies the target brand from the URL (`/:brandId/...`) and attaches the `Brand` object to the request |
+| **Companion Factory** | Creates a dedicated Uppy Companion Express app instance for each brand with brand-specific credentials |
 
-### Request Flow
+---
 
-1. **Request Ingress**: Requests are namespaced under the brand slug, e.g. `GET /brand-a/uppy` or Companion endpoints like `GET /brand-a/dropbox/list`.
-2. **Server ([src/server.ts](src/server.ts))**: Creates a `BrandRegistry`, then creates and mounts one isolated Companion app per brand at `/{brandId}`.
-3. **Brand Resolution**: For brand-scoped routes, the server attaches `req.brand` with the concrete brand instance.
-4. **Companion Handling**: The request is handled by that brand's Companion instance, using that brand's provider credentials and S3 settings.
+## Request Flow
 
-## Detailed Runtime Flow
+```
+Request: GET /brand-a/dropbox/list
+                │
+                ▼
+┌───────────────────────────────┐
+│ 1. Brand Resolution           │  ← Attaches req.brand = Brand A
+└───────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│ 2. Authentication (Optional)  │  ← Validates token against brand.auth.url
+└───────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│ 3. Companion Handling         │  ← Uses Brand A's OAuth credentials
+└───────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────┐
+│ 4. Response                   │  ← Returns Dropbox file list
+└───────────────────────────────┘
+```
 
-### 1) Server boot
-- Entry point: [src/index.ts](src/index.ts). Creates an HTTP server, attaches Companion websocket, and handles graceful shutdown.
-- Main assembly: [src/server.ts](src/server.ts). Builds the Express app, middleware, brand registry, and mounts a Companion instance per brand.
+---
 
-### 2) Brand configuration resolution
-- Brand list is read from `COMPANION_BRANDS`.
-- Each brand configuration is parsed from an env var derived from its slug (e.g. `abeduls` → `ABEDULS`).
-- The JSON config is parsed in [src/modules/brand/brand.service.ts](src/modules/brand/brand.service.ts). Missing values are filled with global defaults.
+## API Endpoints
 
-### 3) Brand routing model
-- Every brand is mounted under its slug path: `/${brandId}`.
-- Uppy HTML: `/${brandId}/uppy`.
-- Uppy modal JS: `/${brandId}/uppyModal.js` (transpiled on the fly from TS).
-- Custom S3 API: `/${brandId}/api/...`.
-- Companion itself is mounted at `/${brandId}`.
+### Global Endpoints
 
-### 4) Auth flow (cookie + bearer)
-- The UI passes a bearer token (optional) to the `/uppy` page.
-- The server also accepts auth via a cookie (the cookie name defaults to `session` or brand `auth.cookieName`).
-- Token extraction order: Authorization header → brand cookie → `bearerToken` query param.
-- Auth check is performed in [src/modules/auth/auth.service.ts](src/modules/auth/auth.service.ts) against `brand.auth.url`.
-- When authenticating against a cookie-based backend, the cookie is forwarded in the auth request headers.
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/healthz` | Health check | No |
+| `GET` | `/api/brands` | List all configured brands | No |
 
-### 5) OAuth redirect flow per brand
-- Provider credentials are stored per brand.
-- OAuth host/protocol/path are derived per brand in [src/modules/companion/companion.factory.ts](src/modules/companion/companion.factory.ts).
-- If `companionUrl` is set in the brand JSON, it is used to generate OAuth URLs and prevent path leakage (e.g. `/default` being appended). Otherwise it falls back to `server.host` + `server.path`.
+### Brand-Scoped Endpoints
 
-### 6) S3 uploads
-- Simple PUT signing: [src/modules/companion/s3/s3.controller.ts](src/modules/companion/s3/s3.controller.ts) via `/api/uppy/sign-s3`.
-- Multipart flow: create → signPart → listParts → complete → abort.
-- S3 keys are generated by [src/modules/companion/s3/s3.key-builder.ts](src/modules/companion/s3/s3.key-builder.ts):
-    - Format: `{brand}/original/{userId}/{YYYY}/{M}/{D}/{timestamp}/{filename}`.
-    - Brand comes from request or metadata.
-    - User comes from `req.user` or metadata.
+All brand endpoints are prefixed with `/{brandId}`:
 
-## Environment Configuration Notes
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/{brandId}/uppy` | Uppy upload page (HTML) |
+| `GET` | `/{brandId}/uppyModal.js` | Uppy modal JavaScript |
+| `GET/POST` | `/{brandId}/api/uppy/sign-s3` | Sign S3 upload URL |
+| `POST` | `/{brandId}/api/uppy/s3/multipart` | Create multipart upload |
+| `GET` | `/{brandId}/api/uppy/s3/multipart/:uploadId/:partNumber` | Sign individual part |
+| `GET` | `/{brandId}/api/uppy/s3/multipart/:uploadId` | List parts (for resume) |
+| `POST` | `/{brandId}/api/uppy/s3/multipart/:uploadId/complete` | Complete multipart upload |
+| `DELETE` | `/{brandId}/api/uppy/s3/multipart/:uploadId` | Abort multipart upload |
+| `*` | `/{brandId}/*` | Companion OAuth endpoints (dropbox, drive, etc.) |
 
-### Required
-- `COMPANION_SECRET`: minimum 16 chars (required by schema).
-- `COMPANION_BRANDS`: comma-separated slugs.
+---
 
-### Optional (but important)
-- `COMPANION_HOST`, `COMPANION_PROTOCOL`: Public base used for OAuth and callback URLs if no `companionUrl` is set.
-- `CORS_ALLOWED_ORIGINS`: Comma-separated list, used for Companion CORS.
+## Authentication Flow
 
-### Global Google (default brand)
-- `COMPANION_GOOGLE_CLIENT_ID`
-- `COMPANION_GOOGLE_CLIENT_SECRET`
-- `COMPANION_GOOGLE_DRIVE_API_KEY`
-- `COMPANION_GOOGLE_PHOTOS_API_KEY`
-- `COMPANION_GOOGLE_APP_ID`
+The server supports multiple authentication methods with the following priority:
 
-### Brand JSON (per-brand override)
-Preferred fields:
-- `auth`: block with `url`, `cookieName`, `projectCookieName`.
-- `public`: block with `backendUrl`, `uploadUrl`.
-- `companionUrl`: explicit public URL for Companion per brand (recommended behind proxies).
-- `providers`: provider credentials by brand (Dropbox, Google, etc.).
-- `s3`: bucket/region/credentials override.
+```
+1. Authorization Header  →  Bearer xxx
+         ↓ (if missing)
+2. Brand Cookie          →  cookies[brand.auth.cookieName]
+         ↓ (if missing)
+3. Query Parameter       →  ?bearerToken=xxx
+```
 
-Legacy fields are still supported for backwards compatibility:
-- `authUrl`, `authCookieName`, `projectCookieName`, `publicBackendUrl`, `publicUploadUrl`.
+### How It Works
 
-Google Picker notes:
-- `providers.google.clientId` = OAuth Client ID
-- `providers.google.driveApiKey` = Google Drive Picker API key
-- `providers.google.photosApiKey` = Google Photos Picker API key
-- `providers.google.appId` = Google project number (App ID)
-- `providers.google.clientSecret` = OAuth Client Secret (used by classic Google Drive/Photos providers, not by Picker)
+1. **Token Extraction**: The server extracts the token from the request using the priority above
+2. **Backend Validation**: If `brand.auth.url` is configured, the token is validated against that endpoint
+3. **User Attachment**: On successful validation, `req.user` is populated with user data
 
-## Operational Troubleshooting
+```typescript
+// Token validation request to brand backend
+GET {brand.auth.url}
+Headers:
+  Authorization: Bearer {token}
+  Cookie: {brand.auth.cookieName}={token}
 
-### Brands not loading
-- Verify `COMPANION_BRANDS` and the corresponding uppercase JSON env vars.
-- Run the verifier: [scripts/verify-brand-config.ts](scripts/verify-brand-config.ts).
+// Expected 200 response:
+{
+  "id": "user-123",
+  "email": "user@example.com",
+  "name": "John Doe",
+  "roles": ["admin"]
+}
+```
 
-### OAuth redirect goes to /default
-- Ensure the brand JSON includes `companionUrl` with the correct path, e.g. `http://localhost:3020/abeduls`.
-- Confirm the provider options are built with `oauthDomain`, `oauthProtocol`, and `oauthPath` in [src/modules/companion/companion.factory.ts](src/modules/companion/companion.factory.ts).
+> **Note**: If `brand.auth.url` is not configured, authentication is disabled and all requests are allowed.
 
-### /uppy returns Unauthorized
-- Ensure `auth.url` is reachable and returns 200 for the session.
-- Confirm the auth cookie name matches `auth.cookieName` (default `session`).
+---
 
-### Default Brand & Configuration
+## S3 Upload Key Format
 
-- The **First Brand** listed in `COMPANION_BRANDS` is considered the **Default Brand**.
-- If `COMPANION_BRANDS` is not set, it defaults to a single brand named `default`.
-- **Configuration Hierarchy**:
-    1. **Brand JSON**: Values defined in the brand's JSON environment variable (e.g., `MYBRAND='{"..."}'`) take precedence.
-    2. **Global Fallback**:
-        - **Providers/S3**: If missing in JSON, the system falls back to global environment variables (e.g., `COMPANION_GOOGLE_KEY`, `AWS_BUCKET_NAME`).
-        - **Auth URL**: **Must** be defined in the brand's JSON to enable auth. If `auth.url` (or legacy `authUrl`) is missing, auth is considered disabled for that brand.
+Files are organized in S3 using the following path structure:
+
+```
+{brand}/original/{userId}/{YYYY}/{M}/{D}/{timestamp}/{filename}
+
+Example:
+brand-a/original/user-123/2026/1/26/1737895200000/image.jpg
+```
+
+---
+
+## Environment Configuration
+
+### Required Variables
+
+```env
+COMPANION_SECRET=your-secret-at-least-16-chars  # Minimum 16 characters
+COMPANION_BRANDS=brand-a,brand-b                # Comma-separated brand slugs
+```
+
+### Server Configuration
+
+```env
+COMPANION_PORT=3020
+COMPANION_BIND_HOST=0.0.0.0
+COMPANION_HOST=localhost:3020        # Public host for OAuth callbacks
+COMPANION_PROTOCOL=http              # http or https
+```
+
+### Global Defaults (Fallback)
+
+These are used when brand-specific config is not provided:
+
+```env
+# AWS S3
+AWS_BUCKET_NAME=your-bucket
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-access-key          # Optional if using IAM roles
+AWS_SECRET_ACCESS_KEY=your-secret-key      # Optional if using IAM roles
+
+# Google (OAuth + Picker)
+COMPANION_GOOGLE_CLIENT_ID=xxx
+COMPANION_GOOGLE_CLIENT_SECRET=xxx
+COMPANION_GOOGLE_DRIVE_API_KEY=xxx
+COMPANION_GOOGLE_PHOTOS_API_KEY=xxx
+COMPANION_GOOGLE_APP_ID=xxx
+
+# Other Providers
+COMPANION_DROPBOX_KEY=xxx
+COMPANION_DROPBOX_SECRET=xxx
+COMPANION_FACEBOOK_KEY=xxx
+COMPANION_FACEBOOK_SECRET=xxx
+# ... etc for instagram, onedrive, box, unsplash, zoom
+```
+
+---
+
+## Brand Configuration (JSON)
+
+Each brand is configured via a JSON environment variable. The variable name is derived from the brand slug:
+
+| Brand Slug | Environment Variable |
+|------------|---------------------|
+| `brand-a` | `BRAND_A` |
+| `my-app` | `MY_APP` |
+| `abeduls` | `ABEDULS` |
+
+### Complete Example
+
+```env
+ABEDULS='{
+    "companionUrl": "https://companion.abeduls.com/abeduls",
+    
+    "auth": {
+        "url": "https://api.abeduls.com/api/user",
+        "cookieName": "session"
+    },
+    
+    "public": {
+        "backendUrl": "https://api.abeduls.com",
+        "uploadUrl": "https://api.abeduls.com/api/frame/contents/upload/public"
+    },
+    
+    "corsOrigins": [
+        "https://app.abeduls.com",
+        "https://designer.abeduls.com"
+    ],
+    
+    "uploadUrls": ["https://my-bucket.s3.amazonaws.com"],
+    
+    "s3": {
+        "bucket": "abeduls-uploads",
+        "region": "us-east-1",
+        "accessKey": "AKIA...",
+        "secretKey": "xxx",
+        "useAccelerateEndpoint": false
+    },
+    
+    "providers": {
+        "google": {
+            "clientId": "xxx.apps.googleusercontent.com",
+            "clientSecret": "xxx",
+            "driveApiKey": "AIza...",
+            "photosApiKey": "AIza...",
+            "appId": "123456789"
+        },
+        "dropbox": {
+            "key": "xxx",
+            "secret": "xxx"
+        }
+    }
+}'
+```
+
+### Configuration Priority
+
+```
+1. Brand JSON config     →  Highest priority
+         ↓ (if missing)
+2. Global env variables  →  Fallback for providers/S3
+```
+
+### JSON Schema Reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `companionUrl` | `string` | Public URL for OAuth callbacks (important behind proxies) |
+| `auth.url` | `string` | Endpoint to validate user tokens |
+| `auth.cookieName` | `string` | Cookie name for session (default: `session`) |
+| `public.backendUrl` | `string` | Public backend API URL |
+| `public.uploadUrl` | `string` | Public upload endpoint |
+| `corsOrigins` | `string[]` | Allowed CORS origins |
+| `uploadUrls` | `string[]` | Allowed upload destination URLs |
+| `s3.bucket` | `string` | S3 bucket name |
+| `s3.region` | `string` | AWS region |
+| `s3.accessKey` | `string` | AWS access key (optional with IAM) |
+| `s3.secretKey` | `string` | AWS secret key (optional with IAM) |
+| `s3.useAccelerateEndpoint` | `boolean` | Use S3 Transfer Acceleration |
+| `providers.*` | `object` | Provider-specific OAuth credentials |
+
+---
+
+## Supported Providers
+
+| Provider | Config Key | Required Fields |
+|----------|------------|-----------------|
+| Google Drive | `providers.google` | `clientId`, `clientSecret` |
+| Google Drive Picker | `providers.google` | `clientId`, `driveApiKey`, `appId` |
+| Google Photos Picker | `providers.google` | `clientId`, `photosApiKey`, `appId` |
+| Dropbox | `providers.dropbox` | `key`, `secret` |
+| Facebook | `providers.facebook` | `key`, `secret` |
+| Instagram | `providers.instagram` | `key`, `secret` |
+| OneDrive | `providers.onedrive` | `key`, `secret` |
+| Box | `providers.box` | `key`, `secret` |
+| Unsplash | `providers.unsplash` | `key`, `secret` |
+| Zoom | `providers.zoom` | `key`, `secret` |
+
+---
 
 ## Project Structure
 
 ```
 src/
-├── config/             # Environment configuration parsing (Zod)
-├── core/types/         # Shared TypeScript interfaces
+├── config/                     # Environment configuration (Zod)
+├── core/types/                 # Shared TypeScript interfaces
+├── lib/aws/                    # AWS S3 client utilities
 ├── modules/
-│   ├── auth/           # User session and attachment logic
-│   ├── brand/          # Brand configuration, registry, and middleware
-│   │   ├── brand.service.ts  # Logic to read env vars & create Brand objects
-│   │   └── brand.types.ts    # Brand interface definitions
-│   └── companion/      # Uppy Companion integration
+│   ├── auth/
+│   │   ├── auth.service.ts     # Token extraction & validation
+│   │   ├── auth.middleware.ts  # User attachment middleware
+│   │   └── auth.types.ts       # AuthUser, AuthResult interfaces
+│   ├── brand/
+│   │   ├── brand.service.ts    # Brand creation & registry
+│   │   ├── brand.middleware.ts # Brand resolution middleware
+│   │   └── brand.types.ts      # Brand interface definitions
+│   └── companion/
 │       ├── companion.factory.ts # Creates isolated Companion apps
-│       ├── api.routes.ts        # Custom routes (e.g. S3 signing)
-│       └── uppy.routes.ts       # Uppy config & modal serving
-├── server.ts           # Main Express application assembly
-└── index.ts            # Server entry point
+│       ├── api.routes.ts        # S3 signing endpoints
+│       ├── uppy.routes.ts       # Uppy page & modal serving
+│       ├── uppy.html            # Upload page template
+│       └── s3/
+│           ├── s3.controller.ts # S3 multipart handlers
+│           └── s3.key-builder.ts # S3 key generation
+├── server.ts                   # Express app assembly
+└── index.ts                    # Entry point (HTTP server + WebSocket)
 ```
+
+---
+
+## Troubleshooting
+
+### Brands not loading
+
+1. Verify `COMPANION_BRANDS` contains your brand slugs
+2. Check the corresponding JSON env var exists (e.g., `BRAND_A` for `brand-a`)
+3. Run the verifier script:
+   ```bash
+   npx ts-node scripts/verify-brand-config.ts
+   ```
+
+### OAuth redirect goes to /default
+
+This happens when Companion doesn't know the correct public URL.
+
+**Solution**: Set `companionUrl` in your brand JSON:
+```json
+{
+    "companionUrl": "https://companion.your-domain.com/your-brand"
+}
+```
+
+### /uppy returns Unauthorized
+
+1. Verify `auth.url` is reachable and returns HTTP 200 for valid sessions
+2. Check the cookie name matches `auth.cookieName` (default: `session`)
+3. Ensure the token is being sent via header, cookie, or query param
+
+### S3 uploads failing
+
+1. Verify S3 credentials in brand JSON or global env vars
+2. Check bucket CORS configuration allows your origins
+3. Ensure `uploadUrls` includes your S3 bucket URL
+
+### OAuth callback errors
+
+1. Verify OAuth redirect URIs in provider console match:
+   ```
+   {companionUrl}/connect/{provider}/callback
+   ```
+2. Check `companionUrl` is accessible from the internet
+3. Verify provider credentials are correct
+
+---
+
+## Default Brand Behavior
+
+- The **first brand** in `COMPANION_BRANDS` is the **default brand**
+- If `COMPANION_BRANDS` is not set, a single brand named `default` is created
+- Auth is disabled for brands without `auth.url` configured
+
+---
+
+## Development
+
+```bash
+# Run with hot reload
+pnpm dev
+
+# Type checking
+pnpm typecheck
+
+# Linting
+pnpm lint
+
+# Build
+pnpm build
+```
+
+## License
+
+MIT

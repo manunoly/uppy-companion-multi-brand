@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { AppRequest } from '../../core/types/express.js';
 import type { Brand } from '../brand/brand.types.js';
 import { authenticate } from '../auth/auth.service.js';
-
+import { fetchFolders } from '../folders/folders.service.js';
 const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Z]:)/, '$1');
 
 /**
@@ -62,6 +62,57 @@ const getEnabledPlugins = (brand: Brand): string[] => {
 };
 
 /**
+ * Generates an error page HTML
+ */
+const generateErrorPage = (title: string, message: string): string => {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>${title}</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+        }
+        .error-container {
+            text-align: center;
+            padding: 2rem;
+            max-width: 400px;
+        }
+        .error-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+            color: #ff6b6b;
+        }
+        p {
+            color: #a0aec0;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="error-icon">🔒</div>
+        <h1>${title}</h1>
+        <p>${message}</p>
+    </div>
+</body>
+</html>`;
+};
+
+/**
  * Serves the Uppy upload page for a brand
  */
 export const serveUppyPage = async (
@@ -81,15 +132,41 @@ export const serveUppyPage = async (
     const cookieToken = (req.cookies as Record<string, string>)?.[brand.auth.cookieName] ?? null;
     const bearerToken = queryToken ?? cookieToken ?? '';
 
-    // Verify authentication if brand has auth.url
-    if (brand.auth.url && bearerToken) {
-        const result = await authenticate(bearerToken, brand);
-        if (!result.authenticated) {
-            res.status(401).send('Unauthorized');
-            return;
-        }
-        req.user = result.user;
+    // Check if auth is required
+    if (!brand.auth.url) {
+        // Auth not configured - show error
+        res.status(403).send(generateErrorPage(
+            'Authentication Required',
+            'This upload page requires authentication but the brand has no auth URL configured.'
+        ));
+        return;
     }
+
+    if (!bearerToken) {
+        // No token provided - show error
+        res.status(401).send(generateErrorPage(
+            'Session Expired',
+            'Your session has expired or you are not logged in. Please log in and try again.'
+        ));
+        return;
+    }
+
+    // Run authentication and folder fetching in parallel
+    const [authResult, folders] = await Promise.all([
+        authenticate(bearerToken, brand),
+        fetchFolders(bearerToken, brand),
+    ]);
+
+    // Check authentication result
+    if (!authResult.authenticated) {
+        res.status(401).send(generateErrorPage(
+            'Unauthorized',
+            'Your session is invalid or has expired. Please log in again.'
+        ));
+        return;
+    }
+
+    req.user = authResult.user;
 
     try {
         const htmlPath = path.join(__dirname, 'uppy.html');
@@ -117,6 +194,9 @@ export const serveUppyPage = async (
         html = html.replace(/GOOGLE_API_KEY_PHOTOS_VALUE/g, toJsStringLiteral(brand.providers.google?.photosApiKey ?? ''));
         html = html.replace(/GOOGLE_CLIENT_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.clientId ?? ''));
         html = html.replace(/GOOGLE_APP_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.appId ?? ''));
+
+        // Inject folders data
+        html = html.replace(/FOLDERS_DATA_VALUE/g, JSON.stringify(folders));
 
         // Replace plugins array
         html = html.replace(

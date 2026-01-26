@@ -60,8 +60,6 @@ const DEFAULT_PLUGINS = [
     'GoogleDrivePicker', 'GooglePhotosPicker'
 ];
 
-const FOLDERS = ['home', 'share', 'my-folder'];
-
 // --- Helpers ---
 
 const sanitizeName = (name: string): string => name.replace(/[^a-zA-Z0-9.]/g, '').slice(0, 999);
@@ -83,34 +81,6 @@ const readOption = (options: HelperOptions, key: string, fallback: any): any => 
     if (options[key] != null) return options[key];
     const element = document.getElementById(key) as HTMLInputElement;
     return element ? element.value : fallback;
-};
-
-const createFolderSelect = (uppy: any) => {
-    if (document.getElementById('uppyStaticFolder')) return;
-    const container = document.querySelector('.uppy-Dashboard-innerWrap');
-    if (!container) return;
-
-    const wrapper = document.createElement('div');
-    wrapper.className = 'uppy-DashboardTab';
-    wrapper.style.cssText = 'padding:10px;display:flex;justify-content:center;';
-
-    const select = document.createElement('select');
-    select.id = 'uppyStaticFolder';
-    select.style.cssText = 'width:200px;border-radius:8px;padding:6px;';
-
-    FOLDERS.forEach((folder) => {
-        const option = document.createElement('option');
-        option.value = folder;
-        option.textContent = folder;
-        select.appendChild(option);
-    });
-
-    const setFolder = (value: string) => uppy.setMeta({ folder: value });
-    select.addEventListener('change', () => setFolder(select.value));
-    setFolder(select.value);
-
-    wrapper.appendChild(select);
-    container.insertBefore(wrapper, container.firstChild);
 };
 
 const shouldUseMultipart = (file: any) => file.size > 100 * 1024 * 1024;
@@ -293,10 +263,6 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     }
 
     // --- AWS S3 ---
-    const ensureFolderSelect = () => createFolderSelect(uppy);
-    uppy.on('dashboard:modal-open', ensureFolderSelect);
-    uppy.on('dashboard:mount', ensureFolderSelect);
-    setTimeout(ensureFolderSelect, 0);
 
     uppy.use(AwsS3, {
         getTemporarySecurityCredentials: false,

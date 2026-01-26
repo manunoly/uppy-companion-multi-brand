@@ -188,9 +188,13 @@ export const createBrand = (
                 ?? process.env.PUBLIC_UPLOAD_URL
                 ?? `${backendUrl}/api/frame/contents/upload/public`;
 
+            const foldersUrl = config.public?.foldersUrl
+                ?? process.env.PUBLIC_FOLDERS_URL;
+
             return {
                 backendUrl,
                 uploadUrl,
+                foldersUrl,
             };
         })(),
 

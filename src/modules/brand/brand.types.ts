@@ -36,6 +36,7 @@ export interface BrandConfigJSON {
     public?: {
         backendUrl?: string;
         uploadUrl?: string;
+        foldersUrl?: string;
     };
     /** Legacy fields (kept for backwards compatibility) */
     authUrl?: string;
@@ -112,6 +113,8 @@ export interface Brand {
         backendUrl: string;
         /** Public Upload URL override per brand */
         uploadUrl: string;
+        /** Folders API endpoint */
+        foldersUrl?: string;
     };
 
     /** Companion server settings */
