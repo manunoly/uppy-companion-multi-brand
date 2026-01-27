@@ -117,6 +117,39 @@ const parseCorsOrigins = (
 };
 
 /**
+ * Valid Uppy plugin names (case-insensitive mapping)
+ */
+const VALID_PLUGINS: Record<string, string> = {
+    'url': 'Url',
+    'googledrivepicker': 'GoogleDrivePicker',
+    'googlephotospicker': 'GooglePhotosPicker',
+    'googledrive': 'GoogleDrive',
+    'googlephotos': 'GooglePhotos',
+    'dropbox': 'Dropbox',
+    'facebook': 'Facebook',
+    'instagram': 'Instagram',
+    'onedrive': 'OneDrive',
+    'box': 'Box',
+    'unsplash': 'Unsplash',
+    'zoom': 'Zoom',
+};
+
+/**
+ * Parses enabled plugins from comma-separated string
+ * Returns normalized plugin names (case-insensitive input)
+ */
+const parseEnabledPlugins = (enabledPlugins: string | undefined): string[] => {
+    if (!enabledPlugins) return [];
+
+    return enabledPlugins
+        .split(',')
+        .map(p => p.trim().toLowerCase())
+        .filter(p => p.length > 0)
+        .map(p => VALID_PLUGINS[p])
+        .filter((p): p is string => p !== undefined);
+};
+
+/**
  * Creates a brand descriptor from environment variables and JSON config
  */
 export const createBrand = (
@@ -155,16 +188,8 @@ export const createBrand = (
 
         // Providers
         providers: {
-            google: (() => {
-                const p = createGoogleProviderConfig(config.providers?.google);
-                if (slug === 'abeduls') console.log('[DEBUG] Abeduls Google Config:', p ? 'Found' : 'Missing', config.providers?.google);
-                return p;
-            })(),
-            dropbox: (() => {
-                const p = createProviderConfig(config.providers?.dropbox, 'COMPANION_DROPBOX_KEY', 'COMPANION_DROPBOX_SECRET');
-                if (slug === 'abeduls') console.log('[DEBUG] Abeduls Dropbox Config:', p ? 'Found' : 'Missing', p?.key);
-                return p;
-            })(),
+            google: createGoogleProviderConfig(config.providers?.google),
+            dropbox: createProviderConfig(config.providers?.dropbox, 'COMPANION_DROPBOX_KEY', 'COMPANION_DROPBOX_SECRET'),
             facebook: createProviderConfig(config.providers?.facebook, 'COMPANION_FACEBOOK_KEY', 'COMPANION_FACEBOOK_SECRET'),
             instagram: createProviderConfig(config.providers?.instagram, 'COMPANION_INSTAGRAM_KEY', 'COMPANION_INSTAGRAM_SECRET'),
             onedrive: createProviderConfig(config.providers?.onedrive, 'COMPANION_ONEDRIVE_KEY', 'COMPANION_ONEDRIVE_SECRET'),
@@ -206,6 +231,9 @@ export const createBrand = (
             path: mountPath,
         },
         filePath: defaults.filePath,
+
+        // Enabled plugins (parsed from comma-separated string)
+        enabledPlugins: parseEnabledPlugins(config.enabledPlugins),
     };
 };
 

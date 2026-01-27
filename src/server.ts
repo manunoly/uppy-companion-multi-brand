@@ -165,6 +165,8 @@ export const createServer = (): ServerResult => {
                         secret: maskSecret(brand.providers.zoom.secret),
                     } : null,
                 },
+                // Enabled plugins
+                enabledPlugins: brand.enabledPlugins,
                 // CORS
                 corsOrigins: brand.corsOrigins.map(o => typeof o === 'string' ? o : o.toString()),
                 uploadUrls: brand.uploadUrls,

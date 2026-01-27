@@ -63,6 +63,8 @@ export interface BrandConfigJSON {
         unsplash?: BrandProviderConfig;
         zoom?: BrandProviderConfig;
     };
+    /** Comma-separated list of enabled Uppy plugins (case-insensitive) */
+    enabledPlugins?: string;
 }
 
 export interface Brand {
@@ -126,6 +128,9 @@ export interface Brand {
 
     /** File storage path */
     filePath: string;
+
+    /** Enabled Uppy plugins for this brand */
+    enabledPlugins: string[];
 }
 
 export interface BrandRegistry {

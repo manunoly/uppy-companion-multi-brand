@@ -17,18 +17,22 @@ const toJsStringLiteral = (value: string | undefined | null): string => {
 };
 
 /**
- * Gets the list of enabled plugins based on brand providers
+ * Gets the list of enabled plugins based on brand configuration
+ * Prefers explicit enabledPlugins config, falls back to provider detection
  */
 const getEnabledPlugins = (brand: Brand): string[] => {
+    // If brand has explicit enabledPlugins config, use it
+    if (brand.enabledPlugins && brand.enabledPlugins.length > 0) {
+        return brand.enabledPlugins;
+    }
+
+    // Fallback: detect plugins from configured providers
     const plugins: string[] = [];
 
     // URL plugin is always available
     plugins.push('Url');
 
-    // Add plugins based on configured providers
     if (brand.providers.google) {
-        // this is the legacy plugin, avoid using it for Picker flows
-        // plugins.push('GoogleDrive');
         plugins.push('GoogleDrivePicker');
         plugins.push('GooglePhotosPicker');
     }
@@ -196,11 +200,8 @@ export const serveUppyPage = async (
         // Inject folders data
         html = html.replace(/FOLDERS_DATA_VALUE/g, JSON.stringify(folders));
 
-        // Replace plugins array
-        html = html.replace(
-            /plugins:\s*\[[\s\S]*?\]/,
-            `plugins: ${JSON.stringify(enabledPlugins)}`
-        );
+        // Replace plugins array with enabled plugins for this brand
+        html = html.replace(/ENABLED_PLUGINS_VALUE/g, JSON.stringify(enabledPlugins));
 
         // Set cookie if token was provided
         if (bearerToken && queryToken) {
