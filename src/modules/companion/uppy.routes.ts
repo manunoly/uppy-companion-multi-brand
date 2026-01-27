@@ -132,18 +132,8 @@ export const serveUppyPage = async (
     const cookieToken = (req.cookies as Record<string, string>)?.[brand.auth.cookieName] ?? null;
     const bearerToken = queryToken ?? cookieToken ?? '';
 
-    // DEBUG: Log token extraction
-    console.log(`[uppy:serveUppyPage] Brand: ${brand.id}`);
-    console.log(`[uppy:serveUppyPage] Cookie name: "${brand.auth.cookieName}"`);
-    console.log(`[uppy:serveUppyPage] All cookies:`, JSON.stringify(req.cookies));
-    console.log(`[uppy:serveUppyPage] Raw cookie header:`, req.get('cookie'));
-    console.log(`[uppy:serveUppyPage] Query token: ${queryToken ? 'present' : 'null'}`);
-    console.log(`[uppy:serveUppyPage] Cookie token: ${cookieToken ? cookieToken.slice(0, 20) + '...' : 'null'}`);
-    console.log(`[uppy:serveUppyPage] Bearer token: ${bearerToken ? bearerToken.slice(0, 20) + '...' : 'empty'}`);
-
     // Check if auth is required
     if (!brand.auth.url) {
-        // Auth not configured - show error
         res.status(403).send(generateErrorPage(
             'Authentication Required',
             'This upload page requires authentication but the brand has no auth URL configured.'
@@ -152,8 +142,6 @@ export const serveUppyPage = async (
     }
 
     if (!bearerToken) {
-        // No token provided - show error
-        console.log(`[uppy:serveUppyPage] ❌ No bearer token found!`);
         res.status(401).send(generateErrorPage(
             'Session Expired',
             'Your session has expired or you are not logged in. Please log in and try again.'
