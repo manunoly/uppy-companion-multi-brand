@@ -407,6 +407,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
             // TODO:Arreglar para que llame a la URL correcta segun el entorno y brand
             const response = await fetchWithAuth(`${PUBLIC_UPLOAD_URL}`, {
                 method: 'POST',
+                credentials: 'include',
                 body: serialize({
                     images: imagesData,
                     folder: currentFolder,
