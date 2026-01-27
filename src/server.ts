@@ -74,17 +74,108 @@ export const createServer = (): ServerResult => {
         res.json({ status: 'ok', timestamp: Date.now() });
     });
 
-    // List all brands (no auth required)
-    app.get('/api/brands', (_req, res) => {
-        const brands = getAllBrands(brandRegistry).map(brand => ({
-            id: brand.id,
-            displayName: brand.displayName,
-            path: brand.server.path,
-            providersEnabled: Object.keys(brand.providers).filter(
-                k => brand.providers[k as keyof typeof brand.providers]
-            ),
-        }));
-        res.json({ brands });
+    // List all brands (detailed info requires HEALTH_CHECK_KEY)
+    app.get('/api/brands', (req, res) => {
+        const queryKey = typeof req.query.key === 'string' ? req.query.key : null;
+        const healthCheckKey = process.env.HEALTH_CHECK_KEY;
+        const showDetails = healthCheckKey && queryKey === healthCheckKey;
+
+        /**
+         * Masks a secret showing only last 4 characters
+         * Example: "sk_live_abc123xyz789" -> "****...9789"
+         */
+        const maskSecret = (value: string | undefined | null): string | null => {
+            if (!value) return null;
+            if (value.length <= 4) return '****';
+            return `****...${value.slice(-4)}`;
+        };
+
+        const brands = getAllBrands(brandRegistry).map(brand => {
+            // Basic info (always shown)
+            const basicInfo = {
+                id: brand.id,
+                displayName: brand.displayName,
+            };
+
+            // Return only basic info if key doesn't match
+            if (!showDetails) {
+                return basicInfo;
+            }
+
+            // Detailed info (only when key matches)
+            return {
+                ...basicInfo,
+                // URLs (safe to show)
+                urls: {
+                    companion: brand.companionUrl ?? `${brand.server.protocol}://${brand.server.host}${brand.server.path}`,
+                    auth: brand.auth.url,
+                    backendPublic: brand.public.backendUrl,
+                    uploadPublic: brand.public.uploadUrl,
+                    foldersPublic: brand.public.foldersUrl ?? null,
+                },
+                // Auth config
+                auth: {
+                    url: brand.auth.url,
+                    cookieName: brand.auth.cookieName,
+                },
+                // S3 config (masked secrets)
+                s3: {
+                    bucket: brand.s3.bucket,
+                    region: brand.s3.region,
+                    accessKey: maskSecret(brand.s3.accessKey),
+                    secretKey: maskSecret(brand.s3.secretKey),
+                    useAccelerateEndpoint: brand.s3.useAccelerateEndpoint ?? false,
+                    clientConfigured: !!brand.s3.client,
+                },
+                // Providers (masked secrets)
+                providers: {
+                    google: brand.providers.google ? {
+                        clientId: brand.providers.google.clientId,
+                        clientSecret: maskSecret(brand.providers.google.clientSecret),
+                        driveApiKey: maskSecret(brand.providers.google.driveApiKey),
+                        photosApiKey: maskSecret(brand.providers.google.photosApiKey),
+                        appId: brand.providers.google.appId ?? null,
+                    } : null,
+                    dropbox: brand.providers.dropbox ? {
+                        key: maskSecret(brand.providers.dropbox.key),
+                        secret: maskSecret(brand.providers.dropbox.secret),
+                    } : null,
+                    facebook: brand.providers.facebook ? {
+                        key: maskSecret(brand.providers.facebook.key),
+                        secret: maskSecret(brand.providers.facebook.secret),
+                    } : null,
+                    instagram: brand.providers.instagram ? {
+                        key: maskSecret(brand.providers.instagram.key),
+                        secret: maskSecret(brand.providers.instagram.secret),
+                    } : null,
+                    onedrive: brand.providers.onedrive ? {
+                        key: maskSecret(brand.providers.onedrive.key),
+                        secret: maskSecret(brand.providers.onedrive.secret),
+                    } : null,
+                    box: brand.providers.box ? {
+                        key: maskSecret(brand.providers.box.key),
+                        secret: maskSecret(brand.providers.box.secret),
+                    } : null,
+                    unsplash: brand.providers.unsplash ? {
+                        key: maskSecret(brand.providers.unsplash.key),
+                        secret: maskSecret(brand.providers.unsplash.secret),
+                    } : null,
+                    zoom: brand.providers.zoom ? {
+                        key: maskSecret(brand.providers.zoom.key),
+                        secret: maskSecret(brand.providers.zoom.secret),
+                    } : null,
+                },
+                // CORS
+                corsOrigins: brand.corsOrigins.map(o => typeof o === 'string' ? o : o.toString()),
+                uploadUrls: brand.uploadUrls,
+            };
+        });
+
+        res.json({
+            brands,
+            detailedView: showDetails,
+            timestamp: Date.now(),
+        });
     });
 
     // Root endpoint
