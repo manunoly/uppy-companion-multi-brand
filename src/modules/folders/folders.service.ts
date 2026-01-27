@@ -28,10 +28,8 @@ export const fetchFolders = async (
         const response = await fetch(fullUrl, {
             method: 'GET',
             headers: {
-                'Accept': 'application/json',
                 'Cookie': `${brand.auth.cookieName}=${token}`,
             },
-            credentials: 'include',
             signal: AbortSignal.timeout(5000),
         });
 

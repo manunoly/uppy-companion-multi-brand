@@ -79,13 +79,10 @@ export const authenticate = async (
         const response = await fetch(brand.auth.url, {
             method: 'GET',
             headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/json',
-                // Forward session cookie for cookie-based auth endpoints
+                // Only Cookie header - matches Next.js SSR implementation
                 'Cookie': `${brand.auth.cookieName}=${token}`,
             },
-            // Note: credentials is NOT valid in Node.js fetch, only in browsers
-            signal: AbortSignal.timeout(10000), // Increased timeout for internal networking
+            signal: AbortSignal.timeout(10000),
         });
 
         console.log(`[auth:authenticate] Response status: ${response.status}`);
