@@ -71,6 +71,10 @@ export const authenticate = async (
     console.log(`[auth:authenticate] Calling auth URL: ${brand.auth.url}`);
     console.log(`[auth:authenticate] Token (first 20 chars): ${token.slice(0, 20)}...`);
 
+    // Parse URL to debug DNS resolution
+    const authUrl = new URL(brand.auth.url);
+    console.log(`[auth:authenticate] Host: ${authUrl.host}, Protocol: ${authUrl.protocol}`);
+
     try {
         const response = await fetch(brand.auth.url, {
             method: 'GET',
@@ -80,8 +84,8 @@ export const authenticate = async (
                 // Forward session cookie for cookie-based auth endpoints
                 'Cookie': `${brand.auth.cookieName}=${token}`,
             },
-            credentials: 'include',
-            signal: AbortSignal.timeout(5000),
+            // Note: credentials is NOT valid in Node.js fetch, only in browsers
+            signal: AbortSignal.timeout(10000), // Increased timeout for internal networking
         });
 
         console.log(`[auth:authenticate] Response status: ${response.status}`);
@@ -104,7 +108,15 @@ export const authenticate = async (
         return { authenticated: false, user: null };
 
     } catch (error) {
-        console.error(`[auth] Failed to verify user for brand "${brand.id}":`, error);
+        // Enhanced error logging
+        const err = error as Error & { cause?: Error; code?: string };
+        console.error(`[auth] Failed to verify user for brand "${brand.id}"`);
+        console.error(`[auth] Error name: ${err.name}`);
+        console.error(`[auth] Error message: ${err.message}`);
+        console.error(`[auth] Error code: ${err.code}`);
+        if (err.cause) {
+            console.error(`[auth] Cause:`, err.cause);
+        }
         return { authenticated: false, user: null };
     }
 };
