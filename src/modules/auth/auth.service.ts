@@ -67,6 +67,7 @@ export const authenticate = async (
                 // Forward session cookie for cookie-based auth endpoints
                 'Cookie': `${brand.auth.cookieName}=${token}`,
             },
+            credentials: 'include',
             signal: AbortSignal.timeout(5000),
         });
 
