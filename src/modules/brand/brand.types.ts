@@ -9,8 +9,21 @@ export interface BrandProviderConfig {
     secret: string;
 }
 
+export interface BrandProviderInputConfig {
+    key?: string;
+    secret?: string;
+}
+
 export interface BrandGoogleProviderConfig {
     clientId: string;
+    clientSecret?: string;
+    driveApiKey?: string;
+    photosApiKey?: string;
+    appId?: string;
+}
+
+export interface BrandGoogleProviderInputConfig {
+    clientId?: string;
     clientSecret?: string;
     driveApiKey?: string;
     photosApiKey?: string;
@@ -54,14 +67,14 @@ export interface BrandConfigJSON {
         useAccelerateEndpoint?: boolean;
     };
     providers?: {
-        google?: BrandGoogleProviderConfig;
-        dropbox?: BrandProviderConfig;
-        facebook?: BrandProviderConfig;
-        instagram?: BrandProviderConfig;
-        onedrive?: BrandProviderConfig;
-        box?: BrandProviderConfig;
-        unsplash?: BrandProviderConfig;
-        zoom?: BrandProviderConfig;
+        google?: BrandGoogleProviderInputConfig;
+        dropbox?: BrandProviderInputConfig;
+        facebook?: BrandProviderInputConfig;
+        instagram?: BrandProviderInputConfig;
+        onedrive?: BrandProviderInputConfig;
+        box?: BrandProviderInputConfig;
+        unsplash?: BrandProviderInputConfig;
+        zoom?: BrandProviderInputConfig;
     };
     /** Comma-separated list of enabled Uppy plugins (case-insensitive) */
     enabledPlugins?: string;

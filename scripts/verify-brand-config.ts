@@ -1,18 +1,28 @@
 
 import 'dotenv/config';
+import { env } from '../src/config/index.js';
 import { createBrandRegistry, getAllBrands } from '../src/modules/brand/index.js';
 import type { BrandConfigJSON } from '../src/modules/brand/brand.types.js';
 
 console.log('🔍 Verifying Brand Configuration from Environment...');
 
 try {
-    // 1. Initialize Registry (this reads process.env.COMPANION_BRANDS)
+    // 1. Initialize Registry from validated environment config
     const registry = createBrandRegistry({
-        corsOrigins: [],
-        secret: process.env.COMPANION_SECRET || 'test-secret',
-        filePath: process.env.COMPANION_FILE_PATH || '/tmp',
-        host: process.env.COMPANION_HOST || 'localhost:3020',
-        protocol: (process.env.COMPANION_PROTOCOL as 'http' | 'https') || 'http'
+        corsOrigins: env.corsOrigins,
+        secret: env.secret,
+        filePath: env.filePath,
+        host: env.publicHost,
+        protocol: env.protocol,
+        brands: env.brands,
+        brandConfigs: env.brandConfigs,
+        publicDefaults: {
+            backendUrl: env.publicBackendUrl,
+            uploadUrl: env.publicUploadUrl,
+            foldersUrl: env.publicFoldersUrl,
+        },
+        s3Defaults: env.s3Defaults,
+        providerDefaults: env.providerDefaults,
     });
 
     const brands = getAllBrands(registry);

@@ -128,14 +128,13 @@ The server supports multiple authentication methods with the following priority:
 ### How It Works
 
 1. **Token Extraction**: The server extracts the token from the request using the priority above
-2. **Backend Validation**: If `brand.auth.url` is configured, the token is validated against that endpoint
+2. **Backend Validation**: If `brand.auth.url` is configured, the extracted token is forwarded to that endpoint using the brand cookie
 3. **User Attachment**: On successful validation, `req.user` is populated with user data
 
 ```typescript
 // Token validation request to brand backend
 GET {brand.auth.url}
 Headers:
-  Authorization: Bearer {token}
   Cookie: {brand.auth.cookieName}={token}
 
 // Expected 200 response:
