@@ -46,7 +46,7 @@ export const extractToken = (req: AppRequest, brand: Brand): string | null => {
  * 
  * Flow:
  * 1. If brand has no auth.url, authentication is disabled (returns authenticated)
- * 2. Calls brand.auth.url with token in Authorization header
+ * 2. Calls brand.auth.url with token in brand cookie header
  * 3. If response is 200, user is authenticated
  * 4. Any other response = not authenticated
  */

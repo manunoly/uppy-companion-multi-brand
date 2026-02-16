@@ -60,6 +60,15 @@ export const createServer = (): ServerResult => {
         filePath: env.filePath,
         host: env.publicHost,
         protocol: env.protocol,
+        brands: env.brands,
+        brandConfigs: env.brandConfigs,
+        publicDefaults: {
+            backendUrl: env.publicBackendUrl,
+            uploadUrl: env.publicUploadUrl,
+            foldersUrl: env.publicFoldersUrl,
+        },
+        s3Defaults: env.s3Defaults,
+        providerDefaults: env.providerDefaults,
     });
 
     // Create companion instances for each brand
@@ -77,7 +86,7 @@ export const createServer = (): ServerResult => {
     // List all brands (detailed info requires HEALTH_CHECK_KEY)
     app.get('/api/brands', (req, res) => {
         const queryKey = typeof req.query.key === 'string' ? req.query.key : null;
-        const healthCheckKey = process.env.HEALTH_CHECK_KEY;
+        const healthCheckKey = env.healthCheckKey;
         const showDetails = healthCheckKey && queryKey === healthCheckKey;
 
         /**

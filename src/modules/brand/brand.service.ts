@@ -1,72 +1,96 @@
-import type { Brand, BrandRegistry, BrandS3Config, BrandProviderConfig, BrandConfigJSON, BrandGoogleProviderConfig } from './brand.types.js';
+import type {
+    Brand,
+    BrandRegistry,
+    BrandS3Config,
+    BrandProviderConfig,
+    BrandProviderInputConfig,
+    BrandConfigJSON,
+    BrandGoogleProviderInputConfig,
+    BrandGoogleProviderConfig
+} from './brand.types.js';
 import { getS3Client } from '../../lib/aws/s3Client.js';
+import { normalizeBrandSlug } from './brand.utils.js';
 
-/**
- * Normalizes a brand slug to lowercase alphanumeric with dashes
- */
-export const normalizeBrandSlug = (value: string | undefined | null): string => {
-    return (value ?? '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
-};
+interface PublicDefaults {
+    backendUrl?: string;
+    uploadUrl?: string;
+    foldersUrl?: string;
+}
 
-/**
- * Parses the JSON configuration for a brand from the environment variable
- */
-const parseBrandConfig = (slug: string): BrandConfigJSON | null => {
-    const envKey = normalizeBrandSlug(slug).replace(/-/g, '_').toUpperCase();
-    const rawConfig = process.env[envKey];
+interface S3Defaults {
+    bucket?: string;
+    region?: string;
+    accessKey?: string;
+    secretKey?: string;
+    useAccelerateEndpoint?: boolean;
+}
 
-    if (!rawConfig) return null;
+interface ProviderDefaults {
+    google?: BrandGoogleProviderInputConfig;
+    dropbox?: BrandProviderInputConfig;
+    facebook?: BrandProviderInputConfig;
+    instagram?: BrandProviderInputConfig;
+    onedrive?: BrandProviderInputConfig;
+    box?: BrandProviderInputConfig;
+    unsplash?: BrandProviderInputConfig;
+    zoom?: BrandProviderInputConfig;
+}
 
-    try {
-        return JSON.parse(rawConfig) as BrandConfigJSON;
-    } catch (error) {
-        console.error(`[brand] Failed to parse JSON configuration for brand "${slug}" (Env: ${envKey})`, error);
-        return null;
-    }
-};
+export interface CreateBrandRegistryOptions {
+    corsOrigins: (string | RegExp)[];
+    secret: string;
+    filePath: string;
+    host: string;
+    protocol: 'http' | 'https';
+    brands: string;
+    brandConfigs: Record<string, BrandConfigJSON>;
+    publicDefaults: PublicDefaults;
+    s3Defaults: S3Defaults;
+    providerDefaults: ProviderDefaults;
+}
 
-/**
- * Creates provider configuration from JSON or Global Defaults
- */
+export { normalizeBrandSlug };
+
 const createProviderConfig = (
-    providerConfig: BrandProviderConfig | undefined,
-    globalKeyEnv: string,
-    globalSecretEnv: string,
+    providerConfig: BrandProviderInputConfig | undefined,
+    globalConfig: BrandProviderInputConfig | undefined,
     options: { allowKeyOnly?: boolean } = {}
 ): BrandProviderConfig | undefined => {
     const allowKeyOnly = options.allowKeyOnly ?? false;
 
-    // Prefer brand specific config
     if (providerConfig?.key && (providerConfig.secret || allowKeyOnly)) {
-        return providerConfig;
+        return {
+            key: providerConfig.key,
+            secret: providerConfig.secret ?? '',
+        };
     }
 
-    // Fallback to global env
-    const globalKey = process.env[globalKeyEnv];
-    const globalSecret = process.env[globalSecretEnv];
-
-    if (globalKey && (globalSecret || allowKeyOnly)) {
-        return { key: globalKey, secret: globalSecret ?? '' };
+    if (globalConfig?.key && (globalConfig.secret || allowKeyOnly)) {
+        return {
+            key: globalConfig.key,
+            secret: globalConfig.secret ?? '',
+        };
     }
 
     return undefined;
 };
 
 const createGoogleProviderConfig = (
-    providerConfig: BrandGoogleProviderConfig | undefined
+    providerConfig: BrandGoogleProviderInputConfig | undefined,
+    globalConfig: BrandGoogleProviderInputConfig | undefined
 ): BrandGoogleProviderConfig | undefined => {
     const clientId = providerConfig?.clientId
-        ?? process.env.COMPANION_GOOGLE_CLIENT_ID;
+        ?? globalConfig?.clientId;
 
     if (!clientId) return undefined;
 
     const clientSecret = providerConfig?.clientSecret
-        ?? process.env.COMPANION_GOOGLE_CLIENT_SECRET
+        ?? globalConfig?.clientSecret
         ?? '';
 
-    const driveApiKey = providerConfig?.driveApiKey ?? process.env.COMPANION_GOOGLE_DRIVE_API_KEY;
-    const photosApiKey = providerConfig?.photosApiKey ?? process.env.COMPANION_GOOGLE_PHOTOS_API_KEY;
-    const appId = providerConfig?.appId ?? process.env.COMPANION_GOOGLE_APP_ID;
+    const driveApiKey = providerConfig?.driveApiKey ?? globalConfig?.driveApiKey;
+    const photosApiKey = providerConfig?.photosApiKey ?? globalConfig?.photosApiKey;
+    const appId = providerConfig?.appId ?? globalConfig?.appId;
 
     return {
         clientId,
@@ -77,21 +101,18 @@ const createGoogleProviderConfig = (
     };
 };
 
-/**
- * Creates S3 configuration for a brand
- */
-const createS3Config = (s3Config: BrandConfigJSON['s3'] | undefined): BrandS3Config => {
+const createS3Config = (
+    s3Config: BrandConfigJSON['s3'] | undefined,
+    defaults: S3Defaults
+): BrandS3Config => {
     const config: BrandS3Config = {
-        bucket: s3Config?.bucket ?? process.env.AWS_BUCKET_NAME ?? '',
-        region: s3Config?.region ?? process.env.AWS_REGION ?? '',
-        accessKey: s3Config?.accessKey ?? process.env.AWS_ACCESS_KEY_ID ?? undefined,
-        secretKey: s3Config?.secretKey ?? process.env.AWS_SECRET_ACCESS_KEY ?? undefined,
-        useAccelerateEndpoint: s3Config?.useAccelerateEndpoint ?? false,
+        bucket: s3Config?.bucket ?? defaults.bucket ?? '',
+        region: s3Config?.region ?? defaults.region ?? '',
+        accessKey: s3Config?.accessKey ?? defaults.accessKey ?? undefined,
+        secretKey: s3Config?.secretKey ?? defaults.secretKey ?? undefined,
+        useAccelerateEndpoint: s3Config?.useAccelerateEndpoint ?? defaults.useAccelerateEndpoint ?? false,
     };
 
-    // Always create a client when region is known.
-    // If accessKey/secretKey are missing, the SDK will use the Default Credential Provider Chain
-    // (e.g. IAM Task Role on ECS/Fargate) as implemented in getS3Client().
     if (config.region) {
         config.client = getS3Client({
             regionParam: config.region,
@@ -150,22 +171,15 @@ const parseEnabledPlugins = (enabledPlugins: string | undefined): string[] => {
 };
 
 /**
- * Creates a brand descriptor from environment variables and JSON config
+ * Creates a brand descriptor from injected defaults and optional pre-validated
+ * brand-specific configuration.
  */
 export const createBrand = (
     slug: string,
-    defaults: {
-        corsOrigins: (string | RegExp)[];
-        secret: string;
-        filePath: string;
-        host: string;
-        protocol: 'http' | 'https';
-    }
+    defaults: CreateBrandRegistryOptions
 ): Brand => {
     const mountPath = `/${slug}`;
-
-    // Load JSON config
-    const config = parseBrandConfig(slug) ?? {};
+    const config = defaults.brandConfigs[slug] ?? {};
 
     const serverHost = defaults.host;
     const serverProtocol = defaults.protocol;
@@ -183,38 +197,35 @@ export const createBrand = (
             cookieName: config.auth?.cookieName ?? config.authCookieName ?? 'session',
         },
 
-        // S3
-        s3: createS3Config(config.s3),
+        s3: createS3Config(config.s3, defaults.s3Defaults),
 
-        // Providers
         providers: {
-            google: createGoogleProviderConfig(config.providers?.google),
-            dropbox: createProviderConfig(config.providers?.dropbox, 'COMPANION_DROPBOX_KEY', 'COMPANION_DROPBOX_SECRET'),
-            facebook: createProviderConfig(config.providers?.facebook, 'COMPANION_FACEBOOK_KEY', 'COMPANION_FACEBOOK_SECRET'),
-            instagram: createProviderConfig(config.providers?.instagram, 'COMPANION_INSTAGRAM_KEY', 'COMPANION_INSTAGRAM_SECRET'),
-            onedrive: createProviderConfig(config.providers?.onedrive, 'COMPANION_ONEDRIVE_KEY', 'COMPANION_ONEDRIVE_SECRET'),
-            box: createProviderConfig(config.providers?.box, 'COMPANION_BOX_KEY', 'COMPANION_BOX_SECRET'),
-            unsplash: createProviderConfig(config.providers?.unsplash, 'COMPANION_UNSPLASH_KEY', 'COMPANION_UNSPLASH_SECRET'),
-            zoom: createProviderConfig(config.providers?.zoom, 'COMPANION_ZOOM_KEY', 'COMPANION_ZOOM_SECRET'),
+            google: createGoogleProviderConfig(config.providers?.google, defaults.providerDefaults.google),
+            dropbox: createProviderConfig(config.providers?.dropbox, defaults.providerDefaults.dropbox),
+            facebook: createProviderConfig(config.providers?.facebook, defaults.providerDefaults.facebook),
+            instagram: createProviderConfig(config.providers?.instagram, defaults.providerDefaults.instagram),
+            onedrive: createProviderConfig(config.providers?.onedrive, defaults.providerDefaults.onedrive),
+            box: createProviderConfig(config.providers?.box, defaults.providerDefaults.box),
+            unsplash: createProviderConfig(config.providers?.unsplash, defaults.providerDefaults.unsplash),
+            zoom: createProviderConfig(config.providers?.zoom, defaults.providerDefaults.zoom),
         },
 
-        // CORS & Upload
         corsOrigins: parseCorsOrigins(config.corsOrigins, defaults.corsOrigins),
         uploadUrls: config.uploadUrls ?? ['*'],
 
         public: (() => {
             const backendUrl = config.public?.backendUrl
                 ?? config.publicBackendUrl
-                ?? process.env.PUBLIC_BACKEND_URL
+                ?? defaults.publicDefaults.backendUrl
                 ?? 'http://localhost';
 
             const uploadUrl = config.public?.uploadUrl
                 ?? config.publicUploadUrl
-                ?? process.env.PUBLIC_UPLOAD_URL
+                ?? defaults.publicDefaults.uploadUrl
                 ?? `${backendUrl}/api/frame/contents/upload/public`;
 
             const foldersUrl = config.public?.foldersUrl
-                ?? process.env.PUBLIC_FOLDERS_URL;
+                ?? defaults.publicDefaults.foldersUrl;
 
             return {
                 backendUrl,
@@ -223,7 +234,6 @@ export const createBrand = (
             };
         })(),
 
-        // Server
         secret: defaults.secret,
         server: {
             host: serverHost,
@@ -231,29 +241,18 @@ export const createBrand = (
             path: mountPath,
         },
         filePath: defaults.filePath,
-
-        // Enabled plugins (parsed from comma-separated string)
         enabledPlugins: parseEnabledPlugins(config.enabledPlugins),
     };
 };
 
-/**
- * Creates a brand registry from environment configuration
- */
-export const createBrandRegistry = (defaults: {
-    corsOrigins: (string | RegExp)[];
-    secret: string;
-    filePath: string;
-    host: string;
-    protocol: 'http' | 'https';
-}): BrandRegistry => {
-    const rawBrandList = process.env.COMPANION_BRANDS ?? 'default';
+export const createBrandRegistry = (defaults: CreateBrandRegistryOptions): BrandRegistry => {
+    const rawBrandList = defaults.brands;
     const slugs = [...new Set(
         rawBrandList.split(',').map(normalizeBrandSlug).filter(Boolean)
     )];
 
     if (slugs.length === 0) {
-        throw new Error('No brands configured. Set COMPANION_BRANDS environment variable.');
+        throw new Error('No brands configured: options.brands is empty (typically sourced from COMPANION_BRANDS).');
     }
 
     const brands = new Map<string, Brand>();
