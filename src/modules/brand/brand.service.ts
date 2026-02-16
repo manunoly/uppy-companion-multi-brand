@@ -171,7 +171,8 @@ const parseEnabledPlugins = (enabledPlugins: string | undefined): string[] => {
 };
 
 /**
- * Creates a brand descriptor from environment variables and JSON config
+ * Creates a brand descriptor from injected defaults and optional pre-validated
+ * brand-specific configuration.
  */
 export const createBrand = (
     slug: string,
@@ -251,7 +252,7 @@ export const createBrandRegistry = (defaults: CreateBrandRegistryOptions): Brand
     )];
 
     if (slugs.length === 0) {
-        throw new Error('No brands configured. Set COMPANION_BRANDS environment variable.');
+        throw new Error('No brands configured: options.brands is empty (typically sourced from COMPANION_BRANDS).');
     }
 
     const brands = new Map<string, Brand>();
