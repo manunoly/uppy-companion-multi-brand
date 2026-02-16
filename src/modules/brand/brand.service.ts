@@ -9,6 +9,7 @@ import type {
     BrandGoogleProviderConfig
 } from './brand.types.js';
 import { getS3Client } from '../../lib/aws/s3Client.js';
+import { normalizeBrandSlug } from './brand.utils.js';
 
 interface PublicDefaults {
     backendUrl?: string;
@@ -48,12 +49,7 @@ export interface CreateBrandRegistryOptions {
     providerDefaults: ProviderDefaults;
 }
 
-/**
- * Normalizes a brand slug to lowercase alphanumeric with dashes
- */
-export const normalizeBrandSlug = (value: string | undefined | null): string => {
-    return (value ?? '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
-};
+export { normalizeBrandSlug };
 
 const createProviderConfig = (
     providerConfig: BrandProviderInputConfig | undefined,

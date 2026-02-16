@@ -1,6 +1,7 @@
 import { envSchema, type EnvConfig } from './env.schema.js';
 import { brandConfigSchema } from '../modules/brand/brand.schema.js';
 import type { BrandConfigJSON } from '../modules/brand/brand.types.js';
+import { normalizeBrandSlug } from '../modules/brand/brand.utils.js';
 
 /**
  * Parses a comma-separated string into an array
@@ -17,13 +18,6 @@ const coerceNumber = (value: string | undefined, fallback: number): number => {
     if (!value) return fallback;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
-};
-
-/**
- * Normalizes a brand slug to lowercase alphanumeric with dashes
- */
-const normalizeBrandSlug = (value: string | undefined | null): string => {
-    return (value ?? '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
 };
 
 const toBrandEnvKey = (slug: string): string => {
