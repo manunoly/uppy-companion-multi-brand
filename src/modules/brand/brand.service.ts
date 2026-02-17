@@ -88,8 +88,10 @@ const createGoogleProviderConfig = (
         ?? globalConfig?.clientSecret
         ?? '';
 
-    const driveApiKey = providerConfig?.driveApiKey ?? globalConfig?.driveApiKey;
-    const photosApiKey = providerConfig?.photosApiKey ?? globalConfig?.photosApiKey;
+    const driveApiKey = providerConfig?.driveApiKey
+        ?? globalConfig?.driveApiKey;
+    const photosApiKey = providerConfig?.photosApiKey
+        ?? globalConfig?.photosApiKey;
     const appId = providerConfig?.appId ?? globalConfig?.appId;
 
     return {

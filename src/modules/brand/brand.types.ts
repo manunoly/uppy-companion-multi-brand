@@ -23,11 +23,16 @@ export interface BrandGoogleProviderConfig {
 }
 
 export interface BrandGoogleProviderInputConfig {
+    // Preferred keys
     clientId?: string;
     clientSecret?: string;
     driveApiKey?: string;
     photosApiKey?: string;
     appId?: string;
+    // Legacy aliases kept for backwards compatibility
+    key?: string;
+    secret?: string;
+    apiKey?: string;
 }
 
 export interface BrandS3Config {
