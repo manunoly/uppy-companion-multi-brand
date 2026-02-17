@@ -11,7 +11,17 @@ const googleProviderConfigSchema = z.object({
     driveApiKey: z.string().min(1).optional(),
     photosApiKey: z.string().min(1).optional(),
     appId: z.string().min(1).optional(),
-}).strict();
+    // Legacy aliases accepted for backwards compatibility
+    key: z.string().min(1).optional(),
+    secret: z.string().min(1).optional(),
+    apiKey: z.string().min(1).optional(),
+}).strict().transform((value) => ({
+    clientId: value.clientId ?? value.key,
+    clientSecret: value.clientSecret ?? value.secret,
+    driveApiKey: value.driveApiKey ?? value.apiKey,
+    photosApiKey: value.photosApiKey ?? value.apiKey,
+    appId: value.appId,
+}));
 
 const s3ConfigSchema = z.object({
     bucket: z.string().min(1).optional(),

@@ -80,16 +80,26 @@ const createGoogleProviderConfig = (
     globalConfig: BrandGoogleProviderInputConfig | undefined
 ): BrandGoogleProviderConfig | undefined => {
     const clientId = providerConfig?.clientId
-        ?? globalConfig?.clientId;
+        ?? providerConfig?.key
+        ?? globalConfig?.clientId
+        ?? globalConfig?.key;
 
     if (!clientId) return undefined;
 
     const clientSecret = providerConfig?.clientSecret
+        ?? providerConfig?.secret
         ?? globalConfig?.clientSecret
+        ?? globalConfig?.secret
         ?? '';
 
-    const driveApiKey = providerConfig?.driveApiKey ?? globalConfig?.driveApiKey;
-    const photosApiKey = providerConfig?.photosApiKey ?? globalConfig?.photosApiKey;
+    const driveApiKey = providerConfig?.driveApiKey
+        ?? providerConfig?.apiKey
+        ?? globalConfig?.driveApiKey
+        ?? globalConfig?.apiKey;
+    const photosApiKey = providerConfig?.photosApiKey
+        ?? providerConfig?.apiKey
+        ?? globalConfig?.photosApiKey
+        ?? globalConfig?.apiKey;
     const appId = providerConfig?.appId ?? globalConfig?.appId;
 
     return {
