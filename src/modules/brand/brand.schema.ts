@@ -15,13 +15,15 @@ const googleProviderConfigSchema = z.object({
     key: z.string().min(1).optional(),
     secret: z.string().min(1).optional(),
     apiKey: z.string().min(1).optional(),
-}).strict().transform((value) => ({
+}).strict()
+    // Precedence: preferred keys win when both preferred and legacy keys are present.
+    .transform((value) => ({
     clientId: value.clientId ?? value.key,
     clientSecret: value.clientSecret ?? value.secret,
     driveApiKey: value.driveApiKey ?? value.apiKey,
     photosApiKey: value.photosApiKey ?? value.apiKey,
     appId: value.appId,
-}));
+    }));
 
 const s3ConfigSchema = z.object({
     bucket: z.string().min(1).optional(),
