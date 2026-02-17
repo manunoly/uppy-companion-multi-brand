@@ -18,11 +18,11 @@ const googleProviderConfigSchema = z.object({
 }).strict()
     // Precedence: preferred keys win when both preferred and legacy keys are present.
     .transform((value) => ({
-    clientId: value.clientId ?? value.key,
-    clientSecret: value.clientSecret ?? value.secret,
-    driveApiKey: value.driveApiKey ?? value.apiKey,
-    photosApiKey: value.photosApiKey ?? value.apiKey,
-    appId: value.appId,
+        clientId: value.clientId ?? value.key,
+        clientSecret: value.clientSecret ?? value.secret,
+        driveApiKey: value.driveApiKey ?? value.apiKey,
+        photosApiKey: value.photosApiKey ?? value.apiKey,
+        appId: value.appId,
     }));
 
 const s3ConfigSchema = z.object({
