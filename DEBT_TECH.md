@@ -108,7 +108,7 @@ Todos los módulos: `[brand]`, `[server]`, `[companion]`, `[s3]`, `[auth]`, `[up
 
 **Origen:** PR #3 review de Copilot (comentario sobre `BEARER_TOKEN_VALUE` en `uppy.html`).
 **Estado:**
-- **Option A (cookie-only via shared registrable domain):** ✅ **DISEÑO APROBADO** — implementación pendiente. Spec en `docs/superpowers/specs/2026-04-29-cookie-only-cross-origin-auth-design.md`.
+- **Option A (cookie-only via shared registrable domain):** ✅ **IMPLEMENTADO** en PR #4 (`feat/cookie-only-auth`). Spec en `docs/superpowers/specs/2026-04-29-cookie-only-cross-origin-auth-design.md`. Plan en `docs/superpowers/plans/2026-04-29-cookie-only-cross-origin-auth.md`.
 - **Option B (BFF proxy para multi-tenant):** ⏳ **Diferida** — solo necesaria cuando Companion vive en un registrable domain distinto al backend de la marca (caso multi-tenant SaaS).
 
 ### Resumen del problema
@@ -119,7 +119,7 @@ Detalle completo y threat model: ver el spec linkeado arriba.
 
 ---
 
-### Option A — Cookie-only via shared registrable domain (en camino)
+### Option A — Cookie-only via shared registrable domain (implementado)
 
 Companion y el backend de la marca comparten un registrable domain (ej. `companion.abeduls.com` + `api.abeduls.com`, ambos bajo `.abeduls.com`). El backend setea su cookie de session con `Domain=.abeduls.com`, así viaja automáticamente a TODOS los subdominios. Todos los `fetch()` de Uppy usan `credentials: 'include'`. El token nunca entra al JS.
 

@@ -1,8 +1,9 @@
 # Cookie-only cross-origin upload auth
 
-**Status:** Approved (brainstorm 2026-04-29) — pending implementation
+**Status:** Implemented in PR #4 (`feat/cookie-only-auth`) — pending merge to `main`
 **Closes:** `DEBT_TECH.md` #4 (Option A path)
 **Branch:** `feat/cookie-only-auth`
+**Plan:** `docs/superpowers/plans/2026-04-29-cookie-only-cross-origin-auth.md`
 
 ---
 
