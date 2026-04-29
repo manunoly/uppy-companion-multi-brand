@@ -10,7 +10,7 @@ import {
     getAllBrands,
     type BrandRegistry
 } from './modules/brand/index.js';
-import { attachUser } from './modules/auth/index.js';
+import { attachUser, requireAuth } from './modules/auth/index.js';
 import {
     createCompanionForBrand,
     attachCompanionSocket,
@@ -240,6 +240,12 @@ export const createServer = (): ServerResult => {
 
         // Mount custom API (S3 signing, etc.)
         app.use(`/${brand.id}/api`, apiRouter);
+
+        // Companion's own S3 multipart endpoints (/:brand/s3/...) invoke the
+        // s3.getKey callback which calls buildS3Key — that callback throws if
+        // req.user is not populated. Without requireAuth here, an unauthenticated
+        // request would surface as 500 instead of a clean 401.
+        app.use(`/${brand.id}/s3`, requireAuth);
 
         // Mount companion at brand path
         app.use(brand.server.path, instance.app);

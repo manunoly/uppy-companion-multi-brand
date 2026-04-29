@@ -102,3 +102,30 @@ Todos los módulos: `[brand]`, `[server]`, `[companion]`, `[s3]`, `[auth]`, `[up
 
 ~3–4 horas: instalar pino + pino-http, crear logger.ts, migrar ~30 sitios de `console.*`. Bajo riesgo (cambio mecánico, comportamiento idéntico al final).
 
+---
+
+## 4. Bearer token expuesto en el HTML de `/uppy` (HttpOnly bypass de facto)
+
+**Origen:** PR #3 review de Copilot (comentario sobre `BEARER_TOKEN_VALUE` en `uppy.html`).
+**Estado:** Diferido. La cookie del flujo `/uppy` ya es `HttpOnly: true` y el query param desaparece del URL vía 302 redirect, pero el servidor inyecta el token literal en el HTML como variable JS (`BEARER_TOKEN_VALUE`) — cualquier XSS en la página puede leerlo igual.
+
+### Por qué se inyecta hoy
+
+`src/modules/companion/uppyModal.ts:125` arma `Authorization: Bearer ${BEARER_TOKEN}` para llamar al **`publicUploadUrl`** del backend de la marca (ej. `https://api.abeduls.com/api/frame/contents/upload/public`). Ese backend está en un origen distinto al de Companion → la cookie de Companion no se envía en cross-origin, así que se necesita el token en JS para autenticar la llamada.
+
+### Por qué importa
+
+OWASP A03 (Injection / XSS) y la *Session Management Cheat Sheet*: si una XSS roba el token, tiene acceso completo a la cuenta del usuario en el backend de la marca. `HttpOnly` en la cookie de Companion no protege porque el mismo token vive como string en `window.bearerToken` de la página.
+
+### Opciones de fix (orden de preferencia)
+
+1. **Token efímero de uso único firmado por el backend de la marca.** El backend emite un token corto (TTL ~5 min, single-use) específico para este upload. La página JS solo ve ese token-corto. Si se filtra, expira solo. Patrón de **Stripe Checkout sessions**, **Auth0 magic links**.
+2. **Proxy del upload-completion por Companion.** La página JS llama a un nuevo `/api/uppy/complete-upload` en Companion (same-origin, cookie HttpOnly), y Companion hace el call al backend de la marca con el token (que vive solo server-side). El JS nunca ve el token. Defense-in-depth máximo.
+3. **Status quo + risk acceptance.** Documentar que cualquier XSS en `/uppy` es game-over. Aceptable solo si la página gana CSP estricto, no acepta input de usuario inline, y dependencias front (Uppy, sweetalert2 desde CDN) tienen integrity hashes.
+
+### Esfuerzo estimado
+
+- Opción 1: ~4-6 h (cambios en backend de la marca para emitir tokens cortos + Companion + `uppyModal.ts`).
+- Opción 2: ~2-3 h (nuevo endpoint en `/api/uppy/` + refactor en `uppyModal.ts:saveFileToDB`).
+- Opción 3: 30 min (CSP + integrity hashes + nota en CLAUDE.md).
+

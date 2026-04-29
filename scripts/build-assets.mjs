@@ -13,7 +13,9 @@ const result = await transform(ts, {
     loader: 'ts',
     target: 'es2020',
     format: 'esm',
-    sourcemap: 'inline',
+    // No sourcemap in the production artifact — inline maps embed the full TS
+    // source into the shipped file, exposing it to any client (OWASP A05).
+    // Dev mode uses the runtime esbuild fallback in uppy.routes.ts.
 });
 await writeFile(path.join(DIST, 'uppyModal.js'), result.code);
 

@@ -153,11 +153,9 @@ export const serveUppyPage = async (
         return;
     }
 
-    // Run authentication and folder fetching in parallel
-    const [authResult, folders] = await Promise.all([
-        authenticate(bearerToken, brand),
-        fetchFolders(bearerToken, brand),
-    ]);
+    // Authenticate first; folders are only needed when we actually render
+    // the page (the queryToken path redirects without rendering).
+    const authResult = await authenticate(bearerToken, brand);
 
     // Require both authenticated AND a populated user — same invariant as
     // requireAuth. Otherwise the page would render but every /api/uppy/* call
@@ -194,6 +192,10 @@ export const serveUppyPage = async (
         res.redirect(302, cleanUrl.pathname + cleanUrl.search);
         return;
     }
+
+    // Folders are only needed for the rendered page; fetch now that we know
+    // we're not redirecting away.
+    const folders = await fetchFolders(bearerToken, brand);
 
     try {
         const htmlPath = path.join(__dirname, 'uppy.html');
