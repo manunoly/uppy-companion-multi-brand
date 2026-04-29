@@ -153,14 +153,14 @@ export const serveUppyPage = async (
         return;
     }
 
-    // Run authentication and folder fetching in parallel
-    const [authResult, folders] = await Promise.all([
-        authenticate(bearerToken, brand),
-        fetchFolders(bearerToken, brand),
-    ]);
+    // Authenticate first; folders are only needed when we actually render
+    // the page (the queryToken path redirects without rendering).
+    const authResult = await authenticate(bearerToken, brand);
 
-    // Check authentication result
-    if (!authResult.authenticated) {
+    // Require both authenticated AND a populated user — same invariant as
+    // requireAuth. Otherwise the page would render but every /api/uppy/* call
+    // would 401, leading to a confusing UX with a "working" upload UI.
+    if (!authResult.authenticated || !authResult.user) {
         res.status(401).send(generateErrorPage(
             'Unauthorized',
             'Your session is invalid or has expired. Please log in again.'
@@ -169,6 +169,33 @@ export const serveUppyPage = async (
     }
 
     req.user = authResult.user;
+
+    // If the token arrived via ?bearerToken=, exchange it for an HttpOnly cookie
+    // and redirect to a clean URL. This prevents the token from being captured
+    // in upstream proxy/CDN access logs, browser history, or Referer headers
+    // (OWASP ASVS V8.3.1). The follow-up request authenticates from the cookie.
+    if (queryToken) {
+        res.cookie(brand.auth.cookieName, queryToken, {
+            // Explicit brand-scoped path: without it, the browser derives the
+            // default from the request URL, so a trailing slash on /:brand/uppy/
+            // would yield a path like /:brand/uppy and the cookie would never
+            // reach /:brand/api/uppy/*, causing 401 after the redirect.
+            path: `/${brand.id}`,
+            httpOnly: true,
+            secure: brand.server.protocol === 'https',
+            sameSite: brand.server.protocol === 'https' ? 'none' : 'lax',
+            maxAge: 12 * 60 * 60 * 1000,
+        });
+
+        const cleanUrl = new URL(req.originalUrl, 'http://placeholder');
+        cleanUrl.searchParams.delete('bearerToken');
+        res.redirect(302, cleanUrl.pathname + cleanUrl.search);
+        return;
+    }
+
+    // Folders are only needed for the rendered page; fetch now that we know
+    // we're not redirecting away.
+    const folders = await fetchFolders(bearerToken, brand);
 
     try {
         const htmlPath = path.join(__dirname, 'uppy.html');
@@ -203,15 +230,6 @@ export const serveUppyPage = async (
         // Replace plugins array with enabled plugins for this brand
         html = html.replace(/ENABLED_PLUGINS_VALUE/g, JSON.stringify(enabledPlugins));
 
-        // Set cookie if token was provided
-        if (bearerToken && queryToken) {
-            res.cookie(brand.auth.cookieName, bearerToken, {
-                httpOnly: false,
-                secure: brand.server.protocol === 'https',
-                maxAge: 12 * 60 * 60 * 1000, // 12 hours
-            });
-        }
-
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
     } catch (error) {
@@ -220,28 +238,61 @@ export const serveUppyPage = async (
     }
 };
 
-import { transform } from 'esbuild';
+// Memoized in-process cache for the dev-mode transpile fallback. Keyed by source
+// content so an in-place edit to uppyModal.ts naturally invalidates the cache,
+// and tsx-watch restarts wipe the cache anyway.
+let devTranspiledCache: { source: string; output: string } | null = null;
+
+const transpileForDev = async (tsSource: string): Promise<string> => {
+    if (devTranspiledCache?.source === tsSource) return devTranspiledCache.output;
+    // Dynamic import: esbuild is a devDependency. Production never hits this branch
+    // because uppyModal.js is precompiled by scripts/build-assets.mjs.
+    const { transform } = await import('esbuild');
+    const result = await transform(tsSource, {
+        loader: 'ts',
+        target: 'es2020',
+        format: 'esm',
+    });
+    devTranspiledCache = { source: tsSource, output: result.code };
+    return result.code;
+};
 
 /**
- * Serves the uppyModal.js file (transpiled from TS)
+ * Serves the uppyModal.js file. Prefers the precompiled artifact (prod);
+ * falls back to on-demand transpilation when only the .ts source is present (dev).
  */
 export const serveUppyModalJs = async (
     _req: AppRequest,
     res: Response,
     _next: NextFunction
 ): Promise<void> => {
+    const jsPath = path.join(__dirname, 'uppyModal.js');
+
+    try {
+        await fs.access(jsPath);
+        res.set('Cache-Control', 'public, max-age=300');
+        res.type('application/javascript');
+        res.sendFile(jsPath);
+        return;
+    } catch (err) {
+        // Only fall through to the dev transpile when the precompiled artifact is
+        // genuinely missing. Other errors (permissions, IO) should surface as 500
+        // — in production esbuild is a devDependency and the dynamic import would
+        // crash, masking the real failure.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+            console.error('[uppy] uppyModal.js exists but failed to access:', err);
+            res.status(500).send('Error loading script');
+            return;
+        }
+    }
+
     try {
         const tsPath = path.join(__dirname, 'uppyModal.ts');
-        const ts = await fs.readFile(tsPath, 'utf8');
-
-        const result = await transform(ts, {
-            loader: 'ts',
-            target: 'es2020',
-            format: 'esm', // Use ESM for module support
-        });
-
+        const tsSource = await fs.readFile(tsPath, 'utf8');
+        const code = await transpileForDev(tsSource);
         res.setHeader('Content-Type', 'application/javascript');
-        res.send(result.code);
+        res.send(code);
     } catch (error) {
         console.error('[uppy] Error serving uppyModal.js:', error);
         res.status(500).send('Error loading script');

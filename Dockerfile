@@ -17,12 +17,6 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN corepack enable pnpm && pnpm run build
 
-# Copy static assets and TS files needed for runtime transpilation using standard cp
-# We need to preserve the directory structure under dist/
-RUN mkdir -p dist/modules/companion && \
-    cp src/modules/companion/uppy.html dist/modules/companion/ && \
-    cp src/modules/companion/uppyModal.ts dist/modules/companion/
-
 # 4. Production image, copy all the files and run next
 FROM base AS runner
 ENV NODE_ENV=production
@@ -33,4 +27,8 @@ COPY --from=builder /app/dist ./dist
 COPY package.json ./
 
 EXPOSE 3020
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
+    CMD wget -qO- "http://localhost:${COMPANION_PORT:-3020}/api/healthz" || exit 1
+
 CMD ["node", "dist/index.js"]

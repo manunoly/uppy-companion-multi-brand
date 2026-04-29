@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import * as s3Controller from './s3/s3.controller.js';
+import { requireAuth } from '../auth/index.js';
 
 const router = Router();
+
+// All S3 endpoints require an authenticated user. The middleware also rejects
+// brands without `auth.url` configured (403) so uploads can never be attributed
+// to an unverified identity.
+router.use(requireAuth);
 
 // Simple S3 signing (supports GET and POST)
 router.get('/uppy/sign-s3', s3Controller.signS3);

@@ -37,6 +37,7 @@ const s3ConfigSchema = z.object({
  * Runtime schema for validating brand JSON config from environment variables.
  */
 export const brandConfigSchema = z.object({
+    displayName: z.string().min(1).optional(),
     auth: z.object({
         url: z.string().min(1).optional(),
         cookieName: z.string().min(1).optional(),

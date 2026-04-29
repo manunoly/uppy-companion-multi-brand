@@ -1,6 +1,7 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
+import { timingSafeEqual } from 'node:crypto';
 
 import { env } from './config/index.js';
 import type { AppRequest } from './core/types/express.js';
@@ -9,7 +10,7 @@ import {
     getAllBrands,
     type BrandRegistry
 } from './modules/brand/index.js';
-import { attachUser } from './modules/auth/index.js';
+import { attachUser, requireAuth } from './modules/auth/index.js';
 import {
     createCompanionForBrand,
     attachCompanionSocket,
@@ -25,6 +26,14 @@ interface ServerResult {
     companionInstances: CompanionInstance[];
 }
 
+// Constant-time comparison to avoid timing attacks on HEALTH_CHECK_KEY.
+const safeEqual = (a: string, b: string): boolean => {
+    const bufA = Buffer.from(a);
+    const bufB = Buffer.from(b);
+    if (bufA.length !== bufB.length) return false;
+    return timingSafeEqual(bufA, bufB);
+};
+
 /**
  * Creates and configures the Express application
  */
@@ -39,19 +48,27 @@ export const createServer = (): ServerResult => {
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
     app.use(cookieParser());
-    app.use(session({
-        name: 'companion.sid',
+
+    // Session middleware is mounted per-brand below (not globally) so health
+    // checks, /api/brands, and 404s don't create empty sessions or set cookies.
+    // Each brand gets its own middleware instance with a brand-scoped cookie name
+    // and path, so cookies cannot leak across brands and OAuth state from one
+    // brand cannot overwrite another's. `saveUninitialized: true` is intentional:
+    // Companion's OAuth flow requires a persisted session before the redirect.
+    const buildSessionMiddleware = (brandId: string) => session({
+        name: `companion.sid.${brandId}`,
         secret: env.secret,
         resave: false,
-        saveUninitialized: true, // Needed to ensure session exists before OAuth redirect
+        saveUninitialized: true,
         proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
         cookie: {
+            path: `/${brandId}`,
             secure: env.protocol === 'https',
             sameSite: env.protocol === 'https' ? 'none' : 'lax',
             httpOnly: true,
             maxAge: 24 * 60 * 60 * 1000 // 1 day
         }
-    }));
+    });
 
     // Create brand registry
     const brandRegistry: BrandRegistry = createBrandRegistry({
@@ -79,7 +96,7 @@ export const createServer = (): ServerResult => {
     }
 
     // Health check (no auth required)
-    app.get('/healthz', (_req, res) => {
+    app.get('/api/healthz', (_req, res) => {
         res.json({ status: 'ok', timestamp: Date.now() });
     });
 
@@ -87,7 +104,7 @@ export const createServer = (): ServerResult => {
     app.get('/api/brands', (req, res) => {
         const queryKey = typeof req.query.key === 'string' ? req.query.key : null;
         const healthCheckKey = env.healthCheckKey;
-        const showDetails = healthCheckKey && queryKey === healthCheckKey;
+        const showDetails = !!(healthCheckKey && queryKey && safeEqual(queryKey, healthCheckKey));
 
         /**
          * Masks a secret showing only last 4 characters
@@ -189,14 +206,12 @@ export const createServer = (): ServerResult => {
         });
     });
 
-    // Root endpoint
-    app.get('/', (_req, res) => {
-        res.send('Hello World');
-    });
-
     // Mount companion for each brand
     for (const instance of companionInstances) {
         const brand = instance.brand;
+
+        // Session is scoped to brand routes only — see buildSessionMiddleware comment above.
+        app.use(`/${brand.id}`, buildSessionMiddleware(brand.id));
 
         // Attach the concrete brand for routes under /{brandId}
         // NOTE: Using createBrandMiddleware() here would fall back to defaultBrand because
@@ -225,6 +240,12 @@ export const createServer = (): ServerResult => {
 
         // Mount custom API (S3 signing, etc.)
         app.use(`/${brand.id}/api`, apiRouter);
+
+        // Companion's own S3 multipart endpoints (/:brand/s3/...) invoke the
+        // s3.getKey callback which calls buildS3Key — that callback throws if
+        // req.user is not populated. Without requireAuth here, an unauthenticated
+        // request would surface as 500 instead of a clean 401.
+        app.use(`/${brand.id}/s3`, requireAuth);
 
         // Mount companion at brand path
         app.use(brand.server.path, instance.app);

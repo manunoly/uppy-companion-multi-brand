@@ -4,27 +4,56 @@ import {
     CreateMultipartUploadCommand,
     CompleteMultipartUploadCommand,
     AbortMultipartUploadCommand,
-    ListPartsCommand
+    ListPartsCommand,
+    type Part,
+    type CompletedPart
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Response, NextFunction } from 'express';
 import type { AppRequest } from '../../../core/types/express.js';
-import { buildS3Key } from './s3.key-builder.js';
+import { buildS3Key, buildUserKeyPrefix } from './s3.key-builder.js';
 
 // --- Helpers ---
 
-const validatePartNumber = (partNumber: any): boolean => {
-    const n = Number(partNumber);
-    return Number.isInteger(n) && n >= 1 && n <= 10000;
+// S3 multipart contract: PartNumber must be an integer in [1, 10000].
+const isPartNumberInRange = (n: number): boolean =>
+    Number.isInteger(n) && n >= 1 && n <= 10000;
+
+const validatePartNumber = (partNumber: string): boolean =>
+    isPartNumberInRange(Number(partNumber));
+
+const isValidPart = (part: unknown): part is CompletedPart => {
+    if (typeof part !== 'object' || part === null) return false;
+    const p = part as Record<string, unknown>;
+    return isPartNumberInRange(Number(p.PartNumber)) && typeof p.ETag === 'string';
 };
 
-const isValidPart = (part: any) => {
-    return (
-        part &&
-        typeof part === 'object' &&
-        Number(part.PartNumber) &&
-        typeof part.ETag === 'string'
-    );
+/**
+ * Defense against BOLA (OWASP API1): a multipart endpoint receives `key` from
+ * the client. Without this check, an authenticated user could request signing
+ * for, list, complete, or abort an upload outside their own user/brand path.
+ * AWS rejects mismatched uploadId+key pairs server-side, but the authoritative
+ * authorization gate must live here, in OUR code.
+ */
+const sendIfKeyNotOwned = (req: AppRequest, key: string, res: Response): boolean => {
+    if (!req.brand) {
+        res.status(400).json({ error: 's3: brand not resolved' });
+        return true;
+    }
+    if (!req.user?.id) {
+        res.status(401).json({ error: 's3: user not authenticated' });
+        return true;
+    }
+    // Note: no `..` check here. S3 keys are flat strings to S3 (no path
+    // resolution), and `sanitizeFilename` allows dots so legitimate filenames
+    // like `weird..file.jpg` produce keys containing `..`. The authoritative
+    // gate is the user/brand prefix below.
+    const prefix = buildUserKeyPrefix(req.brand.id, req.user.id);
+    if (!key.startsWith(prefix)) {
+        res.status(403).json({ error: 's3: key does not belong to authenticated user' });
+        return true;
+    }
+    return false;
 };
 
 // --- Controllers ---
@@ -38,7 +67,7 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
         const brand = req.brand;
         if (!brand || !brand.s3.client || !brand.s3.bucket) {
             console.error('[s3] Missing brand S3 config');
-            res.status(400).json({ error: 'Configuración S3 incompleta para esta marca' });
+            res.status(400).json({ error: 'S3 configuration incomplete for this brand' });
             return;
         }
 
@@ -49,7 +78,7 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
         const contentType = (params.contentType || params.type) as string;
 
         if (!filename || !contentType) {
-            res.status(400).json({ error: 'Falta filename o contentType' });
+            res.status(400).json({ error: 'Missing filename or contentType' });
             return;
         }
 
@@ -72,7 +101,7 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
         });
     } catch (error) {
         console.error('[s3] Error signing URL:', error);
-        res.status(500).json({ error: 'Error firmando subida' });
+        res.status(500).json({ error: 'Error signing upload' });
     }
 };
 
@@ -136,6 +165,7 @@ export const signPart = async (req: AppRequest, res: Response, _next: NextFuncti
             res.status(400).json({ error: 's3: the object key must be passed as a query parameter.' });
             return;
         }
+        if (sendIfKeyNotOwned(req, key, res)) return;
 
         const command = new UploadPartCommand({
             Bucket: brand.s3.bucket,
@@ -173,8 +203,9 @@ export const listParts = async (req: AppRequest, res: Response, _next: NextFunct
             res.status(400).json({ error: 's3: the object key must be passed as a query parameter.' });
             return;
         }
+        if (sendIfKeyNotOwned(req, key, res)) return;
 
-        const parts: any[] = [];
+        const parts: Part[] = [];
         let nextMarker: string | undefined;
         let isTruncated = true;
 
@@ -223,6 +254,7 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
             res.status(400).json({ error: 's3: the object key must be passed as a query parameter.' });
             return;
         }
+        if (sendIfKeyNotOwned(req, key, res)) return;
         if (!Array.isArray(parts) || !parts.every(isValidPart)) {
             res.status(400).json({ error: 's3: `parts` must be an array of {ETag, PartNumber} objects.' });
             return;
@@ -264,6 +296,7 @@ export const abortMultipartUpload = async (req: AppRequest, res: Response, _next
             res.status(400).json({ error: 's3: the object key must be passed as a query parameter.' });
             return;
         }
+        if (sendIfKeyNotOwned(req, key, res)) return;
 
         const command = new AbortMultipartUploadCommand({
             Bucket: brand.s3.bucket,

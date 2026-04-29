@@ -12,7 +12,7 @@
     },
     "scripts": {
         "dev": "tsx watch src/index.ts",
-        "build": "tsc -p tsconfig.json",
+        "build": "tsc -p tsconfig.json && node scripts/build-assets.mjs",
         "start": "node dist/index.js",
         "typecheck": "tsc --noEmit"
     },
@@ -22,7 +22,6 @@
         "@uppy/companion": "^6.2.1",
         "cookie-parser": "^1.4.7",
         "dotenv": "^17.2.3",
-        "esbuild": "^0.27.2",
         "express": "^4.22.1",
         "express-session": "^1.19.0",
         "zod": "^4.3.6"
@@ -32,6 +31,7 @@
         "@types/express": "^4.17.25",
         "@types/express-session": "^1.18.2",
         "@types/node": "^25.0.10",
+        "esbuild": "^0.27.2",
         "tsx": "^4.21.0",
         "typescript": "^5.9.3"
     }

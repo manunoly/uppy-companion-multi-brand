@@ -154,10 +154,6 @@ export interface CompanionInstance {
 export const createCompanionForBrand = (brand: Brand): CompanionInstance => {
     const options = buildCompanionOptions(brand);
 
-    if (brand.id === 'abeduls') {
-        console.log('[DEBUG] Companion Factory Options for Abeduls:', JSON.stringify(options.providerOptions?.dropbox, null, 2));
-    }
-
     const { app: companionApp } = companion.app(options as Parameters<typeof companion.app>[0]);
 
     // Create a router that injects brand into request

@@ -92,7 +92,7 @@ Request: GET /brand-a/dropbox/list
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| `GET` | `/healthz` | Health check | No |
+| `GET` | `/api/healthz` | Health check | No |
 | `GET` | `/api/brands` | List all configured brands | No |
 
 ### Brand-Scoped Endpoints

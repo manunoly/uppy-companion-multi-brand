@@ -45,6 +45,8 @@ export interface BrandS3Config {
 }
 
 export interface BrandConfigJSON {
+    /** Human-readable name shown in the UI. Falls back to the slug when omitted. */
+    displayName?: string;
     /** Preferred: auth configuration block */
     auth?: {
         url?: string;
