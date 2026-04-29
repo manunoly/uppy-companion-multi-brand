@@ -159,8 +159,10 @@ export const serveUppyPage = async (
         fetchFolders(bearerToken, brand),
     ]);
 
-    // Check authentication result
-    if (!authResult.authenticated) {
+    // Require both authenticated AND a populated user — same invariant as
+    // requireAuth. Otherwise the page would render but every /api/uppy/* call
+    // would 401, leading to a confusing UX with a "working" upload UI.
+    if (!authResult.authenticated || !authResult.user) {
         res.status(401).send(generateErrorPage(
             'Unauthorized',
             'Your session is invalid or has expired. Please log in again.'
@@ -265,8 +267,17 @@ export const serveUppyModalJs = async (
         res.type('application/javascript');
         res.sendFile(jsPath);
         return;
-    } catch {
-        // Precompiled artifact missing → dev mode, fall through to runtime transpile.
+    } catch (err) {
+        // Only fall through to the dev transpile when the precompiled artifact is
+        // genuinely missing. Other errors (permissions, IO) should surface as 500
+        // — in production esbuild is a devDependency and the dynamic import would
+        // crash, masking the real failure.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+            console.error('[uppy] uppyModal.js exists but failed to access:', err);
+            res.status(500).send('Error loading script');
+            return;
+        }
     }
 
     try {

@@ -15,15 +15,17 @@ import { buildS3Key, buildUserKeyPrefix } from './s3.key-builder.js';
 
 // --- Helpers ---
 
-const validatePartNumber = (partNumber: string): boolean => {
-    const n = Number(partNumber);
-    return Number.isInteger(n) && n >= 1 && n <= 10000;
-};
+// S3 multipart contract: PartNumber must be an integer in [1, 10000].
+const isPartNumberInRange = (n: number): boolean =>
+    Number.isInteger(n) && n >= 1 && n <= 10000;
+
+const validatePartNumber = (partNumber: string): boolean =>
+    isPartNumberInRange(Number(partNumber));
 
 const isValidPart = (part: unknown): part is CompletedPart => {
     if (typeof part !== 'object' || part === null) return false;
     const p = part as Record<string, unknown>;
-    return Number.isFinite(Number(p.PartNumber)) && typeof p.ETag === 'string';
+    return isPartNumberInRange(Number(p.PartNumber)) && typeof p.ETag === 'string';
 };
 
 /**

@@ -51,15 +51,18 @@ export const createServer = (): ServerResult => {
 
     // Session middleware is mounted per-brand below (not globally) so health
     // checks, /api/brands, and 404s don't create empty sessions or set cookies.
-    // `saveUninitialized: true` is intentional: Companion's OAuth flow requires
-    // a persisted session to exist before the redirect to the provider.
-    const sessionMiddleware = session({
-        name: 'companion.sid',
+    // Each brand gets its own middleware instance with a brand-scoped cookie name
+    // and path, so cookies cannot leak across brands and OAuth state from one
+    // brand cannot overwrite another's. `saveUninitialized: true` is intentional:
+    // Companion's OAuth flow requires a persisted session before the redirect.
+    const buildSessionMiddleware = (brandId: string) => session({
+        name: `companion.sid.${brandId}`,
         secret: env.secret,
         resave: false,
         saveUninitialized: true,
         proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
         cookie: {
+            path: `/${brandId}`,
             secure: env.protocol === 'https',
             sameSite: env.protocol === 'https' ? 'none' : 'lax',
             httpOnly: true,
@@ -207,8 +210,8 @@ export const createServer = (): ServerResult => {
     for (const instance of companionInstances) {
         const brand = instance.brand;
 
-        // Session is scoped to brand routes only — see sessionMiddleware comment above.
-        app.use(`/${brand.id}`, sessionMiddleware);
+        // Session is scoped to brand routes only — see buildSessionMiddleware comment above.
+        app.use(`/${brand.id}`, buildSessionMiddleware(brand.id));
 
         // Attach the concrete brand for routes under /{brandId}
         // NOTE: Using createBrandMiddleware() here would fall back to defaultBrand because

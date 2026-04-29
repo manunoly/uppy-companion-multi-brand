@@ -9,7 +9,7 @@ Package manager: **pnpm** (Node.js >= 22).
 ```bash
 pnpm install              # install deps
 pnpm dev                  # tsx watch src/index.ts (hot reload)
-pnpm build                # tsc -p tsconfig.json -> dist/
+pnpm build                # tsc + node scripts/build-assets.mjs -> dist/ (server + browser uppyModal.js + uppy.html)
 pnpm start                # node dist/index.js (after build)
 pnpm typecheck            # tsc --noEmit
 ```
