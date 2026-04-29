@@ -154,7 +154,6 @@
         import uppyModal from './uppyModal.js';
 
         // Server-injected values (replaced at runtime)
-        const bearerToken = BEARER_TOKEN_VALUE ? BEARER_TOKEN_VALUE : '';
         const serverUrl = SERVER_URL_VALUE || 'http://localhost:3000';
         const companionUrl = COMPANION_URL_VALUE || 'http://localhost:3020';
         const publicBackendUrl = PUBLIC_BACKEND_URL_VALUE || 'http://localhost';
@@ -206,7 +205,6 @@
 
         // Initialize Uppy
         const uppy = uppyModal({
-            bearerToken: bearerToken,
             inline: true,
             redirect: true,
             plugins: ENABLED_PLUGINS_VALUE,
