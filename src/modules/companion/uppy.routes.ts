@@ -148,6 +148,13 @@ const generateErrorPage = (title: string, message: string): string => {
  * When the brand session cookie is missing or invalid, redirect the user to
  * the brand's login page (with a `?redirect=` back to /uppy) if configured;
  * otherwise render a static 401 page with manual login instructions.
+ *
+ * Trust contract: the dashboard at `loginUrl` MUST validate the `?redirect=`
+ * value against an allow-list (e.g. only redirect back to URLs whose host
+ * matches `*.<rootDomain>`) to prevent open-redirect abuse. Companion only
+ * constructs the URL — it does not validate the redirect target. The
+ * defensive guard on `req.originalUrl` below is a server-side sanity check,
+ * not a substitute for the dashboard's allow-list.
  */
 const redirectToLoginOrShowError = (
     req: AppRequest,
@@ -157,7 +164,15 @@ const redirectToLoginOrShowError = (
     if (brand.public.loginUrl) {
         const companionPublicUrl = brand.companionUrl
             ?? `${brand.server.protocol}://${brand.server.host}`;
-        const fullCurrentUrl = new URL(req.originalUrl, companionPublicUrl).toString();
+        // Defensive: treat req.originalUrl strictly as a server-relative path.
+        // `new URL(absolute, base)` ignores the base when the first arg is
+        // absolute or protocol-relative, so a malformed/forwarded request with
+        // an absolute-form target could otherwise let an attacker craft the
+        // ?redirect= value pointed at any host (open-redirect amplifier).
+        const safePath = req.originalUrl.startsWith('/') && !req.originalUrl.startsWith('//')
+            ? req.originalUrl
+            : '/';
+        const fullCurrentUrl = new URL(safePath, companionPublicUrl).toString();
 
         const loginUrl = new URL(brand.public.loginUrl);
         loginUrl.searchParams.set('redirect', fullCurrentUrl);
