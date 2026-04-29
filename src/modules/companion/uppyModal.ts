@@ -42,7 +42,6 @@ export interface UppyModalOptions {
     GOOGLE_API_KEY_PHOTOS?: string | null;
     GOOGLE_CLIENT_ID?: string | null;
     GOOGLE_APP_ID?: string | null;
-    bearerToken?: string | null;
     callbackFn?: (result: any) => void;
     brand?: string;
     brandName?: string | null;
@@ -120,15 +119,12 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     const GOOGLE_API_KEY_PHOTOS = readOption(merged, 'GOOGLE_API_KEY_PHOTOS', null);
     const GOOGLE_CLIENT_ID = readOption(merged, 'GOOGLE_CLIENT_ID', null);
     const GOOGLE_APP_ID = readOption(merged, 'GOOGLE_APP_ID', null);
-    const BEARER_TOKEN = readOption(merged, 'bearerToken', null);
-
-    const authHeaders = BEARER_TOKEN ? { Authorization: `Bearer ${BEARER_TOKEN}` } : {};
-    const mergeHeaders = (headers: Record<string, string> = {}) => ({ ...headers, ...authHeaders });
-
-    const fetchWithAuth = (url: string, options: RequestInit = {}) => {
-        const headers = mergeHeaders(options.headers as Record<string, string>);
-        return fetch(url, { ...options, headers });
-    };
+    // Auth travels via the brand session cookie at Domain=.<rootDomain>.
+    // The browser sends it automatically with credentials: 'include' on
+    // both same-origin (/api/uppy/*) and cross-origin (publicUploadUrl)
+    // requests, since they all share the brand registrable domain.
+    const fetchWithAuth = (url: string, options: RequestInit = {}) =>
+        fetch(url, { ...options, credentials: 'include' });
 
     const uppy = new Uppy({
         debug: true,
