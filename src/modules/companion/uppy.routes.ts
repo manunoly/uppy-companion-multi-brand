@@ -8,12 +8,40 @@ import { fetchFolders } from '../folders/folders.service.js';
 const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Z]:)/, '$1');
 
 /**
- * Escapes a string for use as a JavaScript string literal
+ * Escapes a value so it can appear safely inside a single-quoted JS string
+ * literal embedded in an HTML <script> tag. Beyond the obvious quote/backslash
+ * escapes, this also neutralizes:
+ *   - `</` (and `<!--`/`-->`) — would otherwise let a value close the script
+ *     tag or open an HTML comment that survives the `</script>` boundary.
+ *   - U+2028 / U+2029 — JS treats these as line terminators, so an unescaped
+ *     occurrence inside a string literal raises SyntaxError or breaks parsing.
  */
 const toJsStringLiteral = (value: string | undefined | null): string => {
     const str = value ?? '';
-    const escaped = str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const escaped = str
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/<\//g, '<\\/')
+        .replace(/<!--/g, '<\\!--')
+        .replace(/-->/g, '--\\>')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
     return `'${escaped}'`;
+};
+
+/**
+ * Serializes data to JSON suitable for inline embedding in an HTML <script>.
+ * Standard JSON.stringify can produce `</` (closing the script tag) or
+ * U+2028/U+2029 (which JS parses as line terminators). Both are escaped here.
+ * Output is still valid JSON parseable by the browser's JS engine.
+ */
+const safeJsonForHtmlScript = (data: unknown): string => {
+    return JSON.stringify(data)
+        .replace(/<\//g, '<\\/')
+        .replace(/<!--/g, '<\\!--')
+        .replace(/-->/g, '--\\>')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
 };
 
 /**
@@ -117,12 +145,39 @@ const generateErrorPage = (title: string, message: string): string => {
 };
 
 /**
+ * When the brand session cookie is missing or invalid, redirect the user to
+ * the brand's login page (with a `?redirect=` back to /uppy) if configured;
+ * otherwise render a static 401 page with manual login instructions.
+ */
+const redirectToLoginOrShowError = (
+    req: AppRequest,
+    res: Response,
+    brand: Brand,
+): void => {
+    if (brand.public.loginUrl) {
+        const companionPublicUrl = brand.companionUrl
+            ?? `${brand.server.protocol}://${brand.server.host}`;
+        const fullCurrentUrl = new URL(req.originalUrl, companionPublicUrl).toString();
+
+        const loginUrl = new URL(brand.public.loginUrl);
+        loginUrl.searchParams.set('redirect', fullCurrentUrl);
+        res.redirect(302, loginUrl.toString());
+        return;
+    }
+
+    res.status(401).send(generateErrorPage(
+        'Session Expired',
+        'Your session has expired or you are not logged in. Please log in via the dashboard and try again.',
+    ));
+};
+
+/**
  * Serves the Uppy upload page for a brand
  */
 export const serveUppyPage = async (
     req: AppRequest,
     res: Response,
-    _next: NextFunction
+    _next: NextFunction,
 ): Promise<void> => {
     const brand = req.brand;
 
@@ -131,86 +186,46 @@ export const serveUppyPage = async (
         return;
     }
 
-    // Get bearer token
-    const queryToken = typeof req.query.bearerToken === 'string' ? req.query.bearerToken : null;
-    const cookieToken = (req.cookies as Record<string, string>)?.[brand.auth.cookieName] ?? null;
-    const bearerToken = queryToken ?? cookieToken ?? '';
-
-    // Check if auth is required
+    // Brands without auth.url cannot receive authenticated uploads.
     if (!brand.auth.url) {
         res.status(403).send(generateErrorPage(
             'Authentication Required',
-            'This upload page requires authentication but the brand has no auth URL configured.'
+            'This upload page requires authentication but the brand has no auth URL configured.',
         ));
         return;
     }
 
-    if (!bearerToken) {
-        res.status(401).send(generateErrorPage(
-            'Session Expired',
-            'Your session has expired or you are not logged in. Please log in and try again.'
-        ));
-        return;
+    // Cookie-only auth: the browser sends the brand session cookie
+    // (Domain=.<rootDomain>) automatically when the user is logged in.
+    // No more ?bearerToken= query param, no more BEARER_TOKEN injection.
+    const cookieToken = (req.cookies as Record<string, string>)?.[brand.auth.cookieName] ?? null;
+    if (!cookieToken) {
+        return redirectToLoginOrShowError(req, res, brand);
     }
 
-    // Authenticate first; folders are only needed when we actually render
-    // the page (the queryToken path redirects without rendering).
-    const authResult = await authenticate(bearerToken, brand);
-
-    // Require both authenticated AND a populated user — same invariant as
-    // requireAuth. Otherwise the page would render but every /api/uppy/* call
-    // would 401, leading to a confusing UX with a "working" upload UI.
+    const authResult = await authenticate(cookieToken, brand);
     if (!authResult.authenticated || !authResult.user) {
-        res.status(401).send(generateErrorPage(
-            'Unauthorized',
-            'Your session is invalid or has expired. Please log in again.'
-        ));
-        return;
+        return redirectToLoginOrShowError(req, res, brand);
     }
 
     req.user = authResult.user;
 
-    // If the token arrived via ?bearerToken=, exchange it for an HttpOnly cookie
-    // and redirect to a clean URL. This prevents the token from being captured
-    // in upstream proxy/CDN access logs, browser history, or Referer headers
-    // (OWASP ASVS V8.3.1). The follow-up request authenticates from the cookie.
-    if (queryToken) {
-        res.cookie(brand.auth.cookieName, queryToken, {
-            // Explicit brand-scoped path: without it, the browser derives the
-            // default from the request URL, so a trailing slash on /:brand/uppy/
-            // would yield a path like /:brand/uppy and the cookie would never
-            // reach /:brand/api/uppy/*, causing 401 after the redirect.
-            path: `/${brand.id}`,
-            httpOnly: true,
-            secure: brand.server.protocol === 'https',
-            sameSite: brand.server.protocol === 'https' ? 'none' : 'lax',
-            maxAge: 12 * 60 * 60 * 1000,
-        });
-
-        const cleanUrl = new URL(req.originalUrl, 'http://placeholder');
-        cleanUrl.searchParams.delete('bearerToken');
-        res.redirect(302, cleanUrl.pathname + cleanUrl.search);
-        return;
-    }
-
-    // Folders are only needed for the rendered page; fetch now that we know
-    // we're not redirecting away.
-    const folders = await fetchFolders(bearerToken, brand);
+    // Folders fetch happens only when we are about to render — saves a
+    // round-trip when the request would have redirected.
+    const folders = await fetchFolders(cookieToken, brand);
 
     try {
         const htmlPath = path.join(__dirname, 'uppy.html');
         let html = await fs.readFile(htmlPath, 'utf8');
 
-        // Get enabled plugins for this brand
         const enabledPlugins = getEnabledPlugins(brand);
 
-        // Build companion URL (Prefer explicit override for Proxies)
         const companionUrl = brand.companionUrl
             ? brand.companionUrl
             : `${brand.server.protocol}://${brand.server.host}${brand.server.path}`;
 
-        // Replace placeholders
-        html = html.replace(/BEARER_TOKEN_VALUE/g, toJsStringLiteral(bearerToken));
+        // Replace placeholders. BEARER_TOKEN_VALUE is intentionally absent:
+        // the page no longer carries the token in any form.
         html = html.replace(/BRAND_SLUG_VALUE/g, toJsStringLiteral(brand.id));
         html = html.replace(/BRAND_NAME_VALUE/g, toJsStringLiteral(brand.displayName));
         html = html.replace(/BRAND_LOGO_URL_VALUE/g, toJsStringLiteral(''));
@@ -223,13 +238,15 @@ export const serveUppyPage = async (
         html = html.replace(/GOOGLE_API_KEY_PHOTOS_VALUE/g, toJsStringLiteral(brand.providers.google?.photosApiKey ?? ''));
         html = html.replace(/GOOGLE_CLIENT_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.clientId ?? ''));
         html = html.replace(/GOOGLE_APP_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.appId ?? ''));
+        // Use safeJsonForHtmlScript (NOT raw JSON.stringify) for any inline
+        // JSON injection. Folder names come from the brand backend; without
+        // escaping `</`, `<!--`, `-->`, U+2028 and U+2029 a malicious or
+        // corrupted value would break out of the surrounding <script> tag.
+        html = html.replace(/FOLDERS_DATA_VALUE/g, safeJsonForHtmlScript(folders));
+        html = html.replace(/ENABLED_PLUGINS_VALUE/g, safeJsonForHtmlScript(enabledPlugins));
 
-        // Inject folders data
-        html = html.replace(/FOLDERS_DATA_VALUE/g, JSON.stringify(folders));
-
-        // Replace plugins array with enabled plugins for this brand
-        html = html.replace(/ENABLED_PLUGINS_VALUE/g, JSON.stringify(enabledPlugins));
-
+        // Authenticated, per-user document — never cached (OWASP recommendation).
+        res.set('Cache-Control', 'no-store');
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
     } catch (error) {
