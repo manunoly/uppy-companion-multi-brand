@@ -605,8 +605,12 @@ export const serveUppyPage = async (
         html = html.replace(/GOOGLE_API_KEY_PHOTOS_VALUE/g, toJsStringLiteral(brand.providers.google?.photosApiKey ?? ''));
         html = html.replace(/GOOGLE_CLIENT_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.clientId ?? ''));
         html = html.replace(/GOOGLE_APP_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.appId ?? ''));
-        html = html.replace(/FOLDERS_DATA_VALUE/g, JSON.stringify(folders));
-        html = html.replace(/ENABLED_PLUGINS_VALUE/g, JSON.stringify(enabledPlugins));
+        // Use safeJsonForHtmlScript (NOT raw JSON.stringify) for any inline
+        // JSON injection. Folder names come from the brand backend; without
+        // escaping `</`, `<!--`, `-->`, U+2028 and U+2029 a malicious or
+        // corrupted value would break out of the surrounding <script> tag.
+        html = html.replace(/FOLDERS_DATA_VALUE/g, safeJsonForHtmlScript(folders));
+        html = html.replace(/ENABLED_PLUGINS_VALUE/g, safeJsonForHtmlScript(enabledPlugins));
 
         // Authenticated, per-user document — never cached (OWASP recommendation).
         res.set('Cache-Control', 'no-store');
