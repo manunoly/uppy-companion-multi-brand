@@ -113,6 +113,22 @@ try {
             console.log(`  - Name: ${brand.displayName}`);
             console.log(`  - Auth URL: ${brand.auth.url || '(Not configured) ⚠️'}`);
             console.log(`  - Public Backend: ${brand.public.backendUrl}`);
+            console.log(`  - Root domain: ${brand.rootDomain ?? '(not set)'}`);
+            console.log(`  - Login URL: ${brand.public.loginUrl ?? '(not set)'}`);
+
+            // rootDomain is only required when auth.url is set. Mirror the
+            // brandConfigSchema superRefine invariant so deploy fails early.
+            if (brand.auth.url && !brand.rootDomain) {
+                console.error(`  ❌ Brand "${brand.id}" has auth.url but no rootDomain — uploads will be rejected at startup.`);
+                process.exitCode = 1;
+            }
+
+            // loginUrl is optional but strongly recommended; without it,
+            // unauthenticated /uppy hits get a static error page rather than
+            // a redirect to the dashboard.
+            if (brand.auth.url && !brand.public.loginUrl) {
+                console.warn(`  ⚠️  Brand "${brand.id}" has no public.loginUrl — unauthenticated /uppy will show a static 401 page instead of redirecting to login.`);
+            }
 
             // 1. Analyze Active Providers (from Registry)
             const activeProviders: string[] = [];
