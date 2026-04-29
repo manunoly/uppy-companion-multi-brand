@@ -212,7 +212,7 @@ export const serveUppyPage = async (
 
     // Cookie-only auth: the browser sends the brand session cookie
     // (Domain=.<rootDomain>) automatically when the user is logged in.
-    // No more ?bearerToken= query param, no more BEARER_TOKEN injection.
+    // No more query-string token, no more server-side token injection in the page.
     const cookieToken = (req.cookies as Record<string, string>)?.[brand.auth.cookieName] ?? null;
     if (!cookieToken) {
         return redirectToLoginOrShowError(req, res, brand);
