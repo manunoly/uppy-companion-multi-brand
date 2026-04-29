@@ -58,7 +58,9 @@ export const corsForBrand = (
         }
 
         res.setHeader('Access-Control-Allow-Origin', origin);
-        res.setHeader('Vary', 'Origin');
+        // Use res.vary() — appends to any existing Vary (e.g. compression
+        // middleware adding `Accept-Encoding`) instead of overwriting it.
+        res.vary('Origin');
         res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader(
             'Access-Control-Allow-Methods',

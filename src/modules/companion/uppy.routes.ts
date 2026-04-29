@@ -11,6 +11,8 @@ const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([
  * Escapes a value so it can appear safely inside a single-quoted JS string
  * literal embedded in an HTML <script> tag. Beyond the obvious quote/backslash
  * escapes, this also neutralizes:
+ *   - `\n` and `\r` — single-quoted JS string literals cannot span lines, so
+ *     a raw newline in the input would produce a SyntaxError at parse time.
  *   - `</` (and `<!--`/`-->`) — would otherwise let a value close the script
  *     tag or open an HTML comment that survives the `</script>` boundary.
  *   - U+2028 / U+2029 — JS treats these as line terminators, so an unescaped
@@ -21,6 +23,8 @@ const toJsStringLiteral = (value: string | undefined | null): string => {
     const escaped = str
         .replace(/\\/g, '\\\\')
         .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
         .replace(/<\//g, '<\\/')
         .replace(/<!--/g, '<\\!--')
         .replace(/-->/g, '--\\>')
