@@ -176,6 +176,12 @@ export const serveUppyPage = async (req, res, _next) => {
     const folders = await fetchFolders(cookieToken, brand);
 
     // ... HTML render, with BEARER_TOKEN_VALUE replacement REMOVED.
+
+    // Authenticated, per-user document — never cached. Prevents shared
+    // proxies and browser back/forward from retaining another user's view.
+    res.set('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
 };
 
 const redirectToLoginOrShowError = (req: AppRequest, res: Response, brand: Brand): void => {
@@ -202,11 +208,18 @@ Remove the `BEARER_TOKEN_VALUE` placeholder and the `const bearerToken = BEARER_
 
 ### 6.6 `src/core/cors.ts` (new) and mount in `src/server.ts`
 
-Create a new helper file `src/core/cors.ts` exporting `corsForBrand(brand: Brand): RequestHandler`. The middleware echoes the request `Origin` when it matches `^https?://([a-z0-9-]+\.)+<rootDomain>(:\d+)?$`, with `Access-Control-Allow-Credentials: true`. Mount before `apiRouter` in `server.ts`:
+Create a new helper file `src/core/cors.ts` exporting `corsForBrand(brand: Brand, envProtocol: 'http' | 'https'): RequestHandler`. The middleware echoes the request `Origin` when it matches the brand's allowed-origin regex, with `Access-Control-Allow-Credentials: true`. Mount before `apiRouter` in `server.ts`:
 
 ```ts
-app.use(`/${brand.id}/api`, corsForBrand(brand), apiRouter);
+app.use(`/${brand.id}/api`, corsForBrand(brand, env.protocol), apiRouter);
 ```
+
+**Scheme constraint (security-critical):** the regex scheme is tied to `env.protocol`:
+
+| `env.protocol` | Regex scheme | Rationale |
+|---|---|---|
+| `'https'` (production) | `^https://([a-z0-9-]+\.)+<rootDomain>(:\d+)?$` — **HTTPS only** | A plain-HTTP page on any `*.<rootDomain>` could otherwise make `credentials: 'include'` requests to the HTTPS Companion API. The `Secure` cookie still travels (the request URL is HTTPS) and CORS would let the HTTP attacker page read the response. **Never echo `Access-Control-Allow-Credentials: true` to an `http://` origin in production.** |
+| `'http'` (local dev) | `^https?://([a-z0-9-]+\.)+<rootDomain>(:\d+)?$` plus an explicit allowance for `http://localhost(:port)?` | Local dev tooling typically runs over HTTP; tightening here breaks the inner loop. |
 
 The middleware:
 - Returns `204` for `OPTIONS` preflight when origin matches.
@@ -264,22 +277,33 @@ A `npx tsx scripts/verify-brand-config.ts` invocation must succeed before deploy
 
 ## 9. Threat model
 
+### 9.0 Trust boundary (operator's invariant — REQUIRED)
+
+This design's CORS policy explicitly trusts **every subdomain** under `<rootDomain>` as first-party. The operator MUST guarantee:
+
+- **No parked or unclaimed subdomains** under `<rootDomain>` (e.g. `staging.<rootDomain>`, `old-app.<rootDomain>` left dangling and squattable).
+- **No untrusted hosting** of arbitrary content under `<rootDomain>` (e.g. user-generated subdomains, third-party SaaS using vanity subdomains, marketing landing pages with permissive CMS access).
+- **No HTTP-only services** under `<rootDomain>` in production. All subdomains must serve over HTTPS (the CORS regex in production already enforces `https://`, but the operator should also ensure no HTTP listener exists that could be tricked into running attacker-controlled JS).
+
+If any of these is violated, an attacker can mount authenticated requests against Companion's `/api/uppy/*` from a sibling subdomain. `SameSite=Lax` does NOT protect against this — sibling subdomains are *same-site*. The mitigation lives in the trust assumption, not in the cookie attribute.
+
 ### 9.1 Mitigated by this design
 
 | Threat | Mitigation |
 |--------|------------|
 | **XSS reading bearer from window scope or HTML source** | Token never exists in JS or HTML. Only as `HttpOnly` cookie value. |
 | **XSS calling `document.cookie`** | Cookie set with `HttpOnly` flag. |
-| **Cross-site CSRF** (attacker page POSTing to `api.<rootDomain>/upload` while user is logged in) | `SameSite=Lax` on the brand session cookie. Cross-site requests do not include the cookie. |
-| **Cross-origin from rogue subdomain** (e.g. someone parks `attacker.<rootDomain>`) | Out of scope — registrable domain is presumed trusted. The brand controls all subdomains under `<rootDomain>` (per §3 decision A1's assumption). |
+| **Cross-site CSRF** (attacker page on a different registrable domain) | `SameSite=Lax` on the brand session cookie. Cross-site requests do not include the cookie. |
 | **Token leak via URL** (proxy/CDN logs, browser history, Referer) | Token never in URL. The `?bearerToken=` query parameter is removed. |
 | **Token leak via service worker / cache** | Cookie is HttpOnly — service workers can't read it. |
+| **Plain-HTTP credentialed exfil under root** (a page on `http://anywhere.<rootDomain>` reading authenticated responses via CORS) | CORS regex in production requires `https://` only; HTTP origins are not echoed even if the URL matches the rootDomain. |
 
 ### 9.2 NOT mitigated (out of scope, deferred)
 
 | Threat | Why deferred |
 |--------|--------------|
-| **XSS executing arbitrary fetches with the user's cookie** | Same-origin XSS retains full power to call any endpoint as the user. Mitigation requires CSP + SRI — separate hardening pass. |
+| **Same-site sibling subdomain CSRF/exfil** (compromised, parked, or third-party-hosted subdomain under `<rootDomain>` performing authenticated mutations) | Mitigated only by §9.0 operator invariant. Future hardening: a custom-header CSRF gate (`X-Companion-Client: 1`) on mutating routes — browsers do not send custom headers cross-origin without preflight, and our `Access-Control-Allow-Headers` can omit it for non-trusted origins. Or per-brand explicit subdomain allowlist instead of `*.<rootDomain>` regex. Tracked in `DEBT_TECH.md` #4 future hardening. |
+| **XSS executing arbitrary fetches with the user's cookie** | Same-origin XSS retains full power to call any endpoint as the user. Mitigation requires CSP + SRI — separate hardening pass (`DEBT_TECH.md` #4 Option C). |
 | **Compromise of the Uppy CDN or sweetalert2 CDN** (the `<script src=...>` tags loaded externally) | Mitigation is Subresource Integrity hashes — separate hardening pass. Listed as future work. |
 | **Brand backend compromise** | Out of scope. If the brand backend is compromised, attacker has direct access regardless of Companion. |
 | **Multi-tenant where Companion ≠ brand registrable domain** | Deferred as Option B in `DEBT_TECH.md` #4 (BFF proxy through Companion). |
@@ -295,6 +319,8 @@ A `npx tsx scripts/verify-brand-config.ts` invocation must succeed before deploy
 | Brand JSON without `loginUrl`, user opens `/uppy` without cookie | Static 401 page (`Session Expired`). No 302. |
 | User on `dashboard.abeduls.com` makes `fetch('https://companion.abeduls.com/abeduls/api/uppy/sign-s3', { credentials: 'include' })` | 200 OK with Access-Control-Allow-Origin echoing `https://dashboard.abeduls.com`. |
 | Same fetch from `https://evil.com` | Browser blocks (no Access-Control-Allow-Origin). |
+| In production, fetch from `http://anywhere.abeduls.com` (HTTP, same root) | Companion does NOT echo Access-Control-Allow-Origin (HTTPS-only regex). Browser blocks the response. |
+| Response of `GET /uppy` includes `Cache-Control: no-store` | Verified via `curl -I` or DevTools network panel. |
 | Brand JSON missing `rootDomain` while `auth.url` is set | Server fails to start with Zod validation error mentioning `rootDomain is required`. |
 | Cookie expires while user is on `/uppy` and clicks Upload | Same-origin call returns 401. UI surfaces error. (Future enhancement: auto-redirect to login.) |
 
