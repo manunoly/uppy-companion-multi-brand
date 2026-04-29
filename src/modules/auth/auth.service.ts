@@ -14,28 +14,26 @@ const userSchema = z.object({
 });
 
 /**
- * Extracts authentication token from request
- * Checks: Authorization header > Cookie > Query param
+ * Extracts the authentication token from a request.
+ *
+ * Order: `Authorization: Bearer …` header > brand-specific cookie.
+ *
+ * The legacy `?bearerToken=` query param is intentionally NOT honored here
+ * — query strings get logged by proxies/CDNs/browser history and leak via
+ * Referer (OWASP ASVS V8.3.1). The /uppy page exchanges a query token for an
+ * HttpOnly cookie via a 302 redirect; everything else must use header or cookie.
  */
 export const extractToken = (req: AppRequest, brand: Brand): string | null => {
     const cookies = req.cookies as Record<string, string> | undefined;
 
-    // 1. Authorization header: Bearer xxx
     const authHeader = req.get('authorization');
     if (authHeader?.startsWith('Bearer ')) {
         return authHeader.slice(7);
     }
 
-    // 2. Brand-specific cookie
     const cookieToken = cookies?.[brand.auth.cookieName];
     if (cookieToken) {
         return cookieToken;
-    }
-
-    // 3. Query param (for redirect flows)
-    const queryToken = req.query.bearerToken;
-    if (typeof queryToken === 'string') {
-        return queryToken;
     }
 
     return null;

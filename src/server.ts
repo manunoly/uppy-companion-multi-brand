@@ -1,6 +1,7 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
+import { timingSafeEqual } from 'node:crypto';
 
 import { env } from './config/index.js';
 import type { AppRequest } from './core/types/express.js';
@@ -25,6 +26,14 @@ interface ServerResult {
     companionInstances: CompanionInstance[];
 }
 
+// Constant-time comparison to avoid timing attacks on HEALTH_CHECK_KEY.
+const safeEqual = (a: string, b: string): boolean => {
+    const bufA = Buffer.from(a);
+    const bufB = Buffer.from(b);
+    if (bufA.length !== bufB.length) return false;
+    return timingSafeEqual(bufA, bufB);
+};
+
 /**
  * Creates and configures the Express application
  */
@@ -39,11 +48,16 @@ export const createServer = (): ServerResult => {
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
     app.use(cookieParser());
-    app.use(session({
+
+    // Session middleware is mounted per-brand below (not globally) so health
+    // checks, /api/brands, and 404s don't create empty sessions or set cookies.
+    // `saveUninitialized: true` is intentional: Companion's OAuth flow requires
+    // a persisted session to exist before the redirect to the provider.
+    const sessionMiddleware = session({
         name: 'companion.sid',
         secret: env.secret,
         resave: false,
-        saveUninitialized: true, // Needed to ensure session exists before OAuth redirect
+        saveUninitialized: true,
         proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
         cookie: {
             secure: env.protocol === 'https',
@@ -51,7 +65,7 @@ export const createServer = (): ServerResult => {
             httpOnly: true,
             maxAge: 24 * 60 * 60 * 1000 // 1 day
         }
-    }));
+    });
 
     // Create brand registry
     const brandRegistry: BrandRegistry = createBrandRegistry({
@@ -79,7 +93,7 @@ export const createServer = (): ServerResult => {
     }
 
     // Health check (no auth required)
-    app.get('/healthz', (_req, res) => {
+    app.get('/api/healthz', (_req, res) => {
         res.json({ status: 'ok', timestamp: Date.now() });
     });
 
@@ -87,7 +101,7 @@ export const createServer = (): ServerResult => {
     app.get('/api/brands', (req, res) => {
         const queryKey = typeof req.query.key === 'string' ? req.query.key : null;
         const healthCheckKey = env.healthCheckKey;
-        const showDetails = healthCheckKey && queryKey === healthCheckKey;
+        const showDetails = !!(healthCheckKey && queryKey && safeEqual(queryKey, healthCheckKey));
 
         /**
          * Masks a secret showing only last 4 characters
@@ -189,14 +203,12 @@ export const createServer = (): ServerResult => {
         });
     });
 
-    // Root endpoint
-    app.get('/', (_req, res) => {
-        res.send('Hello World');
-    });
-
     // Mount companion for each brand
     for (const instance of companionInstances) {
         const brand = instance.brand;
+
+        // Session is scoped to brand routes only — see sessionMiddleware comment above.
+        app.use(`/${brand.id}`, sessionMiddleware);
 
         // Attach the concrete brand for routes under /{brandId}
         // NOTE: Using createBrandMiddleware() here would fall back to defaultBrand because

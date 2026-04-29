@@ -188,7 +188,7 @@ export const createBrand = (
 
     return {
         id: slug,
-        displayName: slug, // JSON config could add displayName if needed, for now using slug
+        displayName: config.displayName ?? slug,
 
         // Proxy Support
         companionUrl: config.companionUrl,

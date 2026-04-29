@@ -197,7 +197,7 @@ CMD ["node", "dist/index.js"]
 
 **Mejoras propuestas**:
 ```typescript
-// GET /healthz
+// GET /api/healthz
 {
   "status": "ok",
   "timestamp": 1706284800000,
@@ -244,7 +244,7 @@ packages/
 **Endpoints a documentar**:
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/healthz` | Health check |
+| GET | `/api/healthz` | Health check |
 | GET | `/api/brands` | List brands |
 | GET | `/{brand}/uppy` | Upload page |
 | POST | `/{brand}/api/uppy/sign-s3` | Sign S3 URL |

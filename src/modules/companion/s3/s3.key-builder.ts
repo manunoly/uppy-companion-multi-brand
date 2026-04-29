@@ -1,24 +1,6 @@
 import type { AppRequest } from '../../../core/types/express.js';
 
 /**
- * Validates user data from metadata
- */
-const validateUser = (userJson: string | undefined): string | null => {
-    if (!userJson) return null;
-
-    try {
-        const user = JSON.parse(userJson) as Record<string, unknown>;
-        if (user && typeof user.id !== 'undefined') {
-            return String(user.id);
-        }
-        return null;
-    } catch {
-        console.warn('[s3] Failed to parse user from metadata');
-        return null;
-    }
-};
-
-/**
  * Sanitizes a filename to be safe for S3
  */
 const sanitizeFilename = (name: string | undefined | null): string => {
@@ -26,6 +8,17 @@ const sanitizeFilename = (name: string | undefined | null): string => {
     // Ensure we don't end up with an empty string after sanitization
     return name.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 255) || 'untitled';
 };
+
+const sanitizeBrand = (brandSource: string): string =>
+    brandSource.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+
+/**
+ * Returns the S3 key prefix that scopes uploads to a single (brand, user) pair.
+ * Used both to build new keys and to validate that a client-supplied key
+ * belongs to the authenticated user (defense against BOLA).
+ */
+export const buildUserKeyPrefix = (brandId: string, userId: string): string =>
+    `${sanitizeBrand(brandId)}/original/${userId}/`;
 
 export interface BuildS3KeyParams {
     req: AppRequest;
@@ -48,33 +41,19 @@ export const buildS3Key = ({ req, filename, metadata }: BuildS3KeyParams): strin
         if (!candidateName) console.warn('[s3] Filename missing in buildS3Key, using untitled');
     }
 
-    // Get brand from request or metadata
     const brandSource = req.brand?.id ??
         (metadata?.brand as string | undefined) ??
         'default';
-    const sanitizedBrand = brandSource.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    const sanitizedBrand = sanitizeBrand(brandSource);
 
-    // Get user ID from request or metadata
-    let userId: string | null = null;
-
-    // Try from req.user first
-    if (req.user?.id) {
-        userId = req.user.id;
-    }
-
-    // Then try from metadata
-    if (!userId && metadata?.user) {
-        userId = validateUser(metadata.user as string);
-    }
-
+    // Identity must come from server-validated req.user only. Client-supplied
+    // metadata fields like metadata.user are NOT trusted (would be BOLA).
+    // requireAuth on /api/uppy/* guarantees this invariant.
+    const userId = req.user?.id;
     if (!userId) {
-        // Fallback temporal solicitado por el usuario
-        console.warn('[s3] No user found, using fallback user id 3');
-        userId = '3';
-        // throw new Error('Invalid user or token on metadata');
+        throw new Error('s3.key-builder: userId required (req.user not populated)');
     }
 
-    // Update metadata with sanitized values
     if (metadata) {
         metadata.brand = sanitizedBrand;
         metadata.name = sanitizedFilename;
@@ -82,6 +61,7 @@ export const buildS3Key = ({ req, filename, metadata }: BuildS3KeyParams): strin
 
     const now = new Date();
     const timestamp = `${now.getHours()}${now.getMinutes()}${now.getSeconds()}${now.getMilliseconds()}`;
+    const prefix = buildUserKeyPrefix(sanitizedBrand, userId);
 
-    return `${sanitizedBrand}/original/${userId}/${now.getFullYear()}/${now.getMonth() + 1}/${now.getDate()}/${timestamp}/${sanitizedFilename}`;
+    return `${prefix}${now.getFullYear()}/${now.getMonth() + 1}/${now.getDate()}/${timestamp}/${sanitizedFilename}`;
 };
