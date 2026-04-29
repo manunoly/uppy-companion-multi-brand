@@ -239,8 +239,8 @@ export const serveUppyPage = async (
             ? brand.companionUrl
             : `${brand.server.protocol}://${brand.server.host}${brand.server.path}`;
 
-        // Replace placeholders. BEARER_TOKEN_VALUE is intentionally absent:
-        // the page no longer carries the token in any form.
+        // Replace placeholders. The bearer-token placeholder is intentionally
+        // absent — the page no longer carries the token in any form.
         html = html.replace(/BRAND_SLUG_VALUE/g, toJsStringLiteral(brand.id));
         html = html.replace(/BRAND_NAME_VALUE/g, toJsStringLiteral(brand.displayName));
         html = html.replace(/BRAND_LOGO_URL_VALUE/g, toJsStringLiteral(''));
