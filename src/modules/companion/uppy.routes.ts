@@ -178,6 +178,11 @@ export const serveUppyPage = async (
     // (OWASP ASVS V8.3.1). The follow-up request authenticates from the cookie.
     if (queryToken) {
         res.cookie(brand.auth.cookieName, queryToken, {
+            // Explicit brand-scoped path: without it, the browser derives the
+            // default from the request URL, so a trailing slash on /:brand/uppy/
+            // would yield a path like /:brand/uppy and the cookie would never
+            // reach /:brand/api/uppy/*, causing 401 after the redirect.
+            path: `/${brand.id}`,
             httpOnly: true,
             secure: brand.server.protocol === 'https',
             sameSite: brand.server.protocol === 'https' ? 'none' : 'lax',

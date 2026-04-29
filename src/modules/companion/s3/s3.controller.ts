@@ -44,10 +44,10 @@ const sendIfKeyNotOwned = (req: AppRequest, key: string, res: Response): boolean
         res.status(401).json({ error: 's3: user not authenticated' });
         return true;
     }
-    if (key.includes('..')) {
-        res.status(400).json({ error: 's3: invalid key' });
-        return true;
-    }
+    // Note: no `..` check here. S3 keys are flat strings to S3 (no path
+    // resolution), and `sanitizeFilename` allows dots so legitimate filenames
+    // like `weird..file.jpg` produce keys containing `..`. The authoritative
+    // gate is the user/brand prefix below.
     const prefix = buildUserKeyPrefix(req.brand.id, req.user.id);
     if (!key.startsWith(prefix)) {
         res.status(403).json({ error: 's3: key does not belong to authenticated user' });
