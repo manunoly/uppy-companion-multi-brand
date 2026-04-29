@@ -28,7 +28,7 @@ This spec eliminates the token from the rendered page by relying on **first-part
 
 - Multi-tenant deployments where Companion and the brand backend live on **different registrable domains** — see `DEBT_TECH.md` #4 (Option B: BFF proxy).
 - Per-brand feature flag / gradual migration. Hard-cut.
-- Explicit CSRF tokens. We rely on `SameSite=Lax` (default in modern browsers) which OWASP CSRF Cheat Sheet 2024 considers sufficient when the cookie is properly configured.
+- Explicit CSRF tokens **for cross-site requests**. `SameSite=Lax` blocks attacker pages on different registrable domains from carrying the cookie, which is what OWASP CSRF Cheat Sheet 2024 calls "adequate for most applications". **This does NOT cover same-site sibling subdomain abuse** (e.g. a compromised page on another `*.<rootDomain>` subdomain) — that risk is handled by the operator invariant in §9.0 and noted as future hardening (custom-header CSRF gate) in §9.2.
 - Rate limiting on `/api/uppy/*`.
 - Content Security Policy and Subresource Integrity hardening of the rendered page.
 
@@ -39,7 +39,7 @@ This spec eliminates the token from the rendered page by relying on **first-part
 | **A1** | Shared root domain (Companion + brand backend share a registrable domain). | A2: cookie scoped to single subdomain (would force backend reconfig or Companion-set cookies). A3: punt to deploy-time investigation. | User confirmed: "el backend principal crea la cookie que es utilizada por todos los subdominios". A1 is the standard pattern (Stripe `*.stripe.com`, Linear `*.linear.app`, Slack `*.slack.com`). |
 | **D2** | Companion only **consumes** cookies; never sets them on the brand domain. Missing cookie → 302 redirect to `loginUrl`. | D1: Companion sets the brand cookie with `Domain=.<rootDomain>` after validating a deeplink token. D3: hybrid. | OWASP separation of concerns: only the auth service issues credentials. D1 expands Companion's trust boundary — if Companion is compromised, attacker can mint cookies for any user with a valid token. D2 keeps Companion as a pure consumer. Industry pattern: Vercel preview deploys, Stripe Connect onboarding, Auth0 SDKs all redirect to the IDP for issuance. |
 | **M1** | Hard cut. No legacy code path. Brands not meeting prereqs cannot deploy. | M2: opt-in flag per brand. M3: opt-out flag with sunset. | One brand in production at the time of this design. M2/M3 add code-path duplication that historically becomes permanent. With one brand, prereqs are validated once before deploy. |
-| **No explicit CSRF tokens** | Rely on `SameSite=Lax` cookie + browser-enforced CORS allow-list. | Double-submit cookies, per-request tokens. | OWASP CSRF Cheat Sheet 2024: "SameSite=Lax cookies provide adequate CSRF protection for most applications." Adding CSRF tokens for a cross-subdomain same-site request would be belt-and-suspenders without a concrete threat. |
+| **No explicit CSRF tokens** | `SameSite=Lax` cookie covers **cross-site** CSRF (different registrable domain). **Same-site sibling-subdomain CSRF is NOT covered by the cookie** and is addressed by the operator invariant in §9.0 (no untrusted subdomains under `<rootDomain>`). Future hardening (custom-header gate or explicit subdomain allowlist) tracked in `DEBT_TECH.md` #4. | Double-submit cookies, per-request tokens, custom-header gate. | OWASP CSRF Cheat Sheet 2024 considers `SameSite=Lax` adequate for cross-site CSRF. Adding tokens now would not meaningfully change the same-site sibling risk because a compromised sibling subdomain could read a `XSRF-TOKEN` cookie too (it has the same `Domain=.<rootDomain>`). The right defense for that threat is origin/header-based gating on mutating routes — deferred. |
 | **CORS accepts any `*.<rootDomain>`** | Hardcoded allow-list. | Specific origin per route. | User requirement: any subdomain of the brand root must be able to call Companion's `/api/uppy/*` (e.g. an embedded modal in dashboard or admin app). The allowlist is implicit in the registrable-domain match. |
 
 ## 4. Architecture
@@ -150,7 +150,7 @@ Add `rootDomain` and `public.loginUrl` to the Zod schema. Add the `superRefine` 
 
 ### 6.3 `src/modules/brand/brand.service.ts`
 
-Set `brand.rootDomain` from config. Synthesize and push the CORS regex from §5.3.
+Set `brand.rootDomain` from config. **No regex synthesis here** — `brand.corsOrigins` is left untouched by the new field. The CORS regex is constructed at the consumer (`src/core/cors.ts`, see §6.6), so the `brand` object remains a plain serializable shape. This also keeps the new upload-API CORS policy (§6.6) from leaking into Companion's OAuth-flow CORS (which is driven by the env-derived `corsOrigins` and remains untouched).
 
 ### 6.4 `src/modules/companion/uppy.routes.ts` — `serveUppyPage` rewrite
 
@@ -221,9 +221,19 @@ app.use(`/${brand.id}/api`, corsForBrand(brand, env.protocol), apiRouter);
 | `'https'` (production) | `^https://([a-z0-9-]+\.)+<rootDomain>(:\d+)?$` — **HTTPS only** | A plain-HTTP page on any `*.<rootDomain>` could otherwise make `credentials: 'include'` requests to the HTTPS Companion API. The `Secure` cookie still travels (the request URL is HTTPS) and CORS would let the HTTP attacker page read the response. **Never echo `Access-Control-Allow-Credentials: true` to an `http://` origin in production.** |
 | `'http'` (local dev) | `^https?://([a-z0-9-]+\.)+<rootDomain>(:\d+)?$` plus an explicit allowance for `http://localhost(:port)?` | Local dev tooling typically runs over HTTP; tightening here breaks the inner loop. |
 
-The middleware:
-- Returns `204` for `OPTIONS` preflight when origin matches.
-- Sets `Vary: Origin` so caches don't poison cross-origin responses.
+The middleware contract (response headers when origin matches):
+
+| Header | Value | Why |
+|---|---|---|
+| `Access-Control-Allow-Origin` | echoed request `Origin` | Required for credentialed CORS — `*` is invalid with `Allow-Credentials: true`. |
+| `Access-Control-Allow-Credentials` | `true` | Enables cookie travel. |
+| `Access-Control-Allow-Methods` | `GET, POST, DELETE, OPTIONS` | These are the methods used by `/api/uppy/*`: `GET` (sign-s3, sign-part, list-parts), `POST` (sign-s3, multipart create, complete), `DELETE` (multipart abort). DELETE always preflights — without explicit allow, browser blocks the actual request. |
+| `Access-Control-Allow-Headers` | `Content-Type` | Required for the JSON `POST` bodies; preflight rejects without it. |
+| `Access-Control-Max-Age` | `600` | Cache preflight for 10 minutes to avoid OPTIONS storms during multipart uploads. |
+| `Vary` | `Origin` | Prevents shared caches from poisoning cross-origin responses. |
+
+Behavior:
+- Returns `204` for `OPTIONS` preflight when origin matches (with all headers above).
 - Falls through (no headers) when origin is missing (same-origin) or not in the allow-list (browser will block the response).
 - Includes an inline `escapeRegex` helper (4-line literal-character escape) — no external dependency.
 
@@ -262,10 +272,10 @@ Before deploying this version, the brand backend operator must verify:
    - Laravel: `config/session.php` → `'domain' => '.abeduls.com'`, `'secure' => true`, `'http_only' => true`, `'same_site' => 'lax'`.
    - Verify with `curl -i https://api.abeduls.com/login -d ...` and inspect the `Set-Cookie` header.
 
-2. **CORS on every backend the Uppy page calls cross-origin** (currently `publicUploadUrl`, `foldersUrl`, and any custom endpoints). For each:
-   - `Access-Control-Allow-Origin` echoes the request `Origin` when it matches `*.<rootDomain>`.
+2. **CORS on every backend the Uppy page calls cross-origin** (currently `publicUploadUrl`; `foldersUrl` is server-to-server from Companion and does not need CORS). For each browser-facing endpoint:
+   - `Access-Control-Allow-Origin` echoes the request `Origin` when it matches the same regex as Companion uses: **`https://*.<rootDomain>` only in production**, with `http://` allowed only for explicit local/dev origins. Echoing an `http://` origin under the brand root with `Allow-Credentials: true` reintroduces the same plain-HTTP exfiltration vector that §6.6 closes on Companion's side.
    - `Access-Control-Allow-Credentials: true`.
-   - `Access-Control-Allow-Methods` includes the methods used by the frontend (`GET`, `POST`, `PUT`, `OPTIONS` minimum).
+   - `Access-Control-Allow-Methods` includes the methods used by the frontend — currently `GET, POST, OPTIONS` for `publicUploadUrl` (no `PUT` or `DELETE` in the existing flow).
    - `Access-Control-Allow-Headers` includes `Content-Type` and any custom headers the frontend sends.
    - `OPTIONS` preflight is handled and returns `204` (or `200`) with the headers above.
 
