@@ -26,6 +26,7 @@
 | `src/modules/companion/uppy.routes.ts` | Modify | Rewrite `serveUppyPage`: drop queryToken handling, drop `res.cookie()`, drop `BEARER_TOKEN_VALUE` placeholder, add `redirectToLoginOrShowError`, add `Cache-Control: no-store`. |
 | `src/modules/companion/uppy.html` | Modify | Remove `BEARER_TOKEN_VALUE` placeholder + the `bearerToken` JS literal. |
 | `src/modules/companion/uppyModal.ts` | Modify | Remove `bearerToken` option, remove `authHeaders`/`mergeHeaders`, simplify `fetchWithAuth` to `credentials: 'include'`. |
+| `src/modules/auth/auth.service.ts` | Modify | Update `extractToken` JSDoc comment — remove the stale reference to the `/uppy` query-token exchange (which no longer exists). |
 | `scripts/verify-brand-config.ts` | Modify | Assert `rootDomain` present when `auth.url` set; warn on missing `loginUrl`. |
 | `.env.example` | Modify | Document `rootDomain` and `public.loginUrl` in the brand JSON template. |
 | `CLAUDE.md` | Modify | Update auth-flow gotcha to reflect cookie-only model. |
@@ -478,7 +479,64 @@ const redirectToLoginOrShowError = (
 };
 ```
 
-- [ ] **Step 3.2: Rewrite `serveUppyPage` body**
+- [ ] **Step 3.2: Harden the inline-script escape helpers**
+
+The current `toJsStringLiteral` in this file does NOT escape `</script>`-style tag-breaks or U+2028/U+2029 line separators, both of which can break out of the surrounding `<script>` block when injected with attacker-controlled data. `JSON.stringify(folders)` has the same problem. Folder names come from the brand backend — even if that backend is trusted, defense-in-depth requires neutralizing these characters before HTML injection.
+
+Find the existing helper at the top of the file:
+
+```ts
+const toJsStringLiteral = (value: string | undefined | null): string => {
+    const str = value ?? '';
+    const escaped = str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `'${escaped}'`;
+};
+```
+
+Replace with:
+
+```ts
+/**
+ * Escapes a value so it can appear safely inside a single-quoted JS string
+ * literal embedded in an HTML <script> tag. Beyond the obvious quote/backslash
+ * escapes, this also neutralizes:
+ *   - `</` (and `<!--`/`-->`) — would otherwise let a value close the script
+ *     tag or open an HTML comment that survives the `</script>` boundary.
+ *   - U+2028 / U+2029 — JS treats these as line terminators, so an unescaped
+ *     occurrence inside a string literal raises SyntaxError or breaks parsing.
+ */
+const toJsStringLiteral = (value: string | undefined | null): string => {
+    const str = value ?? '';
+    const escaped = str
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/<\//g, '<\\/')
+        .replace(/<!--/g, '<\\!--')
+        .replace(/-->/g, '--\\>')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
+    return `'${escaped}'`;
+};
+
+/**
+ * Serializes data to JSON suitable for inline embedding in an HTML <script>.
+ * Standard JSON.stringify can produce `</` (closing the script tag) or
+ * U+2028/U+2029 (which JS parses as line terminators). Both are escaped here.
+ * Output is still valid JSON parseable by the browser's JS engine.
+ */
+const safeJsonForHtmlScript = (data: unknown): string => {
+    return JSON.stringify(data)
+        .replace(/<\//g, '<\\/')
+        .replace(/<!--/g, '<\\!--')
+        .replace(/-->/g, '--\\>')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
+};
+```
+
+The new `toJsStringLiteral` is a strict superset of the old one (everything the old one escaped, the new one still escapes). All existing call sites continue to work without changes.
+
+- [ ] **Step 3.3: Rewrite `serveUppyPage` body**
 
 Replace the entire body of `serveUppyPage` (from `const brand = req.brand;` through to the final `res.send(html);`) with the cookie-only version. Find the existing block from line ~127 onward and replace with:
 
@@ -773,7 +831,52 @@ pnpm typecheck
 
 Expected: PASS.
 
-- [ ] **Step 5.5: Confirm the build still produces uppyModal.js**
+- [ ] **Step 5.5: Update `auth.service.ts` JSDoc to drop the stale `/uppy` exchange reference**
+
+Open `src/modules/auth/auth.service.ts`. Find the JSDoc above `extractToken`, which currently includes:
+
+```ts
+/**
+ * Extracts the authentication token from a request.
+ *
+ * Order: `Authorization: Bearer …` header > brand-specific cookie.
+ *
+ * The legacy `?bearerToken=` query param is intentionally NOT honored here
+ * — query strings get logged by proxies/CDNs/browser history and leak via
+ * Referer (OWASP ASVS V8.3.1). The /uppy page exchanges a query token for an
+ * HttpOnly cookie via a 302 redirect; everything else must use header or cookie.
+ */
+```
+
+Replace with:
+
+```ts
+/**
+ * Extracts the authentication token from a request.
+ *
+ * Order: `Authorization: Bearer …` header > brand-specific cookie.
+ *
+ * Query-string tokens are NOT honored anywhere. Tokens in URL params leak
+ * into proxy/CDN access logs, browser history, and Referer headers (OWASP
+ * ASVS V8.3.1). The brand session cookie at `Domain=.<rootDomain>`, set by
+ * the brand backend at login, is the canonical credential. The Authorization
+ * header path remains valid for server-to-server callers.
+ */
+```
+
+The function body (`extractToken` itself) is unchanged.
+
+The wording deliberately says "query-string tokens" rather than naming the legacy `bearerToken` parameter — this lets the verification grep in Step 5.6 / Step 8.1 confirm zero `bearerToken` references in the source tree (a stronger invariant than "the legacy name is acknowledged in a comment").
+
+- [ ] **Step 5.6: Verify no `bearerToken` references survive in the `src/` tree**
+
+```bash
+grep -rn "bearerToken" src/
+```
+
+Expected: no matches at all.
+
+- [ ] **Step 5.7: Confirm the build still produces uppyModal.js**
 
 ```bash
 pnpm build
@@ -789,17 +892,22 @@ grep -n "BEARER_TOKEN\|authHeaders\|Bearer " dist/modules/companion/uppyModal.js
 
 Expected: no output. (`Bearer ` with a trailing space — the literal that would appear in `Authorization: Bearer ...`.)
 
-- [ ] **Step 5.6: Commit**
+- [ ] **Step 5.8: Commit**
 
 ```bash
-git add src/modules/companion/uppyModal.ts
-git commit -m "refactor(uppyModal): drop bearerToken option, use credentials:include
+git add src/modules/companion/uppyModal.ts src/modules/auth/auth.service.ts
+git commit -m "refactor: drop bearerToken from browser flow + sync extractToken JSDoc
 
-The bearer header path is gone. fetchWithAuth is now a one-line wrapper
-around fetch() that sets credentials: 'include' on every call. The brand
-session cookie at Domain=.<rootDomain> (set by the brand backend, never
-by Companion) authenticates every request automatically — same-origin
-calls to /api/uppy/* and cross-origin calls to publicUploadUrl alike."
+uppyModal.ts: removed the bearerToken option from UppyModalOptions, the
+BEARER_TOKEN/authHeaders/mergeHeaders machinery, and replaced fetchWithAuth
+with a one-line wrapper that sets credentials: 'include' on every call.
+The brand session cookie at Domain=.<rootDomain> (set by the brand backend,
+never by Companion) authenticates every request automatically — same-origin
+calls to /api/uppy/* and cross-origin calls to publicUploadUrl alike.
+
+auth.service.ts: updated extractToken JSDoc. Removed the stale reference
+to the /uppy query-token-to-cookie exchange (which Task 3 deleted).
+Function body unchanged: bearer header > cookie remains the priority."
 ```
 
 ---
@@ -915,7 +1023,7 @@ Replace with:
 
 If the template uses a different brand name, adapt accordingly. The two new fields are at the same indentation as the others.
 
-After the example, add a new comment block explaining the two fields:
+After the example, add a new comment block explaining the two fields AND the operator-side prerequisites (matching spec §8). Do not paraphrase loosely — operators rely on this checklist to avoid breaking uploads or reintroducing the HTTP-credentialed-CORS vulnerability the design closes:
 
 ```
 # ===========================================
@@ -932,6 +1040,52 @@ After the example, add a new comment block explaining the two fields:
 # url> back to /uppy. The dashboard MUST validate the redirect target
 # against an allow-list (e.g. only redirect to https://companion.<root>)
 # to avoid open-redirect abuse.
+#
+# ===========================================
+# OPERATOR PRE-DEPLOY CHECKLIST (do these BEFORE rolling this version)
+# ===========================================
+# 1. Brand backend session cookie must be set with:
+#      Domain=.<rootDomain>   (e.g. Domain=.abeduls.com)
+#      HttpOnly
+#      Secure (in production)
+#      SameSite=Lax
+#    Laravel example: config/session.php
+#      'domain' => '.abeduls.com',
+#      'secure' => true,
+#      'http_only' => true,
+#      'same_site' => 'lax',
+#    Verify with: curl -i https://api.<rootDomain>/login -d ...
+#    and inspect the Set-Cookie header.
+#
+# 2. CORS on every brand backend endpoint the Uppy page calls
+#    cross-origin (currently publicUploadUrl; foldersUrl is server-to-server
+#    from Companion and does not need CORS):
+#      Access-Control-Allow-Origin: <echo request Origin if it matches
+#                                    https://*.<rootDomain> in production;
+#                                    http:// allowed only for explicit
+#                                    local/dev origins>
+#      Access-Control-Allow-Credentials: true
+#      Access-Control-Allow-Methods: GET, POST, OPTIONS
+#      Access-Control-Allow-Headers: Content-Type
+#      OPTIONS preflight returns 204 (or 200) with the headers above.
+#
+#    DO NOT echo http:// origins in production. The brand session cookie has
+#    Secure and travels because the request URL is HTTPS, so allowing an
+#    http:// origin under the brand root with Allow-Credentials would let an
+#    HTTP attacker page read credentialed responses — the same vulnerability
+#    Companion's CORS rule closes on the upload-API side.
+#
+# 3. Dashboard's loginUrl endpoint must accept ?redirect=<url> and validate
+#    the redirect target against an allow-list (e.g. only redirect to URLs
+#    starting with https://companion.<rootDomain>) to prevent open-redirect
+#    abuse. This is the dashboard's responsibility — Companion only constructs
+#    the URL; it does not validate.
+#
+# 4. Run before deploy:
+#      npx tsx scripts/verify-brand-config.ts
+#    Must exit 0. Will fail if any brand has auth.url without rootDomain.
+#
+# Full design rationale: docs/superpowers/specs/2026-04-29-cookie-only-cross-origin-auth-design.md
 ```
 
 - [ ] **Step 7.2: Update `CLAUDE.md` auth-flow gotcha**
