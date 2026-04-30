@@ -148,7 +148,15 @@ try {
 
             const schemaIssues = issuesByBrand[brand.id];
             if (schemaIssues?.length) {
-                console.warn(`  ⚠️  Invalid config schema: ${schemaIssues.join('; ')}`);
+                // Schema rejection is a deploy-blocker. Without this exit
+                // code, the rootDomain-missing case still slips through:
+                // parseBrandConfigsForVerifier omits the failed config, so
+                // the brand gets registered with default empty values, the
+                // `brand.auth.url && !brand.rootDomain` check above never
+                // sees a populated auth.url, and the downstream warning
+                // alone leaves process.exitCode at 0.
+                console.error(`  ❌ Invalid config schema: ${schemaIssues.join('; ')}`);
+                process.exitCode = 1;
             }
 
             const config = brandConfigs[brand.id];
