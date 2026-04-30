@@ -396,7 +396,7 @@ Helper: `createTestApp({brands: [makeBrand()]})`, mock S3 con `aws-sdk-client-mo
 - `GET /api/healthz` → 200 OK
 - `GET /api/brands` sin key → array con `{id, displayName}` solamente
 - `GET /api/brands?key=<correct>` → array con info detallada (secrets enmascarados)
-- `GET /api/brands?key=<wrong>` → 401 o fallback al basic view (según política actual)
+- `GET /api/brands?key=<wrong>` → 200 con basic view (la política actual nunca devuelve 401: si la key no matchea, `showDetails === false` y se sirve el shape básico — verificado en `server.ts:105-208`)
 - `GET /` → 404 (handler removido en sesión anterior)
 - Headers de seguridad presentes: `Cache-Control: no-store` en `/uppy`, no en `/api/healthz`
 
