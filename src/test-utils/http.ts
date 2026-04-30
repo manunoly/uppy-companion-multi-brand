@@ -26,13 +26,30 @@ export const createTestApp = async (
     const env = opts.env ?? makeValidEnv();
     const brandRegistry = makeBrandRegistry(brands);
 
+    // The mock companion router echoes the URL it receives back as JSON so
+    // tests can assert on what reached companion (e.g. that the `/default/`
+    // strip middleware actually stripped). Real apiRouter handlers are mounted
+    // BEFORE companion, so they take precedence; companion only sees requests
+    // that fall through to its mount path.
+    const makeMockCompanionRouter = () => {
+        const router = express.Router();
+        router.use((req, res) => {
+            res.status(200).json({
+                url: req.url,
+                originalUrl: req.originalUrl,
+                baseUrl: req.baseUrl,
+            });
+        });
+        return router;
+    };
+
     // Mock companion before importing assembleApp.
     vi.doMock('@uppy/companion', () => ({
         default: {
-            app: vi.fn(() => ({ app: express.Router() })),
+            app: vi.fn(() => ({ app: makeMockCompanionRouter() })),
             socket: vi.fn(),
         },
-        app: vi.fn(() => ({ app: express.Router() })),
+        app: vi.fn(() => ({ app: makeMockCompanionRouter() })),
         socket: vi.fn(),
     }));
 

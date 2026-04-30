@@ -109,20 +109,42 @@ describe('server integration', () => {
         expect(res.text).toContain('id="brandSlug"');
     });
 
-    it('GET /acme/default/* on a non-default brand reaches the companion mount without crashing (strip middleware)', async () => {
-        // The non-default-brand chain has a tiny middleware that strips the
-        // unwanted "/default/" segment from incoming OAuth callback URLs. We
-        // can't easily intercept the strip directly; instead, hit a route under
-        // /acme/default/* and confirm the request does NOT 500 (which would be
-        // the failure mode if the strip middleware threw).
+    it('strip middleware removes /default/ prefix on non-default brand routes before companion sees the URL', async () => {
+        // The non-default-brand chain has a middleware that strips an unwanted
+        // "/default/" segment from incoming OAuth callback URLs (a quirk of how
+        // Companion derives redirect URIs). We assert the strip actually
+        // happened by inspecting the URL the mocked companion router observed.
         const def = makeBrand({ id: 'default' });
         const acme = makeBrand({ id: 'acme' });
         const { app } = await createTestApp({ brands: [def, acme] });
-        const res = await request(app).get('/acme/default/some-unknown-path');
-        // The mocked companion router doesn't match the path, so we expect a
-        // non-500 response (any of 200/401/403/404 is acceptable proof the
-        // strip middleware ran cleanly).
-        expect([200, 404, 401, 403]).toContain(res.status);
+        const res = await request(app).get('/acme/default/oauth/google/callback');
+        expect(res.status).toBe(200);
+        // Companion mounted on /acme; Express strips that prefix from req.url.
+        // The strip middleware then removes the `/default` prefix, so the URL
+        // companion finally sees should be the post-strip path.
+        expect(res.body.url).toBe('/oauth/google/callback');
+    });
+
+    it('strip middleware leaves URL untouched when path does not start with /default/', async () => {
+        const def = makeBrand({ id: 'default' });
+        const acme = makeBrand({ id: 'acme' });
+        const { app } = await createTestApp({ brands: [def, acme] });
+        const res = await request(app).get('/acme/oauth/google/callback');
+        expect(res.status).toBe(200);
+        expect(res.body.url).toBe('/oauth/google/callback');
+    });
+
+    it('strip middleware does NOT register on the default brand', async () => {
+        // The default brand's chain has no strip middleware (the /default/
+        // segment problem only happens for *non-default* brands when companion
+        // mistakenly uses the default brand id in OAuth state). So a path like
+        // /default/default/foo must reach companion with /default/foo intact —
+        // the strip must NOT fire.
+        const def = makeBrand({ id: 'default' });
+        const { app } = await createTestApp({ brands: [def] });
+        const res = await request(app).get('/default/default/oauth/google/callback');
+        expect(res.status).toBe(200);
+        expect(res.body.url).toBe('/default/oauth/google/callback');
     });
 
     it('OPTIONS /test/api/uppy/sign-s3 with valid origin → 204 with CORS headers', async () => {

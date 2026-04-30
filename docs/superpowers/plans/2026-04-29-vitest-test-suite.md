@@ -6,7 +6,7 @@
 
 **Architecture:** Tests are colocated with source as `*.test.ts` (unit) and `*.integration.test.ts` (HTTP via supertest). A `tsconfig.build.json` excludes them from the production build. Per-test mocking uses `aws-sdk-client-mock` for AWS, `vi.mock` for `@uppy/companion`, and `vi.stubGlobal('fetch', …)` for outbound HTTP. Integration tests build an Express app via a new exported `assembleApp({ env, brandRegistry, companionInstances })` helper.
 
-**Tech Stack:** Vitest 1.x, @vitest/coverage-v8, supertest, aws-sdk-client-mock, GitHub Actions.
+**Tech Stack:** Vitest 4.x, @vitest/coverage-v8 (matching major), supertest, aws-sdk-client-mock, GitHub Actions.
 
 **Branch:** Already on `feat/vitest-suite` (rebased onto current `main` after PR #4 merged).
 

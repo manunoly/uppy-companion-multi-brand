@@ -3,45 +3,52 @@ import type { Brand, BrandRegistry } from '../modules/brand/brand.types.js';
 import type { AppRequest } from '../core/types/express.js';
 import type { AuthUser } from '../modules/auth/auth.types.js';
 
-export const makeBrand = (overrides: Partial<Brand> = {}): Brand => ({
-    id: 'test',
-    displayName: 'Test',
-    rootDomain: 'test.example.com',
-    companionUrl: 'http://localhost:3020/test',
-    auth: {
-        url: 'https://api.test.example.com/auth/me',
-        cookieName: 'session',
-    },
-    s3: {
-        bucket: 'test-bucket',
-        region: 'us-east-1',
-        accessKey: 'AKIATESTKEY',
-        secretKey: 'testsecretkey',
-        useAccelerateEndpoint: false,
-        client: new S3Client({
+export const makeBrand = (overrides: Partial<Brand> = {}): Brand => {
+    // Derive id-dependent fields BEFORE the spread so that callers who only
+    // override `id` still get a coherent Brand (companionUrl + server.path
+    // matching the new id). Direct overrides for those fields still win via
+    // the trailing `...overrides`.
+    const id = overrides.id ?? 'test';
+    return {
+        id,
+        displayName: 'Test',
+        rootDomain: 'test.example.com',
+        companionUrl: `http://localhost:3020/${id}`,
+        auth: {
+            url: 'https://api.test.example.com/auth/me',
+            cookieName: 'session',
+        },
+        s3: {
+            bucket: 'test-bucket',
             region: 'us-east-1',
-            credentials: { accessKeyId: 'AKIATESTKEY', secretAccessKey: 'testsecretkey' },
-        }),
-    },
-    providers: {},
-    corsOrigins: [],
-    uploadUrls: ['*'],
-    secret: 'test-secret-value-1234567890',
-    public: {
-        backendUrl: 'https://app.test.example.com',
-        uploadUrl: 'https://app.test.example.com/api/upload',
-        foldersUrl: 'https://app.test.example.com/api/folders',
-        loginUrl: 'https://app.test.example.com/login',
-    },
-    server: {
-        host: 'localhost:3020',
-        protocol: 'http',
-        path: '/test',
-    },
-    filePath: '/tmp/',
-    enabledPlugins: [],
-    ...overrides,
-});
+            accessKey: 'AKIATESTKEY',
+            secretKey: 'testsecretkey',
+            useAccelerateEndpoint: false,
+            client: new S3Client({
+                region: 'us-east-1',
+                credentials: { accessKeyId: 'AKIATESTKEY', secretAccessKey: 'testsecretkey' },
+            }),
+        },
+        providers: {},
+        corsOrigins: [],
+        uploadUrls: ['*'],
+        secret: 'test-secret-value-1234567890',
+        public: {
+            backendUrl: 'https://app.test.example.com',
+            uploadUrl: 'https://app.test.example.com/api/upload',
+            foldersUrl: 'https://app.test.example.com/api/folders',
+            loginUrl: 'https://app.test.example.com/login',
+        },
+        server: {
+            host: 'localhost:3020',
+            protocol: 'http',
+            path: `/${id}`,
+        },
+        filePath: '/tmp/',
+        enabledPlugins: [],
+        ...overrides,
+    };
+};
 
 export const makeBrandWithoutAuth = (overrides: Partial<Brand> = {}): Brand =>
     makeBrand({
