@@ -113,23 +113,24 @@ All brand endpoints are prefixed with `/{brandId}`:
 
 ---
 
-## Authentication Flow
+## Authentication Flow (Cookie-only)
 
-The server supports multiple authentication methods with the following priority:
+The server uses **first-party cookies on a shared registrable domain**. Tokens are never embedded in HTML, URLs, or query strings (OWASP ASVS V8.3.1).
 
 ```
-1. Authorization Header  →  Bearer xxx
+1. Authorization Header  →  Bearer xxx          (server-to-server callers)
          ↓ (if missing)
 2. Brand Cookie          →  cookies[brand.auth.cookieName]
-         ↓ (if missing)
-3. Query Parameter       →  ?bearerToken=xxx
 ```
+
+The `?bearerToken=` query parameter is **NOT** honored — tokens in URLs would leak into proxy logs, browser history, and Referer headers.
 
 ### How It Works
 
-1. **Token Extraction**: The server extracts the token from the request using the priority above
-2. **Backend Validation**: If `brand.auth.url` is configured, the extracted token is forwarded to that endpoint using the brand cookie
-3. **User Attachment**: On successful validation, `req.user` is populated with user data
+1. The user logs in at the brand's dashboard (e.g. `app.<rootDomain>`). The brand backend sets a session cookie with `Domain=.<rootDomain>`, `HttpOnly`, `Secure` (in prod), `SameSite=Lax`.
+2. The browser sends the cookie automatically to all subdomains under `<rootDomain>`, including Companion (e.g. `companion.<rootDomain>`).
+3. On `GET /{brand}/uppy`, Companion reads the cookie and forwards it to `brand.auth.url` for validation. If valid, the upload page is served. If missing/invalid, Companion 302s to `brand.public.loginUrl?redirect=<full-url>` (or shows a static 401 page if `loginUrl` is unset).
+4. Cross-origin XHRs from the upload page to `publicUploadUrl` use `credentials: 'include'`. Per-brand CORS in `src/core/cors.ts` echoes the request `Origin` (with `Allow-Credentials: true`) only when it matches `*.<rootDomain>` and is HTTPS in production.
 
 ```typescript
 // Token validation request to brand backend
@@ -146,7 +147,14 @@ Headers:
 }
 ```
 
-> **Note**: If `brand.auth.url` is not configured, authentication is disabled and all requests are allowed.
+> **Note**: If `brand.auth.url` is not configured, the brand has authentication disabled and `GET /{brand}/uppy` returns 403 (the page rejects unauthenticated uploads).
+
+### Required brand fields when auth is enabled
+
+| Field | Required when | Purpose |
+|---|---|---|
+| `rootDomain` | `auth.url` is set | Registrable domain `<rootDomain>` shared by Companion and the brand backend. Cookie is set with `Domain=.<rootDomain>`. CORS allow-list is built from `*.<rootDomain>`. **Schema rejects configs with `auth.url` but no `rootDomain`.** |
+| `public.loginUrl` | (recommended) | Where Companion 302s the user when the cookie is missing/invalid. Receives `?redirect=<full-url>` back to `/uppy`. The dashboard MUST validate the redirect target against an allow-list. |
 
 ---
 
@@ -349,7 +357,7 @@ src/
 2. Check the corresponding JSON env var exists (e.g., `BRAND_A` for `brand-a`)
 3. Run the verifier script:
    ```bash
-   npx ts-node scripts/verify-brand-config.ts
+   npx tsx scripts/verify-brand-config.ts
    ```
 
 ### OAuth redirect goes to /default
@@ -397,18 +405,28 @@ This happens when Companion doesn't know the correct public URL.
 ## Development
 
 ```bash
-# Run with hot reload
-pnpm dev
-
-# Type checking
-pnpm typecheck
-
-# Linting
-pnpm lint
-
-# Build
-pnpm build
+pnpm dev              # Hot reload via tsx watch
+pnpm typecheck        # tsc --noEmit
+pnpm test             # vitest run (single pass)
+pnpm test:watch       # vitest in watch mode
+pnpm test:coverage    # vitest run --coverage (V8); fails CI below 70/60/70/70
+pnpm build            # tsc -p tsconfig.build.json + browser asset bundling
 ```
+
+### Local development with a custom domain
+
+The cookie-auth model requires Companion and the brand backend to share a registrable suffix. For local dev with `abeduls.local`:
+
+1. Add to `/etc/hosts` (or `C:\Windows\System32\drivers\etc\hosts` on Windows):
+   ```
+   127.0.0.1 abeduls.local app.abeduls.local api.abeduls.local companion.abeduls.local
+   ```
+2. In `.env`, set `COMPANION_HOST=companion.abeduls.local:3020` and configure the brand JSON with `"rootDomain": "abeduls.local"`. See `.env.example` for a complete `ABEDULS=...` template.
+3. Verify before `pnpm dev`:
+   ```bash
+   npx tsx scripts/verify-brand-config.ts
+   ```
+   Must exit 0. Will fail if `auth.url` is set but `rootDomain` is missing.
 
 ## License
 
