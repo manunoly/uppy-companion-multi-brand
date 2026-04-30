@@ -189,6 +189,7 @@ export const createBrand = (
     return {
         id: slug,
         displayName: config.displayName ?? slug,
+        rootDomain: config.rootDomain ?? null,
 
         // Proxy Support
         companionUrl: config.companionUrl,
@@ -229,10 +230,13 @@ export const createBrand = (
             const foldersUrl = config.public?.foldersUrl
                 ?? defaults.publicDefaults.foldersUrl;
 
+            const loginUrl = config.public?.loginUrl;
+
             return {
                 backendUrl,
                 uploadUrl,
                 foldersUrl,
+                loginUrl,
             };
         })(),
 

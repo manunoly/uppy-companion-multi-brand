@@ -18,10 +18,11 @@ const userSchema = z.object({
  *
  * Order: `Authorization: Bearer …` header > brand-specific cookie.
  *
- * The legacy `?bearerToken=` query param is intentionally NOT honored here
- * — query strings get logged by proxies/CDNs/browser history and leak via
- * Referer (OWASP ASVS V8.3.1). The /uppy page exchanges a query token for an
- * HttpOnly cookie via a 302 redirect; everything else must use header or cookie.
+ * Query-string tokens are NOT honored anywhere. Tokens in URL params leak
+ * into proxy/CDN access logs, browser history, and Referer headers (OWASP
+ * ASVS V8.3.1). The brand session cookie at `Domain=.<rootDomain>`, set by
+ * the brand backend at login, is the canonical credential. The Authorization
+ * header path remains valid for server-to-server callers.
  */
 export const extractToken = (req: AppRequest, brand: Brand): string | null => {
     const cookies = req.cookies as Record<string, string> | undefined;

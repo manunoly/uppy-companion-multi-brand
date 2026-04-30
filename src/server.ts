@@ -11,6 +11,7 @@ import {
     type BrandRegistry
 } from './modules/brand/index.js';
 import { attachUser, requireAuth } from './modules/auth/index.js';
+import { corsForBrand } from './core/cors.js';
 import {
     createCompanionForBrand,
     attachCompanionSocket,
@@ -238,8 +239,10 @@ export const createServer = (): ServerResult => {
         app.get(`/${brand.id}/uppy`, serveUppyPage);
         app.get(`/${brand.id}/uppyModal.js`, serveUppyModalJs);
 
-        // Mount custom API (S3 signing, etc.)
-        app.use(`/${brand.id}/api`, apiRouter);
+        // Mount custom API (S3 signing, etc.) behind per-brand CORS.
+        // The middleware accepts any *.<rootDomain> origin (HTTPS-only in prod)
+        // so dashboards on sibling subdomains can call /api/uppy/* with cookies.
+        app.use(`/${brand.id}/api`, corsForBrand(brand, env.protocol), apiRouter);
 
         // Companion's own S3 multipart endpoints (/:brand/s3/...) invoke the
         // s3.getKey callback which calls buildS3Key — that callback throws if

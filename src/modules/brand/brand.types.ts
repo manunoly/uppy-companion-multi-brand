@@ -47,6 +47,9 @@ export interface BrandS3Config {
 export interface BrandConfigJSON {
     /** Human-readable name shown in the UI. Falls back to the slug when omitted. */
     displayName?: string;
+    /** Brand's registrable domain (e.g. "abeduls.com"). Required when auth.url is set:
+     *  drives the per-brand CORS regex on /api/uppy/* and documents the cookie scope. */
+    rootDomain?: string;
     /** Preferred: auth configuration block */
     auth?: {
         url?: string;
@@ -57,6 +60,9 @@ export interface BrandConfigJSON {
         backendUrl?: string;
         uploadUrl?: string;
         foldersUrl?: string;
+        /** Where to 302 the user when their cookie is missing. Optional —
+         *  if absent, Companion renders a static error page. */
+        loginUrl?: string;
     };
     /** Legacy fields (kept for backwards compatibility) */
     authUrl?: string;
@@ -93,6 +99,9 @@ export interface Brand {
 
     /** Display name for the brand */
     displayName: string;
+
+    /** Brand's registrable domain (e.g. "abeduls.com"). null when auth.url is null. */
+    rootDomain: string | null;
 
     /** [NEW] Explicit public URL for Companion (e.g. for proxies) */
     companionUrl?: string;
@@ -137,6 +146,8 @@ export interface Brand {
         uploadUrl: string;
         /** Folders API endpoint */
         foldersUrl?: string;
+        /** Where Companion 302's the user when their cookie is missing. */
+        loginUrl?: string;
     };
 
     /** Companion server settings */

@@ -104,28 +104,93 @@ Todos los módulos: `[brand]`, `[server]`, `[companion]`, `[s3]`, `[auth]`, `[up
 
 ---
 
-## 4. Bearer token expuesto en el HTML de `/uppy` (HttpOnly bypass de facto)
+## 4. Bearer token expuesto en el HTML de `/uppy`
 
 **Origen:** PR #3 review de Copilot (comentario sobre `BEARER_TOKEN_VALUE` en `uppy.html`).
-**Estado:** Diferido. La cookie del flujo `/uppy` ya es `HttpOnly: true` y el query param desaparece del URL vía 302 redirect, pero el servidor inyecta el token literal en el HTML como variable JS (`BEARER_TOKEN_VALUE`) — cualquier XSS en la página puede leerlo igual.
+**Estado:**
+- **Option A (cookie-only via shared registrable domain):** ✅ **IMPLEMENTADO** en PR #4 (`feat/cookie-only-auth`). Spec en `docs/superpowers/specs/2026-04-29-cookie-only-cross-origin-auth-design.md`. Plan en `docs/superpowers/plans/2026-04-29-cookie-only-cross-origin-auth.md`.
+- **Option B (BFF proxy para multi-tenant):** ⏳ **Diferida** — solo necesaria cuando Companion vive en un registrable domain distinto al backend de la marca (caso multi-tenant SaaS).
 
-### Por qué se inyecta hoy
+### Resumen del problema
 
-`src/modules/companion/uppyModal.ts:125` arma `Authorization: Bearer ${BEARER_TOKEN}` para llamar al **`publicUploadUrl`** del backend de la marca (ej. `https://api.abeduls.com/api/frame/contents/upload/public`). Ese backend está en un origen distinto al de Companion → la cookie de Companion no se envía en cross-origin, así que se necesita el token en JS para autenticar la llamada.
+Hoy `uppy.html` recibe el bearer token del usuario como literal JS (`const bearerToken = '<token>'`). Cualquier XSS en la página puede leerlo, anulando el goal de `HttpOnly` en la cookie. El token está ahí porque `uppyModal.ts:125` lo necesita para llamar al `publicUploadUrl` cross-origin (donde la cookie de Companion no viaja por defecto).
 
-### Por qué importa
+Detalle completo y threat model: ver el spec linkeado arriba.
 
-OWASP A03 (Injection / XSS) y la *Session Management Cheat Sheet*: si una XSS roba el token, tiene acceso completo a la cuenta del usuario en el backend de la marca. `HttpOnly` en la cookie de Companion no protege porque el mismo token vive como string en `window.bearerToken` de la página.
+---
 
-### Opciones de fix (orden de preferencia)
+### Option A — Cookie-only via shared registrable domain (implementado)
 
-1. **Token efímero de uso único firmado por el backend de la marca.** El backend emite un token corto (TTL ~5 min, single-use) específico para este upload. La página JS solo ve ese token-corto. Si se filtra, expira solo. Patrón de **Stripe Checkout sessions**, **Auth0 magic links**.
-2. **Proxy del upload-completion por Companion.** La página JS llama a un nuevo `/api/uppy/complete-upload` en Companion (same-origin, cookie HttpOnly), y Companion hace el call al backend de la marca con el token (que vive solo server-side). El JS nunca ve el token. Defense-in-depth máximo.
-3. **Status quo + risk acceptance.** Documentar que cualquier XSS en `/uppy` es game-over. Aceptable solo si la página gana CSP estricto, no acepta input de usuario inline, y dependencias front (Uppy, sweetalert2 desde CDN) tienen integrity hashes.
+Companion y el backend de la marca comparten un registrable domain (ej. `companion.abeduls.com` + `api.abeduls.com`, ambos bajo `.abeduls.com`). El backend setea su cookie de session con `Domain=.abeduls.com`, así viaja automáticamente a TODOS los subdominios. Todos los `fetch()` de Uppy usan `credentials: 'include'`. El token nunca entra al JS.
 
-### Esfuerzo estimado
+**Por qué se eligió:** simple, sin proxy, sin código de impersonation. El usuario confirmó que su backend ya setea la cookie con `Domain=.<rootDomain>`.
 
-- Opción 1: ~4-6 h (cambios en backend de la marca para emitir tokens cortos + Companion + `uppyModal.ts`).
-- Opción 2: ~2-3 h (nuevo endpoint en `/api/uppy/` + refactor en `uppyModal.ts:saveFileToDB`).
-- Opción 3: 30 min (CSP + integrity hashes + nota en CLAUDE.md).
+**Trade-off aceptado:** asume que toda marca en producción comparte registrable domain con su Companion. Marcas multi-tenant (Companion en `uploads.platform.com/abeduls`) NO están cubiertas.
+
+Spec: `docs/superpowers/specs/2026-04-29-cookie-only-cross-origin-auth-design.md`.
+
+---
+
+### Option B — BFF proxy (diferida hasta tener un caso multi-tenant)
+
+#### Cuándo pasar a B
+
+Si la plataforma evoluciona a "Companion como SaaS multi-tenant" donde una sola instancia de Companion sirve a marcas que NO controlan el dominio donde Companion está hospedado. Ejemplo concreto:
+
+- Companion en `uploads.platform.com/abeduls` (operado por nosotros).
+- Backend de Abeduls en `api.abeduls.com` (operado por la marca).
+- No hay registrable domain compartido → la cookie cross-subdomain no se puede usar.
+
+En ese caso A no funciona y necesitamos B.
+
+#### Diseño de B (resumen)
+
+La página JS de `/uppy` deja de llamar directamente a `publicUploadUrl`. En vez de eso llama a un nuevo endpoint **same-origin** en Companion:
+
+```
+POST companion.platform.com/abeduls/api/uppy/complete-upload
+  Body: { images: [...], folder: ... }
+  Cookie: companion-session=...   (HttpOnly, never readable by JS)
+```
+
+Companion (server-side):
+
+1. Lee la cookie de Companion (HttpOnly).
+2. Resuelve el bearer token de la marca asociado a esa session (puede estar en la session store de Companion, o re-validar contra `auth.url`).
+3. Hace el call al `publicUploadUrl` con `Authorization: Bearer <token>` desde el server.
+4. Devuelve la respuesta del backend al JS de la página.
+
+El JS nunca ve el bearer. Defense-in-depth máximo.
+
+#### Por qué es DEUDA y no se hace ahora
+
+1. **No hay caso multi-tenant en producción hoy.** YAGNI.
+2. **Trabajo significativo:**
+   - Nuevo endpoint en `apiRouter` (`/api/uppy/complete-upload`) que proxy-ea a `publicUploadUrl`.
+   - Almacén server-side de tokens del brand asociados a sessions de Companion (Redis o session store con encrypted payload).
+   - Manejo de expiración / refresh.
+   - Refactor de `uppyModal.ts:saveFileToDB` para llamar a Companion en vez del backend.
+   - CORS de Companion no necesita cambios pero CSRF tokens sí (porque el endpoint Companion es same-origin con la página, pero alguien podría triggerear un POST desde otro tab).
+3. **Latencia agregada:** un hop extra (browser → Companion → brand backend) en lugar de directo (browser → brand backend).
+4. **Más superficie a securizar** del lado server (token storage, replay protection, request signing).
+
+#### Esfuerzo estimado
+
+~4-6 h de implementación + ~2 h de threat modeling para token storage + replay. Plus pruebas e2e con un brand multi-tenant simulado.
+
+#### Trigger para activar
+
+Crear este ítem como issue de GitHub con etiqueta `design/multi-tenant` el día que se firme el primer cliente que NO controla su Companion subdomain.
+
+---
+
+### Option C — CSP + SRI hardening (independiente de A y B)
+
+Independientemente de cómo se autentique, la página `/uppy` carga scripts desde CDNs externos (`releases.transloadit.com/uppy/...`, `cdnjs.cloudflare.com/sweetalert2/...`) sin Subresource Integrity hashes. Si una de esas CDNs se compromete, atacante ejecuta código arbitrario en `/uppy`.
+
+Mitigación:
+1. CSP estricto (`script-src 'self' https://releases.transloadit.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; ...`).
+2. `integrity="sha384-..."` en cada `<script src=...>` y `<link rel=stylesheet>` externo.
+
+**Esfuerzo:** ~30 min. Independiente de A/B. Vale hacerlo en cuanto haya tiempo.
 

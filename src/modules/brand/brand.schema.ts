@@ -38,6 +38,9 @@ const s3ConfigSchema = z.object({
  */
 export const brandConfigSchema = z.object({
     displayName: z.string().min(1).optional(),
+    rootDomain: z.string()
+        .regex(/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i, 'Must be a registrable domain like "midomain.com"')
+        .optional(),
     auth: z.object({
         url: z.string().min(1).optional(),
         cookieName: z.string().min(1).optional(),
@@ -46,6 +49,7 @@ export const brandConfigSchema = z.object({
         backendUrl: z.string().min(1).optional(),
         uploadUrl: z.string().min(1).optional(),
         foldersUrl: z.string().min(1).optional(),
+        loginUrl: z.string().url().optional(),
     }).strict().optional(),
     authUrl: z.string().min(1).optional(),
     authCookieName: z.string().min(1).optional(),
@@ -66,4 +70,16 @@ export const brandConfigSchema = z.object({
         zoom: providerConfigSchema.optional(),
     }).strict().optional(),
     enabledPlugins: z.string().min(1).optional(),
-}).strict();
+}).strict()
+.superRefine((cfg, ctx) => {
+    // Cross-field invariant: a brand with auth.url MUST declare rootDomain so
+    // Companion can derive CORS scope and the cookie domain expectation.
+    const hasAuth = !!(cfg.auth?.url ?? cfg.authUrl);
+    if (hasAuth && !cfg.rootDomain) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['rootDomain'],
+            message: 'rootDomain is required when auth.url is configured (cookie auth model)',
+        });
+    }
+});
