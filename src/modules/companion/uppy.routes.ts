@@ -13,8 +13,9 @@ const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([
  * escapes, this also neutralizes:
  *   - `\n` and `\r` — single-quoted JS string literals cannot span lines, so
  *     a raw newline in the input would produce a SyntaxError at parse time.
- *   - `</` (and `<!--`/`-->`) — would otherwise let a value close the script
- *     tag or open an HTML comment that survives the `</script>` boundary.
+ *   - `<` and `>` — escaped to JSON-valid `<`/`>`. This blocks
+ *     `</script>` closure, `<!--`/`-->` HTML-comment openers, and any
+ *     case-insensitive `<SCRIPT>`/`<!DOCTYPE` form, all in one rule.
  *   - U+2028 / U+2029 — JS treats these as line terminators, so an unescaped
  *     occurrence inside a string literal raises SyntaxError or breaks parsing.
  */
@@ -25,9 +26,8 @@ const toJsStringLiteral = (value: string | undefined | null): string => {
         .replace(/'/g, "\\'")
         .replace(/\n/g, '\\n')
         .replace(/\r/g, '\\r')
-        .replace(/<\//g, '<\\/')
-        .replace(/<!--/g, '<\\!--')
-        .replace(/-->/g, '--\\>')
+        .replace(/</g, '\\u003C')
+        .replace(/>/g, '\\u003E')
         .replace(/\u2028/g, '\\u2028')
         .replace(/\u2029/g, '\\u2029');
     return `'${escaped}'`;
@@ -35,15 +35,15 @@ const toJsStringLiteral = (value: string | undefined | null): string => {
 
 /**
  * Serializes data to JSON suitable for inline embedding in an HTML <script>.
- * Standard JSON.stringify can produce `</` (closing the script tag) or
- * U+2028/U+2029 (which JS parses as line terminators). Both are escaped here.
- * Output is still valid JSON parseable by the browser's JS engine.
+ * Uses JSON-valid Unicode escapes for `<`/`>` and U+2028/U+2029 so the output
+ * remains parseable by `JSON.parse` AND safe to inline in a script tag — no
+ * `</script>` closure, no `<!--`/`-->` HTML comment markers, no JS line
+ * terminators inside string literals.
  */
 const safeJsonForHtmlScript = (data: unknown): string => {
     return JSON.stringify(data)
-        .replace(/<\//g, '<\\/')
-        .replace(/<!--/g, '<\\!--')
-        .replace(/-->/g, '--\\>')
+        .replace(/</g, '\\u003C')
+        .replace(/>/g, '\\u003E')
         .replace(/\u2028/g, '\\u2028')
         .replace(/\u2029/g, '\\u2029');
 };
