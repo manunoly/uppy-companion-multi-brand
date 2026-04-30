@@ -1,3 +1,4 @@
+import { S3Client } from '@aws-sdk/client-s3';
 import type { Brand, BrandRegistry } from '../modules/brand/brand.types.js';
 import type { AppRequest } from '../core/types/express.js';
 import type { AuthUser } from '../modules/auth/auth.types.js';
@@ -17,6 +18,10 @@ export const makeBrand = (overrides: Partial<Brand> = {}): Brand => ({
         accessKey: 'AKIATESTKEY',
         secretKey: 'testsecretkey',
         useAccelerateEndpoint: false,
+        client: new S3Client({
+            region: 'us-east-1',
+            credentials: { accessKeyId: 'AKIATESTKEY', secretAccessKey: 'testsecretkey' },
+        }),
     },
     providers: {},
     corsOrigins: [],

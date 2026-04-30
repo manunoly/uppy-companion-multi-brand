@@ -22,19 +22,25 @@ export interface CreateTestAppOptions {
 export const createTestApp = async (
     opts: CreateTestAppOptions = {},
 ): Promise<{ app: Express; brandRegistry: BrandRegistry }> => {
-    // Mock companion before importing assembleApp.
-    vi.doMock('@uppy/companion', () => ({
-        default: {
-            app: vi.fn(() => express.Router()),
-            socket: vi.fn(),
-        },
-        app: vi.fn(() => express.Router()),
-        socket: vi.fn(),
-    }));
-
     const brands = opts.brands ?? [makeBrand()];
     const env = opts.env ?? makeValidEnv();
     const brandRegistry = makeBrandRegistry(brands);
+
+    // Mock companion before importing assembleApp.
+    vi.doMock('@uppy/companion', () => ({
+        default: {
+            app: vi.fn(() => ({ app: express.Router() })),
+            socket: vi.fn(),
+        },
+        app: vi.fn(() => ({ app: express.Router() })),
+        socket: vi.fn(),
+    }));
+
+    // Mock the config module so server.ts doesn't call deriveEnv() at import time
+    // (which would fail in tests without real env vars like COMPANION_SECRET).
+    vi.doMock('../config/index.js', () => ({
+        env,
+    }));
 
     // Silence console.log during assembleApp to suppress mount messages.
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
