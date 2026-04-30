@@ -1,0 +1,35 @@
+import type { EnvConfig } from '../config/env.schema.js';
+
+export const makeValidEnv = (overrides: Partial<EnvConfig> = {}): EnvConfig => ({
+    port: 3020,
+    host: '0.0.0.0',
+    protocol: 'http',
+    publicHost: 'localhost:3020',
+    secret: 'test-secret-value-1234567890',
+    healthCheckKey: undefined,
+    filePath: '/tmp/',
+    corsOrigins: [],
+    brands: 'test',
+    publicBackendUrl: 'https://app.test.example.com',
+    publicUploadUrl: undefined,
+    publicFoldersUrl: undefined,
+    s3Defaults: {
+        bucket: 'test-bucket',
+        region: 'us-east-1',
+        accessKey: 'AKIATESTKEY',
+        secretKey: 'testsecretkey',
+        useAccelerateEndpoint: false,
+    },
+    providerDefaults: {
+        google: {},
+        dropbox: {},
+        facebook: {},
+        instagram: {},
+        onedrive: {},
+        box: {},
+        unsplash: {},
+        zoom: {},
+    },
+    brandConfigs: {},
+    ...overrides,
+});
