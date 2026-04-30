@@ -3,7 +3,7 @@ import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import { timingSafeEqual } from 'node:crypto';
 
-import { env } from './config/index.js';
+import { env, type EnvConfig } from './config/index.js';
 import type { AppRequest } from './core/types/express.js';
 import {
     createBrandRegistry,
@@ -21,6 +21,12 @@ import {
     type CompanionInstance
 } from './modules/companion/index.js';
 
+export interface AssembleAppParams {
+    env: EnvConfig;
+    brandRegistry: BrandRegistry;
+    companionInstances: CompanionInstance[];
+}
+
 interface ServerResult {
     app: express.Express;
     brandRegistry: BrandRegistry;
@@ -35,17 +41,16 @@ const safeEqual = (a: string, b: string): boolean => {
     return timingSafeEqual(bufA, bufB);
 };
 
-/**
- * Creates and configures the Express application
- */
-export const createServer = (): ServerResult => {
+export const assembleApp = ({
+    env: envParam,
+    brandRegistry,
+    companionInstances,
+}: AssembleAppParams): express.Express => {
     const app = express();
 
-    // Basic middleware
     // Trust proxy for proper IP detection (Standard for Railway/AWS/Heroku)
     app.set('trust proxy', 1);
 
-    // Basic middleware
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
     app.use(cookieParser());
@@ -58,53 +63,26 @@ export const createServer = (): ServerResult => {
     // Companion's OAuth flow requires a persisted session before the redirect.
     const buildSessionMiddleware = (brandId: string) => session({
         name: `companion.sid.${brandId}`,
-        secret: env.secret,
+        secret: envParam.secret,
         resave: false,
         saveUninitialized: true,
         proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
         cookie: {
             path: `/${brandId}`,
-            secure: env.protocol === 'https',
-            sameSite: env.protocol === 'https' ? 'none' : 'lax',
+            secure: envParam.protocol === 'https',
+            sameSite: envParam.protocol === 'https' ? 'none' : 'lax',
             httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000 // 1 day
-        }
-    });
-
-    // Create brand registry
-    const brandRegistry: BrandRegistry = createBrandRegistry({
-        corsOrigins: env.corsOrigins,
-        secret: env.secret,
-        filePath: env.filePath,
-        host: env.publicHost,
-        protocol: env.protocol,
-        brands: env.brands,
-        brandConfigs: env.brandConfigs,
-        publicDefaults: {
-            backendUrl: env.publicBackendUrl,
-            uploadUrl: env.publicUploadUrl,
-            foldersUrl: env.publicFoldersUrl,
+            maxAge: 24 * 60 * 60 * 1000, // 1 day
         },
-        s3Defaults: env.s3Defaults,
-        providerDefaults: env.providerDefaults,
     });
 
-    // Create companion instances for each brand
-    const companionInstances: CompanionInstance[] = [];
-    for (const brand of brandRegistry.brands.values()) {
-        const instance = createCompanionForBrand(brand);
-        companionInstances.push(instance);
-    }
-
-    // Health check (no auth required)
     app.get('/api/healthz', (_req, res) => {
         res.json({ status: 'ok', timestamp: Date.now() });
     });
 
-    // List all brands (detailed info requires HEALTH_CHECK_KEY)
     app.get('/api/brands', (req, res) => {
         const queryKey = typeof req.query.key === 'string' ? req.query.key : null;
-        const healthCheckKey = env.healthCheckKey;
+        const healthCheckKey = envParam.healthCheckKey;
         const showDetails = !!(healthCheckKey && queryKey && safeEqual(queryKey, healthCheckKey));
 
         /**
@@ -242,7 +220,7 @@ export const createServer = (): ServerResult => {
         // Mount custom API (S3 signing, etc.) behind per-brand CORS.
         // The middleware accepts any *.<rootDomain> origin (HTTPS-only in prod)
         // so dashboards on sibling subdomains can call /api/uppy/* with cookies.
-        app.use(`/${brand.id}/api`, corsForBrand(brand, env.protocol), apiRouter);
+        app.use(`/${brand.id}/api`, corsForBrand(brand, envParam.protocol), apiRouter);
 
         // Companion's own S3 multipart endpoints (/:brand/s3/...) invoke the
         // s3.getKey callback which calls buildS3Key — that callback throws if
@@ -262,6 +240,38 @@ export const createServer = (): ServerResult => {
         console.error('[server] Unhandled error:', err);
         res.status(500).json({ error: 'Internal server error' });
     });
+
+    return app;
+};
+
+/**
+ * Creates and configures the Express application
+ */
+export const createServer = (): ServerResult => {
+    const brandRegistry: BrandRegistry = createBrandRegistry({
+        corsOrigins: env.corsOrigins,
+        secret: env.secret,
+        filePath: env.filePath,
+        host: env.publicHost,
+        protocol: env.protocol,
+        brands: env.brands,
+        brandConfigs: env.brandConfigs,
+        publicDefaults: {
+            backendUrl: env.publicBackendUrl,
+            uploadUrl: env.publicUploadUrl,
+            foldersUrl: env.publicFoldersUrl,
+        },
+        s3Defaults: env.s3Defaults,
+        providerDefaults: env.providerDefaults,
+    });
+
+    const companionInstances: CompanionInstance[] = [];
+    for (const brand of brandRegistry.brands.values()) {
+        const instance = createCompanionForBrand(brand);
+        companionInstances.push(instance);
+    }
+
+    const app = assembleApp({ env, brandRegistry, companionInstances });
 
     return { app, brandRegistry, companionInstances };
 };

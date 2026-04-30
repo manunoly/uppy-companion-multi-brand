@@ -9,9 +9,12 @@ Package manager: **pnpm** (Node.js >= 22).
 ```bash
 pnpm install              # install deps
 pnpm dev                  # tsx watch src/index.ts (hot reload)
-pnpm build                # tsc + node scripts/build-assets.mjs -> dist/ (server + browser uppyModal.js + uppy.html)
+pnpm build                # tsc -p tsconfig.build.json + node scripts/build-assets.mjs -> dist/ (excludes *.test.ts and src/test-utils/**)
 pnpm start                # node dist/index.js (after build)
-pnpm typecheck            # tsc --noEmit
+pnpm typecheck            # tsc --noEmit (uses root tsconfig.json — covers tests too)
+pnpm test                 # vitest run (single pass, CI mode)
+pnpm test:watch           # vitest in watch mode
+pnpm test:coverage        # vitest run --coverage (V8); fails if thresholds drop below 70/60/70/70
 ```
 
 Verify brand configuration loaded from `.env` (parses `COMPANION_BRANDS` and the per-brand JSON env vars):
@@ -20,7 +23,14 @@ Verify brand configuration loaded from `.env` (parses `COMPANION_BRANDS` and the
 npx tsx scripts/verify-brand-config.ts
 ```
 
-There is no test runner, linter, or formatter wired into `package.json`. Don't claim "tests pass" — there are none.
+To run a subset of tests, pass paths or globs as positional args: `pnpm test src/modules/brand` or `pnpm test src/core/cors.test.ts`. There is no linter or formatter wired into `package.json`.
+
+### Test layout
+
+- Unit tests live alongside source as `*.test.ts` and integration tests as `*.integration.test.ts` (same vitest run; the suffix is for human readability only).
+- Shared fixtures: `src/test-utils/fixtures.ts` (`makeBrand`, `makeBrandRegistry`, `makeUser`, `makeAppRequest`) and `src/test-utils/env-fixtures.ts` (`makeValidEnv`).
+- Integration tests build an Express app via `createTestApp(...)` in `src/test-utils/http.ts`, which uses `assembleApp(...)` from `src/server.ts` with a mocked `@uppy/companion` and an injected env/brand registry. AWS S3 is mocked per test via `aws-sdk-client-mock` (`mockClient(S3Client)`).
+- `tsconfig.build.json` extends the root `tsconfig.json` and excludes `**/*.test.ts` and `src/test-utils/**` so they never reach `dist/`. **Never** revert `pnpm build` to use the root `tsconfig.json` — it would emit tests into the production bundle.
 
 ## Architecture
 

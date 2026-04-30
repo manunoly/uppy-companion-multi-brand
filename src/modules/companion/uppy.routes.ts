@@ -19,7 +19,7 @@ const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([
  *   - U+2028 / U+2029 — JS treats these as line terminators, so an unescaped
  *     occurrence inside a string literal raises SyntaxError or breaks parsing.
  */
-const toJsStringLiteral = (value: string | undefined | null): string => {
+export const toJsStringLiteral = (value: string | undefined | null): string => {
     const str = value ?? '';
     const escaped = str
         .replace(/\\/g, '\\\\')
@@ -40,7 +40,7 @@ const toJsStringLiteral = (value: string | undefined | null): string => {
  * `</script>` closure, no `<!--`/`-->` HTML comment markers, no JS line
  * terminators inside string literals.
  */
-const safeJsonForHtmlScript = (data: unknown): string => {
+export const safeJsonForHtmlScript = (data: unknown): string => {
     return JSON.stringify(data)
         .replace(/</g, '\\u003C')
         .replace(/>/g, '\\u003E')
@@ -96,6 +96,16 @@ const getEnabledPlugins = (brand: Brand): string[] => {
 
     return plugins;
 };
+
+/**
+ * Treats a request URL as a server-relative path. Anything that could be
+ * interpreted as absolute (`http://...`, protocol-relative `//host`,
+ * `javascript:`, etc.) collapses to `/`. Used as a defensive guard before
+ * embedding the value in a `?redirect=...` query parameter — see the
+ * trust-contract note on `redirectToLoginOrShowError`.
+ */
+export const safePath = (originalUrl: string): string =>
+    originalUrl.startsWith('/') && !originalUrl.startsWith('//') ? originalUrl : '/';
 
 /**
  * Generates an error page HTML
@@ -173,10 +183,8 @@ const redirectToLoginOrShowError = (
         // absolute or protocol-relative, so a malformed/forwarded request with
         // an absolute-form target could otherwise let an attacker craft the
         // ?redirect= value pointed at any host (open-redirect amplifier).
-        const safePath = req.originalUrl.startsWith('/') && !req.originalUrl.startsWith('//')
-            ? req.originalUrl
-            : '/';
-        const fullCurrentUrl = new URL(safePath, companionPublicUrl).toString();
+        const safeOriginalPath = safePath(req.originalUrl);
+        const fullCurrentUrl = new URL(safeOriginalPath, companionPublicUrl).toString();
 
         const loginUrl = new URL(brand.public.loginUrl);
         loginUrl.searchParams.set('redirect', fullCurrentUrl);
