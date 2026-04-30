@@ -83,13 +83,15 @@ describe('corsForBrand', () => {
         expect(headers['access-control-allow-origin']).toBeUndefined();
     });
 
-    it('rejects subdomain of attacker domain that contains rootDomain as substring', () => {
+    it('accepts a subdomain whose leftmost label happens to look like an attacker host', () => {
+        // The origin IS a real subdomain of acme.example.com (suffix matches),
+        // so it MUST be accepted. The actual bypass attack — placing the
+        // rootDomain on the LEFT of an attacker-controlled host like
+        // `https://acme.example.com.evil.com` — is covered by the next test.
         const brand = makeBrand({ rootDomain: 'acme.example.com' });
         const middleware = corsForBrand(brand, 'https');
         const { res, headers } = makeRes();
         middleware(makeReq('https://evil.com.acme.example.com'), res, vi.fn());
-        // The origin IS a subdomain of acme.example.com, so it SHOULD be accepted.
-        // (The bypass attack would be e.g. https://acme.example.com.evil.com which we test next.)
         expect(headers['access-control-allow-origin']).toBe('https://evil.com.acme.example.com');
     });
 

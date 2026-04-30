@@ -109,18 +109,19 @@ describe('server integration', () => {
         expect(res.text).toContain('id="brandSlug"');
     });
 
-    it('GET /default/test/oauth/google/callback strips /default for non-default brand', async () => {
-        // Brands: default + acme. Hitting /acme/default/oauth/google should
-        // have its /default segment stripped before reaching companion.
+    it('GET /acme/default/* on a non-default brand reaches the companion mount without crashing (strip middleware)', async () => {
+        // The non-default-brand chain has a tiny middleware that strips the
+        // unwanted "/default/" segment from incoming OAuth callback URLs. We
+        // can't easily intercept the strip directly; instead, hit a route under
+        // /acme/default/* and confirm the request does NOT 500 (which would be
+        // the failure mode if the strip middleware threw).
         const def = makeBrand({ id: 'default' });
         const acme = makeBrand({ id: 'acme' });
         const { app } = await createTestApp({ brands: [def, acme] });
-        // We can't easily intercept the strip; instead, verify the route mounts
-        // by hitting an obviously-unmapped path and confirming the strip middleware
-        // did NOT 500.
         const res = await request(app).get('/acme/default/some-unknown-path');
-        // Either 404 (companion router didn't match) or 200 (mocked router
-        // matches everything). The point is no crash.
+        // The mocked companion router doesn't match the path, so we expect a
+        // non-500 response (any of 200/401/403/404 is acceptable proof the
+        // strip middleware ran cleanly).
         expect([200, 404, 401, 403]).toContain(res.status);
     });
 
