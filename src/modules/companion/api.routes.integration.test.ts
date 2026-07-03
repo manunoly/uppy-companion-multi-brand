@@ -252,4 +252,109 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         expect(res.body.error).toBe('Error signing upload');
         expect(res.body.error).not.toMatch(/SignatureDoesNotMatch/);
     });
+
+    // D14/H13 (partial): declared size/type limits, validated before signing.
+    // This is declarative only — signS3/signPart sign a PUT by query string
+    // (SigV4), not a presigned POST, so S3 itself never enforces
+    // `content-length-range` and a dishonest client can still send a
+    // different real size to the signed URL. Real server-side enforcement
+    // requires migrating to presigned POST (Fase 8, spec D14/8.5).
+    describe('declared size/type limits (H13 partial)', () => {
+        it('signS3 rejects a declared Content-Length above brand.limits.maxUploadBytes → 400', async () => {
+            setupAuthOk();
+            const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1024 } });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .get('/edo/api/uppy/sign-s3')
+                .set('Cookie', 'session=tok')
+                .query({ filename: 'a.jpg', contentType: 'image/jpeg', contentLength: '2048' });
+            expect(res.status).toBe(400);
+            expect(getSignedUrlMock).not.toHaveBeenCalled();
+        });
+
+        it('signS3 accepts a declared Content-Length within the brand limit → 200', async () => {
+            setupAuthOk();
+            const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1024 } });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .get('/edo/api/uppy/sign-s3')
+                .set('Cookie', 'session=tok')
+                .query({ filename: 'a.jpg', contentType: 'image/jpeg', contentLength: '512' });
+            expect(res.status).toBe(200);
+        });
+
+        it('signS3 rejects a Content-Type outside brand.limits.allowedContentTypes → 400', async () => {
+            setupAuthOk();
+            const brand = makeBrand({
+                slug: 'edo',
+                limits: { maxUploadBytes: 50 * 1024 * 1024, allowedContentTypes: ['image/jpeg'] },
+            });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .get('/edo/api/uppy/sign-s3')
+                .set('Cookie', 'session=tok')
+                .query({ filename: 'a.png', contentType: 'image/png' });
+            expect(res.status).toBe(400);
+            expect(getSignedUrlMock).not.toHaveBeenCalled();
+        });
+
+        it('signS3 allows a Content-Type inside brand.limits.allowedContentTypes → 200', async () => {
+            setupAuthOk();
+            const brand = makeBrand({
+                slug: 'edo',
+                limits: { maxUploadBytes: 50 * 1024 * 1024, allowedContentTypes: ['image/jpeg'] },
+            });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .get('/edo/api/uppy/sign-s3')
+                .set('Cookie', 'session=tok')
+                .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
+            expect(res.status).toBe(200);
+        });
+
+        it('signS3 does not validate Content-Type when brand.limits.allowedContentTypes is undefined', async () => {
+            setupAuthOk();
+            const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 50 * 1024 * 1024 } });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .get('/edo/api/uppy/sign-s3')
+                .set('Cookie', 'session=tok')
+                .query({ filename: 'a.exe', contentType: 'application/x-msdownload' });
+            expect(res.status).toBe(200);
+        });
+
+        it('signPart rejects a declared Content-Length above brand.limits.maxUploadBytes → 400', async () => {
+            setupAuthOk();
+            const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1024 } });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .get('/edo/api/uppy/s3/multipart/up1/1')
+                .set('Cookie', 'session=tok')
+                .query({ key: 'original/u123/x.jpg', contentLength: '2048' });
+            expect(res.status).toBe(400);
+            expect(getSignedUrlMock).not.toHaveBeenCalled();
+        });
+
+        it('signPart accepts a declared Content-Length within the brand limit → 200', async () => {
+            setupAuthOk();
+            const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1024 } });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .get('/edo/api/uppy/s3/multipart/up1/1')
+                .set('Cookie', 'session=tok')
+                .query({ key: 'original/u123/x.jpg', contentLength: '512' });
+            expect(res.status).toBe(200);
+        });
+
+        it('signS3/signPart with no declared Content-Length skip the size check (declarative-only limitation)', async () => {
+            setupAuthOk();
+            const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1 } }); // absurdly small
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .get('/edo/api/uppy/sign-s3')
+                .set('Cookie', 'session=tok')
+                .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
+            expect(res.status).toBe(200);
+        });
+    });
 });

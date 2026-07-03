@@ -11,10 +11,61 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Response, NextFunction } from 'express';
 import type { AppRequest } from '../../../core/types/express.js';
+import type { Brand } from '../../brand/brand.types.js';
 import { buildS3Key, buildUserKeyPrefix } from './s3.key-builder.js';
 import { logger } from '../../../lib/logger.js';
 
 // --- Helpers ---
+
+/**
+ * Parses a client-declared size (e.g. `?contentLength=123`) into a finite
+ * number, or `undefined` when absent/unparseable. Browsers forbid scripts
+ * from setting the real `Content-Length` header, so the client declares the
+ * size of the file it INTENDS to upload as an ordinary field instead.
+ */
+const parseDeclaredLength = (raw: unknown): number | undefined => {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+};
+
+/**
+ * D14 (H13, partial closure): rejects a signing request whose CLIENT-DECLARED
+ * size/type falls outside the brand's configured limits.
+ *
+ * This is declarative only: signS3/signPart sign a PUT by query string
+ * (SigV4), not a presigned POST, so S3 itself never enforces
+ * `content-length-range` — a dishonest client can still send a different
+ * real size/type to the signed URL. Real server-side enforcement requires
+ * migrating to presigned POST (Fase 8, spec D14/8.5). Absence of a declared
+ * value is not itself an error (older/undeclaring clients still work) — it
+ * simply means this check has nothing to validate.
+ */
+const rejectIfOutsideLimits = (
+    brand: Brand,
+    declared: { contentLength?: number; contentType?: string },
+    res: Response,
+): boolean => {
+    const { maxUploadBytes, allowedContentTypes } = brand.limits;
+
+    if (declared.contentLength !== undefined && declared.contentLength > maxUploadBytes) {
+        res.status(400).json({
+            error: `s3: declared Content-Length exceeds the ${maxUploadBytes}-byte limit for this brand`,
+        });
+        return true;
+    }
+
+    if (
+        allowedContentTypes &&
+        declared.contentType !== undefined &&
+        !allowedContentTypes.includes(declared.contentType)
+    ) {
+        res.status(400).json({ error: 's3: Content-Type not allowed for this brand' });
+        return true;
+    }
+
+    return false;
+};
 
 // S3 multipart contract: PartNumber must be an integer in [1, 10000].
 const isPartNumberInRange = (n: number): boolean =>
@@ -82,6 +133,9 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
             res.status(400).json({ error: 'Missing filename or contentType' });
             return;
         }
+
+        const declaredLength = parseDeclaredLength(params.contentLength ?? params.size);
+        if (rejectIfOutsideLimits(brand, { contentLength: declaredLength, contentType }, res)) return;
 
         const key = buildS3Key({ req, filename, metadata: req.body?.metadata });
 
@@ -167,6 +221,9 @@ export const signPart = async (req: AppRequest, res: Response, _next: NextFuncti
             return;
         }
         if (sendIfKeyNotOwned(req, key, res)) return;
+
+        const declaredLength = parseDeclaredLength(req.query.contentLength ?? req.query.size);
+        if (rejectIfOutsideLimits(brand, { contentLength: declaredLength }, res)) return;
 
         const command = new UploadPartCommand({
             Bucket: brand.s3.bucket,
