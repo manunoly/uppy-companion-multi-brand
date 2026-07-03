@@ -6,7 +6,7 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"includes": ["**", "!!dist", "!!coverage", "!!uppy-test.html", "!!docs/legacy"]
+		"includes": ["**", "!!dist", "!!coverage", "!!docs/legacy"]
 	},
 	"formatter": {
 		"enabled": true,
