@@ -34,6 +34,28 @@ vi.mock('ioredis', async () => {
 vi.mock('../../config/index.js', () => ({
     env: makeValidEnv(),
 }));
+// Fase 5.2's rate limiter (mounted on /api) uses rate-limit-redis's Lua-script
+// based Store — ioredis-mock doesn't execute Lua (see server.integration.test.ts
+// for the full rationale). Swap in a minimal in-memory Store satisfying the
+// same express-rate-limit Store contract so /api/uppy/* requests here don't
+// crash on SCRIPT LOAD/EVALSHA.
+vi.mock('rate-limit-redis', () => {
+    class InMemoryStoreForTests {
+        private hits = new Map<string, number>();
+        async increment(key: string) {
+            const totalHits = (this.hits.get(key) ?? 0) + 1;
+            this.hits.set(key, totalHits);
+            return { totalHits, resetTime: new Date(Date.now() + 60_000) };
+        }
+        async decrement(key: string) {
+            this.hits.set(key, Math.max(0, (this.hits.get(key) ?? 0) - 1));
+        }
+        async resetKey(key: string) {
+            this.hits.delete(key);
+        }
+    }
+    return { RedisStore: InMemoryStoreForTests, default: InMemoryStoreForTests };
+});
 
 const s3Mock = mockClient(S3Client);
 const getSignedUrlMock = vi.mocked(getSignedUrl);

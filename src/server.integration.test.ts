@@ -12,6 +12,40 @@ vi.mock('ioredis', async () => {
     const { default: RedisMock } = await import('ioredis-mock');
     return { default: RedisMock, Redis: RedisMock };
 });
+// `getRedis()` (lib/redis.ts) eagerly reads `env` from `config/index.js` at
+// import time — mocked statically (hoisted, so it's in effect for the very
+// first `beforeEach`'s `getRedis()` flush too, unlike `createTestApp`'s own
+// per-test `vi.doMock`, which only takes effect from that call onward).
+vi.mock('./config/index.js', () => ({
+    env: makeValidEnv(),
+}));
+// `rate-limit-redis`'s Store does its atomic increment via a Lua script
+// (SCRIPT LOAD + EVALSHA) — `ioredis-mock` implements `.script()`/`.evalsha()`
+// as functions but doesn't actually execute Lua (throws "Unsupported command:
+// script"). Swap in a minimal in-memory Store satisfying the SAME
+// `express-rate-limit` Store contract `buildRateLimiter` (server.ts) wires up,
+// so the 429-after-N-requests behavior is exercised faithfully without
+// depending on genuine server-side Lua support from the test double. This
+// mirrors the spec's own noted limitation of ioredis-mock as "a weaker signal
+// than real Redis for security logic" (§8) — real Redis via testcontainers is
+// listed as a future improvement (Fase 8.9), not something this suite does.
+vi.mock('rate-limit-redis', () => {
+    class InMemoryStoreForTests {
+        private hits = new Map<string, number>();
+        async increment(key: string) {
+            const totalHits = (this.hits.get(key) ?? 0) + 1;
+            this.hits.set(key, totalHits);
+            return { totalHits, resetTime: new Date(Date.now() + 60_000) };
+        }
+        async decrement(key: string) {
+            this.hits.set(key, Math.max(0, (this.hits.get(key) ?? 0) - 1));
+        }
+        async resetKey(key: string) {
+            this.hits.delete(key);
+        }
+    }
+    return { RedisStore: InMemoryStoreForTests, default: InMemoryStoreForTests };
+});
 
 const s3Mock = mockClient(S3Client);
 
@@ -24,11 +58,17 @@ const s3Mock = mockClient(S3Client);
 const EDO_HOST = 'companion.stage.entourageyearbooks.com';
 
 describe('server integration', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         vi.stubGlobal('fetch', vi.fn());
         vi.stubEnv('BRAND_FORCE', '');
         s3Mock.reset();
         s3Mock.on(HeadBucketCommand).resolves({});
+        // Rate-limit counters (Fase 5.2) and the whoami/breaker state live in
+        // the same shared ioredis-mock singleton across every test in this
+        // file — flush so one test's request volume can never tip another's
+        // rate-limit assertions.
+        const { getRedis } = await import('./lib/redis.js');
+        await getRedis().flushall();
     });
     afterEach(() => {
         vi.unstubAllGlobals();
@@ -193,6 +233,87 @@ describe('server integration', () => {
             setShuttingDown(true);
             const res = await request(app).get('/api/healthz');
             expect(res.status).toBe(503);
+        });
+    });
+
+    // Fase 5.2 (D7): express-session backed by connect-redis, single static
+    // cookie name/path (no more per-brand mount path to hang a per-slug
+    // cookie name/path off of — isolation across brands now comes from the
+    // Host itself, see Fase 5.1).
+    describe('session store (Fase 5.2, D7)', () => {
+        it('uses a Redis-backed session store, not the in-memory default', async () => {
+            const { buildSessionStore } = await import('./server.js');
+            const { RedisStore } = await import('connect-redis');
+            expect(buildSessionStore()).toBeInstanceOf(RedisStore);
+        });
+
+        it('sets a single static session cookie (companion.sid) with Path=/', async () => {
+            const { app } = await createTestApp({
+                brands: [makeBrand({ slug: 'edo', auth: { signInUrl: '' } })],
+            });
+            const res = await request(app).get('/uppy').set('Host', EDO_HOST);
+            const setCookie = res.headers['set-cookie'] as unknown as string[] | undefined;
+            expect(setCookie).toBeDefined();
+            const sessionCookie = setCookie?.find((c) => c.startsWith('companion.sid='));
+            expect(sessionCookie).toBeDefined();
+            expect(sessionCookie).toMatch(/Path=\//);
+        });
+    });
+
+    // Fase 5.2 (D13): express-rate-limit + rate-limit-redis on /uppy and
+    // /api/*, keyed by brand+user/IP (RedisStore so ≥2 replicas share state).
+    describe('rate limiting (Fase 5.2, D13)', () => {
+        it('GET /uppy → 429 once the configured limit is exceeded', async () => {
+            const env = makeValidEnv({ rateLimitMax: 2, rateLimitWindowMs: 60_000 });
+            const { app } = await createTestApp({
+                env,
+                brands: [makeBrand({ slug: 'edo', auth: { signInUrl: '' } })],
+            });
+            let last = await request(app).get('/uppy').set('Host', EDO_HOST);
+            expect(last.status).not.toBe(429);
+            last = await request(app).get('/uppy').set('Host', EDO_HOST);
+            last = await request(app).get('/uppy').set('Host', EDO_HOST);
+            expect(last.status).toBe(429);
+        });
+
+        it('GET /api/uppy/sign-s3 → 429 once the configured limit is exceeded', async () => {
+            const env = makeValidEnv({ rateLimitMax: 2, rateLimitWindowMs: 60_000 });
+            const { app } = await createTestApp({ env, brands: [makeBrand({ slug: 'edo' })] });
+            const hit = () => request(app)
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
+                .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
+            await hit();
+            await hit();
+            const last = await hit();
+            expect(last.status).toBe(429);
+        });
+    });
+
+    // Fase 5.2: helmet CSP with a per-request nonce — uppy.html's inline
+    // <script type="module"> (Fase 5.4) needs 'nonce-<x>' since 'self' alone
+    // does not cover it, and 'unsafe-inline' would defeat the CSP entirely.
+    describe('CSP nonce (Fase 5.2)', () => {
+        it('sets script-src with a nonce plus the pinned CDN origins', async () => {
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res = await request(app).get('/api/healthz');
+            const csp = res.headers['content-security-policy'];
+            expect(csp).toBeDefined();
+            expect(csp).toMatch(/script-src[^;]*'nonce-[A-Za-z0-9+/=]+'/);
+            expect(csp).toContain('https://releases.transloadit.com');
+            expect(csp).toContain('https://cdnjs.cloudflare.com');
+        });
+
+        it('uses a fresh nonce on every request', async () => {
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res1 = await request(app).get('/api/healthz');
+            const res2 = await request(app).get('/api/healthz');
+            const nonceOf = (csp: string | undefined) => /'nonce-([A-Za-z0-9+/=]+)'/.exec(csp ?? '')?.[1];
+            const nonce1 = nonceOf(res1.headers['content-security-policy']);
+            const nonce2 = nonceOf(res2.headers['content-security-policy']);
+            expect(nonce1).toBeTruthy();
+            expect(nonce2).toBeTruthy();
+            expect(nonce1).not.toBe(nonce2);
         });
     });
 });

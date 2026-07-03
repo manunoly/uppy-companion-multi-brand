@@ -17,6 +17,9 @@ importers:
       '@uppy/companion':
         specifier: ^6.2.1
         version: 6.2.1
+      connect-redis:
+        specifier: ^8.1.0
+        version: 8.1.0(express-session@1.19.0)
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7
@@ -26,9 +29,15 @@ importers:
       express:
         specifier: ^4.22.1
         version: 4.22.1(supports-color@8.1.1)
+      express-rate-limit:
+        specifier: ^7.5.1
+        version: 7.5.1(express@4.22.1)
       express-session:
         specifier: ^1.19.0
         version: 1.19.0
+      helmet:
+        specifier: ^8.2.0
+        version: 8.2.0
       ioredis:
         specifier: ^5.8.2
         version: 5.8.2(supports-color@8.1.1)
@@ -38,6 +47,9 @@ importers:
       pino-http:
         specifier: ^10.5.0
         version: 10.5.0
+      rate-limit-redis:
+        specifier: ^4.3.1
+        version: 4.3.1(express-rate-limit@7.5.1(express@4.22.1))
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -1463,6 +1475,12 @@ packages:
     peerDependencies:
       express-session: '>=1'
 
+  connect-redis@8.1.0:
+    resolution: {integrity: sha512-Km0EYLDlmExF52UCss5gLGTtrukGC57G6WCC2aqEMft5Vr4xNWuM4tL+T97kWrw+vp40SXFteb6Xk/7MxgpwdA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      express-session: '>=1'
+
   content-disposition@0.5.4:
     resolution: {integrity: sha512-FveZTNuGw04cxlAiWbzi6zTAL/lhehaWbTtgluJh4/E95DqMwTmha3KZN1aAWA8cFIhHzMZUvLevkw5Rqk+tSQ==}
     engines: {node: '>= 0.6'}
@@ -1657,6 +1675,12 @@ packages:
     peerDependencies:
       prom-client: '>=15.0.0'
 
+  express-rate-limit@7.5.1:
+    resolution: {integrity: sha512-7iN8iPMDzOMHPUYllBEsQdWVB6fPDMPqwjBaFrgr4Jgr/+okjvzAy+UHlYYL/Vs0OsOrMkwS6PJDkFlJwoxUnw==}
+    engines: {node: '>= 16'}
+    peerDependencies:
+      express: '>= 4.11'
+
   express-session@1.18.1:
     resolution: {integrity: sha512-a5mtTqEaZvBCL9A9aqkrtfz+3SMDhOVUnjafjo+s7A9Txkq+SVX2DLvSp1Zrv4uCXa3lMSK3viWnh9Gg07PBUA==}
     engines: {node: '>= 0.8.0'}
@@ -1801,6 +1825,10 @@ packages:
   helmet@7.2.0:
     resolution: {integrity: sha512-ZRiwvN089JfMXokizgqEPXsl2Guk094yExfoDXR0cBYWxtBbaSww/w+vT4WEJsBW2iTUi1GgZ6swmoug3Oy4Xw==}
     engines: {node: '>=16.0.0'}
+
+  helmet@8.2.0:
+    resolution: {integrity: sha512-DRgTIUgnWcJ62KyarxxziuqYxKGnR6Rgg19BlbucN/dpmJbl1XOit6qvoOX0ZT+HhWe5OUVhU/a1zpGyc1xA0Q==}
+    engines: {node: '>=18.0.0'}
 
   hmac-drbg@1.0.1:
     resolution: {integrity: sha512-Tti3gMqLdZfhOQY1Mzf/AanLiqh1WTiJgEj26ZuYQ9fbkLomzGchCws4FyrSd4VkpBfiNhaE1On+lOz894jvXg==}
@@ -2293,6 +2321,12 @@ packages:
   range-parser@1.2.1:
     resolution: {integrity: sha512-Hrgsx+orqoygnmhFbKaHE6c296J+HTAQXoxEF6gNupROmmGJRoyzfG3ccAveqCBrwr/2yxQ5BVd/GTl5agOwSg==}
     engines: {node: '>= 0.6'}
+
+  rate-limit-redis@4.3.1:
+    resolution: {integrity: sha512-+a1zU8+D7L8siDK9jb14refQXz60vq427VuiplgnaLk9B2LnvGe/APLTfhwb4uNIL7eWVknh8GnRp/unCj+lMA==}
+    engines: {node: '>= 16'}
+    peerDependencies:
+      express-rate-limit: '>= 6'
 
   raw-body@2.5.2:
     resolution: {integrity: sha512-8zGqypfENjCIqGhgXToC8aB2r7YrBX+AQAfIPs/Mlk+BtPTztOvTS01NRW/3Eh60J+a48lt8qsCzirQ6loCVfA==}
@@ -4973,6 +5007,10 @@ snapshots:
     dependencies:
       express-session: 1.18.1(supports-color@8.1.1)
 
+  connect-redis@8.1.0(express-session@1.19.0):
+    dependencies:
+      express-session: 1.19.0
+
   content-disposition@0.5.4:
     dependencies:
       safe-buffer: 5.2.1
@@ -5156,6 +5194,10 @@ snapshots:
       url-value-parser: 2.2.0
     transitivePeerDependencies:
       - supports-color
+
+  express-rate-limit@7.5.1(express@4.22.1):
+    dependencies:
+      express: 4.22.1(supports-color@8.1.1)
 
   express-session@1.18.1(supports-color@8.1.1):
     dependencies:
@@ -5401,6 +5443,8 @@ snapshots:
       function-bind: 1.1.2
 
   helmet@7.2.0: {}
+
+  helmet@8.2.0: {}
 
   hmac-drbg@1.0.1:
     dependencies:
@@ -5869,6 +5913,10 @@ snapshots:
       safe-buffer: 5.2.1
 
   range-parser@1.2.1: {}
+
+  rate-limit-redis@4.3.1(express-rate-limit@7.5.1(express@4.22.1)):
+    dependencies:
+      express-rate-limit: 7.5.1(express@4.22.1)
 
   raw-body@2.5.2:
     dependencies:

@@ -31,6 +31,13 @@ export const envSchema = z.object({
 
     // Companion's own local temp-file storage path (brand-independent).
     filePath: z.string().min(1).default('/tmp/'),
+
+    // Rate limiting (Fase 5.2, D13): express-rate-limit + rate-limit-redis on
+    // /api/* and /uppy, keyed by brand+user/IP. Brand-independent process-wide
+    // defaults; generous enough not to bite normal usage while still capping
+    // abuse of the (network-bound) whoami/S3-signing endpoints.
+    rateLimitWindowMs: z.number().int().positive().default(60_000),
+    rateLimitMax: z.number().int().positive().default(300),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

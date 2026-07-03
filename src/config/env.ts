@@ -27,6 +27,8 @@ const deriveEnv = (): EnvConfig => {
     const healthCheckKey = process.env.HEALTH_CHECK_KEY;
     const filePath = process.env.COMPANION_FILE_PATH ?? '/tmp/';
     const redisUrl = process.env.REDIS_URL;
+    const rateLimitWindowMs = coerceNumber(process.env.RATE_LIMIT_WINDOW_MS, 60_000);
+    const rateLimitMax = coerceNumber(process.env.RATE_LIMIT_MAX, 300);
 
     return envSchema.parse({
         port,
@@ -37,6 +39,8 @@ const deriveEnv = (): EnvConfig => {
         healthCheckKey,
         filePath,
         redisUrl,
+        rateLimitWindowMs,
+        rateLimitMax,
     });
 };
 

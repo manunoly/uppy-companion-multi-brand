@@ -62,4 +62,20 @@ describe('envSchema', () => {
         const result = envSchema.safeParse(makeValidEnv({ healthCheckKey: undefined }));
         expect(result.success).toBe(true);
     });
+
+    it('defaults rateLimitWindowMs to 60000ms when omitted', () => {
+        const env: Record<string, unknown> = { ...makeValidEnv() };
+        delete env.rateLimitWindowMs;
+        const result = envSchema.safeParse(env);
+        expect(result.success).toBe(true);
+        if (result.success) expect(result.data.rateLimitWindowMs).toBe(60_000);
+    });
+
+    it('defaults rateLimitMax to 300 when omitted', () => {
+        const env: Record<string, unknown> = { ...makeValidEnv() };
+        delete env.rateLimitMax;
+        const result = envSchema.safeParse(env);
+        expect(result.success).toBe(true);
+        if (result.success) expect(result.data.rateLimitMax).toBe(300);
+    });
 });

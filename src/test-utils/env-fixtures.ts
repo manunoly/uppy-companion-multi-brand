@@ -9,5 +9,7 @@ export const makeValidEnv = (overrides: Partial<EnvConfig> = {}): EnvConfig => (
     healthCheckKey: undefined,
     redisUrl: 'redis://localhost:6379',
     filePath: '/tmp/',
+    rateLimitWindowMs: 60_000,
+    rateLimitMax: 300,
     ...overrides,
 });

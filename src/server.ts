@@ -1,7 +1,12 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
-import { timingSafeEqual } from 'node:crypto';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
+import { RedisStore as SessionRedisStore } from 'connect-redis';
+import { RedisStore as RateLimitRedisStore, type RedisReply } from 'rate-limit-redis';
+import { timingSafeEqual, randomBytes } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { HeadBucketCommand } from '@aws-sdk/client-s3';
 
 import { env, type EnvConfig } from './config/index.js';
@@ -110,6 +115,59 @@ const checkS3 = async (brandRegistry: ResolvedBrandRegistry): Promise<boolean> =
     }
 };
 
+/**
+ * Builds the Redis-backed session store (Fase 5.2, D7) — extracted as its
+ * own function so it's directly unit-testable (`instanceof RedisStore`)
+ * without having to reach into Express's session middleware internals,
+ * which don't expose the configured store on the returned middleware
+ * function itself.
+ */
+export const buildSessionStore = (): SessionRedisStore =>
+    new SessionRedisStore({ client: getRedis(), prefix: 'companion:sess:' });
+
+/**
+ * Builds the shared rate limiter (Fase 5.2, D13) mounted on `/uppy` and
+ * `/api/*`. Redis-backed (`rate-limit-redis`) so the counter is shared
+ * across replicas — a single in-memory counter would let an attacker reset
+ * their budget just by hitting a different instance behind the LB. Keyed by
+ * brand + authenticated user id, falling back to IP for anonymous callers
+ * (whoami itself is one of the endpoints being protected, so most callers
+ * hitting the limit will be pre-auth or auth-failing).
+ */
+export const buildRateLimiter = (envParam: EnvConfig): ReturnType<typeof rateLimit> =>
+    rateLimit({
+        windowMs: envParam.rateLimitWindowMs,
+        limit: envParam.rateLimitMax,
+        standardHeaders: true,
+        legacyHeaders: false,
+        store: new RateLimitRedisStore({
+            prefix: 'companion:rl:',
+            // rate-limit-redis only ever sends `SCRIPT LOAD ...` and
+            // `EVALSHA <sha> <numkeys> ...` (see its Lua-based atomic
+            // increment). Dispatch by the lowercased command name to
+            // ioredis's own generated per-command methods (`.script(...)`,
+            // `.evalsha(...)`) instead of the generic `.call(...)` passthrough:
+            // `.call` has a tuple-rest overload a plain `string[]` spread
+            // can't satisfy at the type level (TS2556), AND ioredis-mock
+            // (used in tests) doesn't implement `.call` at all — but both
+            // real ioredis and ioredis-mock implement every named command,
+            // so this works identically against either.
+            sendCommand: (...args: string[]): Promise<RedisReply> => {
+                const [command, ...rest] = args;
+                const client = getRedis() as unknown as Record<string, (...a: string[]) => Promise<RedisReply>>;
+                const method = client[command.toLowerCase()];
+                if (typeof method !== 'function') {
+                    return Promise.reject(new Error(`[rate-limit] Redis client has no method for command "${command}"`));
+                }
+                return method.apply(client, rest);
+            },
+        }),
+        keyGenerator: (req) => {
+            const r = req as AppRequest;
+            return `${r.brand?.slug ?? 'unknown'}:${r.user?.id ?? req.ip ?? 'unknown'}`;
+        },
+    });
+
 export const assembleApp = ({
     env: envParam,
     brandRegistry,
@@ -141,6 +199,29 @@ export const assembleApp = ({
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
     app.use(cookieParser());
+
+    // Per-request CSP nonce (Fase 5.2). MUST run before helmet() below so
+    // res.locals.cspNonce already exists when helmet builds the CSP header.
+    // uppy.html's inline `<script type="module">` (Fase 5.4) is given this
+    // same nonce by serveUppyPage — `script-src 'self'` alone would not cover
+    // an inline script, and `'unsafe-inline'` would defeat the CSP entirely.
+    app.use((_req, res, next) => {
+        res.locals.cspNonce = randomBytes(16).toString('base64');
+        next();
+    });
+    app.use(helmet({
+        contentSecurityPolicy: {
+            directives: {
+                'script-src': [
+                    "'self'",
+                    (_req: IncomingMessage, res: ServerResponse) => `'nonce-${(res as unknown as express.Response).locals.cspNonce}'`,
+                    'https://releases.transloadit.com',
+                    'https://cdnjs.cloudflare.com',
+                ],
+                'style-src': ["'self'", 'https://cdnjs.cloudflare.com', "'unsafe-inline'"],
+            },
+        },
+    }));
 
     // Liveness: is the process itself still able to serve traffic at all?
     // Stays 200 until a SIGTERM drain starts (see index.ts), independent of
@@ -282,8 +363,10 @@ export const assembleApp = ({
     // brand's partner session cookie. Single static config (D7): the cookie
     // name/path no longer vary per brand — isolation across brands is now
     // provided by the Host itself (each brand has a distinct companionHost),
-    // not by the cookie path. `store`/rate-limiting/CSP nonce land in Fase 5.2.
+    // not by the cookie path. Backed by Redis (connect-redis) so the OAuth
+    // handshake survives across replicas / a redeploy mid-flow (closes H4).
     app.use(session({
+        store: buildSessionStore(),
         name: 'companion.sid',
         secret: envParam.secret,
         resave: false,
@@ -299,11 +382,17 @@ export const assembleApp = ({
     }));
 
     // Optional user attachment — populates req.user from the brand's partner
-    // session cookie (modules/auth/session-resolver.ts). Never rejects.
+    // session cookie (modules/auth/session-resolver.ts). Never rejects. Runs
+    // before the rate limiter below so its keyGenerator can key by user id
+    // once authenticated, not just IP.
     app.use(attachUser);
 
+    // Shared rate limiter (Fase 5.2, D13) — mounted on /uppy and /api/* only
+    // (not health/readiness, which the orchestrator polls continuously).
+    const rateLimiter = buildRateLimiter(envParam);
+
     // Uppy upload page - shows plugins based on brand providers
-    app.get('/uppy', serveUppyPage);
+    app.get('/uppy', rateLimiter, serveUppyPage);
     app.get('/uppyModal.js', serveUppyModalJs);
 
     // Per-brand CORS, resolved dynamically per request via req.brand (no
@@ -316,6 +405,9 @@ export const assembleApp = ({
     // Mount custom API (S3 signing, etc.) behind per-brand CORS. The
     // middleware accepts any *.<apex> origin (HTTPS-only in prod) so
     // dashboards on sibling subdomains can call /api/uppy/* with cookies.
+    // CORS runs before the rate limiter so a preflight OPTIONS (answered
+    // directly by corsForBrand, which never calls next() for OPTIONS) never
+    // counts against the budget.
     app.use('/api', (req, res, next) => {
         const brand = (req as AppRequest).brand;
         const cors = brand && corsMiddlewareBySlug.get(brand.slug);
@@ -324,7 +416,7 @@ export const assembleApp = ({
             return;
         }
         cors(req, res, next);
-    }, apiRouter);
+    }, rateLimiter, apiRouter);
 
     // Companion's own S3 multipart endpoints (/s3/...) invoke the s3.getKey
     // callback which calls buildS3Key — that callback throws if req.user is
