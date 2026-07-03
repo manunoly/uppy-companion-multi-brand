@@ -1,35 +1,91 @@
 import type { Response, NextFunction } from 'express';
 import type { AppRequest } from '../../core/types/express.js';
+import { resolveSession } from './session-resolver.js';
+import { logger } from '../../lib/logger.js';
+import { setUserId } from '../../lib/logger.js';
 
 /**
- * Interim fail-closed auth shim (Task 2.7 → Fase 3 of the abeduls3-alignment
- * plan). The legacy `GET brand.auth.url` cookie-forwarding flow
- * (`auth.service.ts`) has been deleted along with the rest of the legacy
- * brand model — Fase 3 replaces it with `resolveSession` (`partner-whoami`
- * fetch, SSRF gate, circuit breaker, Redis cache; see
- * `docs/superpowers/specs/2026-07-02-companion-multibrand-alineacion-abeduls3-design.md`
- * D5). Until then, this module is an explicit, minimal shim:
- *
- *   - `attachUser` is a NO-OP. It never populates `req.user`. There is no
- *     interim session validation — pretending to authenticate with the
- *     retired model would be worse than refusing outright.
- *   - `requireAuth` ALWAYS responds 401, regardless of brand/cookie/req.user
- *     state. An upload-signing endpoint must NEVER let a request through
- *     unauthenticated; refusing everything is the only safe failure mode
- *     until the real session-resolver is wired in.
+ * Populates `req.user` from the brand's session cookie via `resolveSession`
+ * (Fase 3 — replaces the interim fail-closed shim from Task 2.7). Optional:
+ * never rejects the request itself, even when the session can't be resolved.
+ *   - `authenticated` -> `req.user` populated + the user id recorded on the
+ *     active log context (`setUserId`, lib/logger.ts's AsyncLocalStorage).
+ *   - `unauthenticated`/`misconfigured` -> `req.user` stays `undefined`.
+ *   - `unavailable` (partner whoami down / breaker open / timeout) -> `req.user`
+ *     stays `undefined` too, but does NOT throw — this middleware degrades
+ *     gracefully; `requireAuth` is what turns "no user" into a hard failure
+ *     for endpoints that actually need one, with the right status code.
  */
 export const attachUser = async (
-    _req: AppRequest,
+    req: AppRequest,
     _res: Response,
     next: NextFunction,
 ): Promise<void> => {
+    const brand = req.brand;
+    if (!brand) {
+        next();
+        return;
+    }
+
+    const result = await resolveSession(brand, req.headers.cookie);
+    if (result.status === 'authenticated') {
+        req.user = result.user;
+        setUserId(result.user.id);
+    } else {
+        if (result.status === 'unavailable') {
+            logger.warn(
+                { brand: brand.slug, reason: result.reason },
+                '[auth] session resolution unavailable; continuing without a user',
+            );
+        }
+        req.user = undefined;
+    }
     next();
 };
 
+/**
+ * Guards endpoints that MUST have an authenticated identity. If `req.user` is
+ * already populated (typically by `attachUser` running earlier in the same
+ * request's middleware chain — see server.ts's per-brand mount order), this
+ * is a pure pass-through with no extra work. Otherwise it resolves the
+ * session itself, so it also works when mounted standalone.
+ *
+ * Distinguishes the 3 failure reasons so callers get an actionable status:
+ *   - 401 — no valid session (unauthenticated, or no brand resolved at all).
+ *   - 503 — the partner's whoami is unavailable (breaker open / timeout / 5xx).
+ *   - 403 — the brand's auth config itself is invalid (misconfigured).
+ */
 export const requireAuth = async (
-    _req: AppRequest,
+    req: AppRequest,
     res: Response,
-    _next: NextFunction,
+    next: NextFunction,
 ): Promise<void> => {
-    res.status(401).json({ error: 'Authentication is not available yet (pending Fase 3 session-resolver)' });
+    if (req.user) {
+        next();
+        return;
+    }
+
+    const brand = req.brand;
+    if (!brand) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+    }
+
+    const result = await resolveSession(brand, req.headers.cookie);
+    switch (result.status) {
+        case 'authenticated':
+            req.user = result.user;
+            setUserId(result.user.id);
+            next();
+            return;
+        case 'unavailable':
+            res.status(503).json({ error: 'Authentication service unavailable' });
+            return;
+        case 'misconfigured':
+            res.status(403).json({ error: 'Brand authentication is misconfigured' });
+            return;
+        case 'unauthenticated':
+            res.status(401).json({ error: 'Unauthorized' });
+            return;
+    }
 };
