@@ -4,9 +4,12 @@ import { requireAuth } from '../auth/index.js';
 
 const router = Router();
 
-// All S3 endpoints require an authenticated user. The middleware also rejects
-// brands without `auth.url` configured (403) so uploads can never be attributed
-// to an unverified identity.
+// All S3 endpoints require an authenticated user (resolveSession — Fase 3).
+// `requireAuth` (modules/auth/auth.middleware.ts) returns 401 for no/invalid
+// session, 503 when the brand's whoami partner is unavailable (breaker open/
+// timeout/5xx), and 403 when the brand's auth config itself is misconfigured
+// (e.g. an off-allowlist whoamiUrl) — uploads can never be attributed to an
+// unverified identity.
 router.use(requireAuth);
 
 // Simple S3 signing (supports GET and POST)
