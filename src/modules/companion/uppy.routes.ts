@@ -266,6 +266,13 @@ export const serveUppyPage = async (
         html = html.replace(/FOLDERS_DATA_VALUE/g, safeJsonForHtmlScript(folders));
         html = html.replace(/ENABLED_PLUGINS_VALUE/g, safeJsonForHtmlScript(enabledPlugins));
 
+        // Fase 5.4: the inline <script type="module"> needs the SAME nonce
+        // helmet's CSP put in the script-src header for this request
+        // (res.locals.cspNonce, set by the nonce middleware in server.ts,
+        // Fase 5.2) — 'self' alone does not cover an inline script, and a
+        // mismatch here would silently make Uppy fail to initialize.
+        html = html.replace(/CSP_NONCE_VALUE/g, res.locals.cspNonce ?? '');
+
         // Authenticated, per-user document — never cached (OWASP recommendation).
         res.set('Cache-Control', 'no-store');
         res.setHeader('Content-Type', 'text/html');

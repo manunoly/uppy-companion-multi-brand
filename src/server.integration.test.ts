@@ -184,6 +184,57 @@ describe('server integration', () => {
         expect(res.text).toContain("'https://companion.example.com'");
     });
 
+    // Fase 5.4: SRI on the pinned CDN assets + a CSP nonce on the inline
+    // <script type="module">. Motive (audit finding, ALTO): uppy.html's
+    // inline module script imports ./uppyModal.js and reads the
+    // server-injected placeholders — Task 5.2's `script-src 'self'` CSP
+    // would BLOCK it outright without a nonce (and 'unsafe-inline' would
+    // defeat the CSP's purpose entirely).
+    describe('SRI + CSP nonce (Fase 5.4)', () => {
+        const authOk = () => {
+            (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+                new Response(
+                    JSON.stringify({ id: 'u123', email: 'test@example.com', name: 'Test User', imageUrl: null }),
+                    { status: 200 },
+                ),
+            );
+        };
+
+        it('every pinned CDN <link>/<script> carries integrity + crossorigin="anonymous"', async () => {
+            authOk();
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res = await request(app).get('/uppy').set('Host', EDO_HOST).set('Cookie', 'session=valid-session-token');
+            expect(res.status).toBe(200);
+
+            const cdnUrls = [
+                'https://releases.transloadit.com/uppy/v5.1.8/uppy.min.css',
+                'https://releases.transloadit.com/uppy/v5.1.8/uppy.min.js',
+                'https://cdnjs.cloudflare.com/ajax/libs/sweetalert2/11.23.0/sweetalert2.min.css',
+                'https://cdnjs.cloudflare.com/ajax/libs/sweetalert2/11.23.0/sweetalert2.min.js',
+            ];
+            for (const url of cdnUrls) {
+                const escaped = url.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+                const tagRegex = new RegExp(`${escaped}"[^>]*integrity="sha384-[A-Za-z0-9+/=]+"[^>]*crossorigin="anonymous"`);
+                expect(res.text).toMatch(tagRegex);
+            }
+        });
+
+        it('the inline <script type="module"> nonce equals the CSP header nonce (mismatch would silently break Uppy under CSP)', async () => {
+            authOk();
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res = await request(app).get('/uppy').set('Host', EDO_HOST).set('Cookie', 'session=valid-session-token');
+            expect(res.status).toBe(200);
+
+            const csp = res.headers['content-security-policy'];
+            const headerNonce = /'nonce-([A-Za-z0-9+/=]+)'/.exec(csp ?? '')?.[1];
+            expect(headerNonce).toBeTruthy();
+
+            const scriptNonce = /<script type="module" nonce="([^"]+)">/.exec(res.text)?.[1];
+            expect(scriptNonce).toBeTruthy();
+            expect(scriptNonce).toBe(headerNonce);
+        });
+    });
+
     it('GET /uppy on an unrecognized Host → 404 (never falls back to a default brand)', async () => {
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app).get('/uppy').set('Host', 'evil.example.com');
