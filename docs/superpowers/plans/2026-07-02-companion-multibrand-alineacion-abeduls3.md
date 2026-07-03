@@ -7,7 +7,7 @@
 
 **Architecture:** Instancias `@uppy/companion` aisladas por marca, resueltas por `Host` (exact-match contra `companionHosts`). Contrato reimplementado 1:1 desde `@package/brands` (registro base + `<SLUG>_BRAND_OVERRIDE`). Auth por reenvío de cookie al `whoamiUrl` del partner con SSRF gate + circuit breaker (Redis) + caché Redis (patrón `resolvePartnerSocketIdentity` + `enrichEdoUser`). Estado compartido en Redis para ≥2 réplicas.
 
-**Tech Stack (versiones fijadas — Node 22 ESM):** `ioredis@^5`, `connect-redis@^8` (API `new RedisStore({client})`), `rate-limit-redis@^4` + `express-rate-limit@^7`, `pino@^9` + `pino-http@^10`, `helmet@^8`, `@biomejs/biome@^2`, `@aws-sdk/client-secrets-manager@^3` (alineado con `@aws-sdk/client-s3@^3.975`). Dev: `ioredis-mock@^8`. Tests: Vitest + supertest + `aws-sdk-client-mock`.
+**Tech Stack (versiones fijadas — Node 22 ESM):** `ioredis@^5`, `connect-redis@^8` (API `new RedisStore({client})`), `rate-limit-redis@^4` + `express-rate-limit@^7`, `pino@^9` + `pino-http@^10`, `helmet@^8`, `@biomejs/biome@^2`, `@aws-sdk/client-secrets-manager@^3` (**opcional**, solo si `SECRETS_SOURCE=aws`; el deploy inicial en **Railway** usa variables de servicio, no SM). Dev: `ioredis-mock@^8`. Tests: Vitest + supertest + `aws-sdk-client-mock`. **Deploy inicial: Railway** (no ECS).
 
 ## Global Constraints
 
@@ -16,7 +16,7 @@
 - Proyecto **no en producción**: se eliminan campos legacy sin capa de compatibilidad.
 - Slugs válidos: **`abe`**, **`picaboo`**, **`edo`** (Entourage = `edo`).
 - **NO overridables** por `<SLUG>_BRAND_OVERRIDE`: `kind`, `whoamiAllowedHosts`, `assets.s3Prefix`, `companionHosts`, `s3`, `providers`. Solo overridables: campos string de `auth` (`whoamiUrl`, `signInUrl`, `signOutUrl`, `sessionCookieName`).
-- Secretos S3/OAuth por Secrets Manager, **no** en el override.
+- Secretos S3/OAuth por **variables de servicio (Railway; SM opcional)**, **no** en el override. En Railway el `S3Client` usa access/secret key explícitas (**no** hay IAM role de instancia).
 - Presigned URLs `expiresIn` **≤ 300 s**.
 - whoami: `redirect:'manual'`, timeout **5000 ms**, body cap **16 KB**, caché namespace **`companion-whoami:{slug}:{sha256(cookie)}`** TTL **45 s fijo** guardando el **`BrandUser` completo**, breaker **3 fallos → open `EX 30`** con half-open. **Orden: `breaker.isOpen` ANTES de la caché.**
 - Identidad S3 = **`user.id` canónico para TODAS las marcas** (401 si falta; **NO se usa `edoId`** para keys — SA1). Path **sencillo y homogéneo** `{s3Prefix}original/{userId}/{yyyy}/{mm}/{dd}/{ts}/{filename}` (**sin `UPID_`**), igual para edo y abe gracias a `normalizeBrandUser`; `buildS3Key` es **una sola función independiente de la marca**. Bucket por marca (edo → `entourage-uploads`); aislamiento por bucket.
@@ -42,7 +42,7 @@
 | 3 | Auth endurecida | ~2-3 días |
 | 4 | S3 keys/límites/SSRF | ~2 días |
 | 5 | Ensamblaje (Host, sesión, rate-limit, uppy.routes, fixtures) | ~3-4 días |
-| 6 | Secrets Manager | ~1-2 días |
+| 6 | Carga de secretos (Railway env; SM opcional) | ~1-2 días |
 | 7 | Docs + smoke test stage | ~1-2 días |
 | **MVP edo** | Fases 0–7 | **~3 semanas (1 dev) / ~1.5 sem (2-3)** |
 
@@ -52,7 +52,7 @@
 
 ### Task 0.0: ADR-001 de tenancy (antes del código de resolución por Host)
 **Files:** Create: `docs/adr/ADR-001-tenancy-pool-bridge.md`
-- [ ] **Step 1:** Redactar el ADR (spec D12): pool por defecto (resolución por Host exact-match), aislamiento reforzado (Redis, Secrets Manager, STS en Fase 8), puerta a bridge/silo vía `BRAND_FORCE`, criterios de activación (volumen/compliance).
+- [ ] **Step 1:** Redactar el ADR (spec D12): pool por defecto (resolución por Host exact-match), aislamiento reforzado (Redis, secretos gestionados, STS en Fase 8), puerta a bridge/silo vía `BRAND_FORCE` (un servicio/deploy por marca), criterios de activación (volumen/compliance). Nota: deploy inicial en Railway.
 - [ ] **Step 2:** Commit `docs(adr): ADR-001 modelo de tenancy pool + bridge`.
 
 ### Task 0.1: Arreglar `.dockerignore` (build roto)
@@ -277,10 +277,10 @@ helmet({ contentSecurityPolicy: { directives: {
 
 ## FASE 6 — Secretos y config  ·  ~1-2 días
 
-### Task 6.1: Carga desde AWS Secrets Manager
+### Task 6.1: Carga de secretos por marca (Railway env por defecto; AWS Secrets Manager opcional)
 **Files:** Create: `src/lib/secrets.ts`, `secrets.test.ts`; Modify: `brand.service.ts`, `config/env.ts`, `env.schema.ts` · **Produces:** `loadBrandSecrets(slug)`.
-- [ ] **Step 1: Test** (mock `@aws-sdk/client-secrets-manager` con `aws-sdk-client-mock`): devuelve `{s3, providers}`; fallback a env si `SECRETS_SOURCE=env`; fail-fast si falta un secreto requerido.
-- [ ] **Step 2:** FAIL. **Step 3:** `pnpm add @aws-sdk/client-secrets-manager@^3`; implementar (`GetSecretValueCommand` + cache al boot). Ampliar `env.schema.ts` con `REDIS_URL`, `BRAND_FORCE?`, `SECRETS_SOURCE ('aws'|'env')`, `LOG_LEVEL?`. `brand.service` llama `loadBrandSecrets`. **Step 4:** PASS. **Step 5:** Commit `feat(secrets): credenciales por marca desde Secrets Manager`.
+- [ ] **Step 1: Test:** con **`SECRETS_SOURCE=env` (Railway, por defecto)** lee las credenciales S3/OAuth de variables de entorno por marca → `{s3, providers}`; con **`SECRETS_SOURCE=aws`** (mock `@aws-sdk/client-secrets-manager` con `aws-sdk-client-mock`) lee de Secrets Manager; **fail-fast** si falta un secreto requerido en cualquiera de las dos.
+- [ ] **Step 2:** FAIL. **Step 3:** Implementar `loadBrandSecrets` con las dos fuentes: **`env`** (lee env vars por marca — el camino de Railway) y **`aws`** (`GetSecretValueCommand` + cache al boot, con **import dinámico** de `@aws-sdk/client-secrets-manager` para no penalizar el arranque en Railway). Ampliar `env.schema.ts` con `REDIS_URL`, `BRAND_FORCE?`, `SECRETS_SOURCE ('env'|'aws', default 'env')`, `LOG_LEVEL?`. `brand.service` llama `loadBrandSecrets`. Recordar: en Railway el `S3Client` usa access/secret key explícitas (no IAM role). **Step 4:** PASS. **Step 5:** Commit `feat(secrets): carga por marca (Railway env / Secrets Manager)`.
 
 ---
 

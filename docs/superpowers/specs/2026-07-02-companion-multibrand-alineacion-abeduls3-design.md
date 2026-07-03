@@ -17,11 +17,11 @@ Hoy el Companion define su **propio** esquema (`BrandConfigJSON`: `auth.url`, `a
 
 ### 1.1 Criterios de éxito
 
-1. Una marca se configura con **una sola variable** con la **misma forma** que abeduls3 (`EDO_BRAND_OVERRIDE={...}`), más un secreto separado (S3/OAuth) en Secrets Manager.
+1. Una marca se configura con **una sola variable** con la **misma forma** que abeduls3 (`EDO_BRAND_OVERRIDE={...}`), más las credenciales S3/OAuth como **variables de servicio** (Railway Variables en el deploy inicial; AWS Secrets Manager opcional a futuro).
 2. El Companion **valida la sesión de un usuario de edo** reenviando la cookie del partner al `whoamiUrl`, con el endurecimiento de abeduls3 (SSRF gate, `redirect:'manual'`, timeout 5 s, cap 16 KB, breaker por marca, caché por `sha256(cookie)+slug`) **y** el enriquecimiento `edoId` (ver D5).
 3. Las keys S3 quedan namespaciadas por marca (bucket por marca) y por usuario con el **`id` canónico** (para todas las marcas, edo incluido; el `edoId` es solo un extra para metadata/listado, **no** la key — SA1).
-4. El servidor escala a ≥2 réplicas (sesión y estado en Redis, sin sticky sessions) y expone liveness + readiness con graceful shutdown alineado a ECS.
-5. Seguridad de plataforma: SSRF cerrado, rate limiting por marca, `helmet`+CSP+SRI, límite de tamaño, secretos fuera del blob (Secrets Manager).
+4. El servidor escala a ≥2 réplicas (sesión y estado en Redis, sin sticky sessions) y expone liveness + readiness con graceful shutdown por SIGTERM del orquestador (**Railway** en el deploy inicial).
+5. Seguridad de plataforma: SSRF cerrado, rate limiting por marca, `helmet`+CSP+SRI, límite de tamaño, secretos fuera del blob (variables de servicio de Railway; SM opcional).
 6. Entrega: linter+formatter, `build` como gate de CI, escaneo de dependencias/SAST/secretos, cobertura ≥ actual.
 7. Un **smoke test** valida el flujo real contra el whoami de **stage** de edo antes de cerrar la entrega.
 
@@ -55,7 +55,7 @@ Estos cuatro puntos se decidieron con el usuario tras verificar el código real 
 | Auth | `GET auth.url` | `partner-whoami` endurecido + enriquecimiento edo | D5 |
 | Identidad S3 | `req.user.id` | `id` canónico (todas las marcas; `edoId` **no** se usa para keys) | D6 |
 | Sesión/estado | MemoryStore | Redis (sesión, caché whoami, breaker, rate-limit) | D7 |
-| Secretos | Blob JSON | Secrets Manager | D8 |
+| Secretos | Blob JSON | Variables de servicio (Railway); SM opcional | D8 |
 | SSRF | `allowLocalUrls:true`, `uploadUrls:['*']`, sin validHosts | allowlist estricta + validHosts | D9 |
 | Observabilidad | `console.*` | Pino + AsyncLocalStorage + readiness + shutdown | D10 |
 | Entrega | typecheck+coverage | + build, lint, SAST, secretos | D11 |
@@ -119,7 +119,7 @@ interface BrandUser {                          // canónico (idéntico a abeduls
 - Registro base **en código** (deep-frozen) con valores de producción por marca (equivalente a `packages/brands/src/registry.ts`).
 - Override `<SLUG>_BRAND_OVERRIDE` (JSON anidado), leído por proceso, **merge field-by-field con allowlist** replicando `identity.ts`:
   - **Overridable:** únicamente los campos **string de `auth`** existentes: `whoamiUrl`, `signInUrl`, `signOutUrl`, `sessionCookieName`.
-  - **NUNCA overridable:** `kind`, `whoamiAllowedHosts` (SSRF gate), **`assets.s3Prefix`** (aislamiento por tenant), **`companionHosts`**, y todo `s3`/`providers` (secretos → Secrets Manager). Estos son **code-only**.
+  - **NUNCA overridable:** `kind`, `whoamiAllowedHosts` (SSRF gate), **`assets.s3Prefix`** (aislamiento por tenant), **`companionHosts`**, y todo `s3`/`providers` (secretos → variables de servicio del entorno, ver D8). Estos son **code-only**.
   - Validación por campo (token RFC ≤128 chars para cookie; `new URL()` https; revalidación de host contra `whoamiAllowedHosts`), protección prototype-pollution (`__proto__`/`constructor`/`prototype`), fail-safe al valor base.
   - **Diferencia con abeduls3:** el Companion **loguea** cada rechazo (`logger.warn({slug,field})`, sin el valor).
 - **La misma `EDO_BRAND_OVERRIDE` que se fija en designer y node-socket se fija en el Companion** (requisito operativo, documentado en `.env.example`).
@@ -162,20 +162,24 @@ La variante `capsule` de abeduls3 (`types.ts:71-77`) **no tiene** URL de endpoin
 ### D7 — Sesión y estado en Redis
 `express-session` con `connect-redis` (cierra H4). Redis aloja sesión OAuth, caché whoami (D5), estado del breaker (D5) y contadores de rate-limit (D13). `COMPANION_SECRET` idéntico entre réplicas; sin sticky sessions; `redisPubSubScope` para el WS de Companion. **Cookie de sesión:** al pasar de montaje por path a resolución por Host, `cookie.path` pasa de `/${brandId}` a `/` y el `name` es **único y estático** (`companion.sid`), **no** por-slug: `express-session` se configura una sola vez (middleware-factory) y `brand` sólo existe per-request, así que un `name` dinámico ni es implementable ni es necesario — cada marca vive en un `companionHost` distinto (D4), por lo que el navegador ya aísla la cookie por host. (Corrige el acoplamiento actual `server.ts:65,71` sin reintroducir dependencia de la marca en tiempo de configuración.)
 
-### D8 — Secretos en AWS Secrets Manager
-Credenciales S3/OAuth por marca salen del blob y se cargan de Secrets Manager (`valueFrom` en ECS o SDK al arrancar con el task role). Fail-fast si falta un secreto. El override sólo lleva campos no-secretos. Fallback a IAM role del `S3Client` conservado.
+### D8 — Secretos fuera del blob (Railway Variables en el deploy inicial; Secrets Manager opcional)
+El **deploy inicial es Railway**, no ECS/AWS. Por tanto:
+- Credenciales S3/OAuth por marca se proveen como **variables de servicio de Railway** (marcadas *sealed*/secretas), inyectadas al proceso como env vars — **no** hay `valueFrom` de ECS ni task execution role. El override `<SLUG>_BRAND_OVERRIDE` sólo lleva campos no-secretos.
+- **Importante (Railway ≠ AWS):** en Railway **no hay IAM role de instancia**, así que el `S3Client` necesita **access key / secret key explícitas** (variables de Railway). El fallback a la Default Credential Provider Chain (IAM role) **sólo aplica si se migra a AWS/ECS**.
+- Abstracción `loadBrandSecrets(slug)` con `SECRETS_SOURCE`: **`env` (Railway, por defecto)** lee de variables de entorno; **`aws` (opcional)** lee de AWS Secrets Manager (`GetSecretValueCommand`) para cuando/si se migre a AWS. Fail-fast si falta un secreto requerido.
+- El límite de 64 KB de la task def de ECS **no aplica** a Railway; el argumento contra el blob JSON sigue válido por higiene/rotación/auditoría (12-factor), no por ese límite.
 
 ### D9 — Cerrar SSRF por entorno
 `allowLocalUrls = env.protocol === 'http'` (sólo dev). `uploadUrls` deja de ser `['*']`: se deriva de `s3.bucket`/`companionUrl`/`domains`. Se configuran `COMPANION_CLIENT_ORIGINS` y **`validHosts`** (allowlist de `redirect_uri` de Companion) — **con test dedicado** (cierra H1, H2, **H7**).
 
 ### D10 — Observabilidad
-Pino + `pino-http` reemplaza `console.*` (H9); `requestId`/`brand`/`userId` por AsyncLocalStorage (H10). `GET /api/readyz` (readiness: Redis + S3 con timeout corto) separado de `/api/healthz` (liveness) (H11). Graceful shutdown: `server.close()` + timeout de seguridad + 503 en readiness durante drenaje + cierre del WS de Companion y Redis, alineado con `deregistration_delay` de ECS (H19). OTel diferido.
+Pino + `pino-http` reemplaza `console.*` (H9); `requestId`/`brand`/`userId` por AsyncLocalStorage (H10). `GET /api/readyz` (readiness: Redis + S3 con timeout corto) separado de `/api/healthz` (liveness) (H11). Graceful shutdown: `server.close()` + timeout de seguridad + 503 en readiness durante drenaje + cierre del WS de Companion y Redis, alineado con el ciclo SIGTERM→drenaje del orquestador (**Railway** inicialmente; si se migra a ECS, con `deregistration_delay`) (H19). OTel diferido.
 
 ### D11 — Entrega y calidad
 CI añade `pnpm build` (H3/H5), `pnpm lint` (Biome, H15), Dependabot + CodeQL + gitleaks (H16). `.dockerignore` deja de excluir `scripts/` (bug real H3). `USER node` (H20). Se borra el código muerto de `s3Client.ts` (H18) y los ficheros sueltos de la raíz (H22).
 
 ### D12 — Documentar el modelo de tenancy (ADR **antes** del código)
-Un ADR (redactado **al inicio**, no post-hoc): modelo **pool** por defecto (varias marcas por proceso, resueltas por Host) con aislamiento reforzado (Redis, Secrets Manager, STS en Fase 8); puerta de escape a **bridge/silo** vía `BRAND_FORCE` (una task por marca) para alto volumen/compliance. Cierra H17.
+Un ADR (redactado **al inicio**, no post-hoc): modelo **pool** por defecto (varias marcas por proceso, resueltas por Host) con aislamiento reforzado (Redis, secretos gestionados, STS en Fase 8); puerta de escape a **bridge/silo** vía `BRAND_FORCE` (un servicio/deploy por marca) para alto volumen/compliance. Cierra H17.
 
 ### D13 — Rate limiting por marca
 `express-rate-limit` + `rate-limit-redis` (store Redis) en `/uppy` y `/api/*`, clave por **marca + usuario/IP**. Cierra H8. (Ver wiring `sendCommand` en el plan.)
@@ -205,7 +209,7 @@ edo: {
   upload: { plugins:['Facebook','Url'], system:'ENTOURAGE', systemDetails:'DESIGNER' },
   limits: { maxUploadBytes: 50 * 1024 * 1024 },                 // D14: ej. 50 MB (ajustar al límite real de edo)
   companionUrl: 'https://companion.entourageyearbooks.com',
-  secret: '<COMPANION_SECRET>', s3: { bucket: 'entourage-uploads', region: 'us-east-1' /* creds: Secrets Manager */ }, providers: { /* Secrets Manager */ },
+  secret: '<COMPANION_SECRET>', s3: { bucket: 'entourage-uploads', region: 'us-east-1' /* creds: variables de Railway (o SM) */ }, providers: { /* variables de Railway */ },
 }
 ```
 
@@ -221,7 +225,7 @@ EDO_BRAND_OVERRIDE={"auth":{"sessionCookieName":"auth_session_stage","whoamiUrl"
 ## 6. Flujo de request (subida edo)
 
 1. Browser (designer edo) → `fetch` a `https://companion.stage.entourageyearbooks.com/api/uppy/sign-s3`, `credentials:'include'` → cookie `auth_session_stage` (Domain cross-apex `.entourageyearbooks.com`).
-2. ALB → réplica. `pino-http` abre contexto (`requestId`). `resolveBrandByHost(companion.stage.entourageyearbooks.com)` → `edo` (o `BRAND_FORCE`). Host desconocido en prod → 404.
+2. Edge de Railway (TLS terminado por el proxy de Railway) → réplica. `pino-http` abre contexto (`requestId`). `resolveBrandByHost(companion.stage.entourageyearbooks.com)` → `edo` (o `BRAND_FORCE`). Host desconocido en prod → 404.
 3. `SessionResolver` (orden de seguridad D5.a): extraer cookie → `resolveValidatedWhoamiTarget` (host ∈ `entourageyearbooks.com` ✓) → `buildCookieHeader` (null → `unauthenticated`, sin tocar breaker) → `breaker.isOpen('edo')`? no → caché `companion-whoami:edo:sha256`. Miss → `GET .../api/user` (`Cookie:`, `redirect:'manual'`, 5 s, 16 KB). `200` → `normalizeBrandUser` + `enrichEdoUser` → `{id:'1004', edoId:854569, email…}`. Cachea user completo 45 s.
 4. `requireAuth` garantiza `req.user`. Key-builder (SA1, **id canónico homogéneo**): `original/1004/2026/7/2/<ts>/<file>` en bucket `entourage-uploads` (path sencillo, sin `UPID_`).
 5. `signS3` firma PUT (SigV4, 300 s) validando `Content-Length` ≤ límite. `sendIfKeyNotOwned` valida el prefijo `original/1004/`.
@@ -255,10 +259,10 @@ EDO_BRAND_OVERRIDE={"auth":{"sessionCookieName":"auth_session_stage","whoamiUrl"
 ---
 
 ## 9. Migración
-Reemplazo directo (no hay producción): registro/identity/detect nuevos → cutover **atómico** de `brand.types`+consumidores (incl. `uppy.routes`, `folders`, `fixtures`, key-builder) → auth → key-builder → server Host-based → Secrets Manager → docs. Sin compatibilidad con `<SLUG_UPPER_SNAKE>` ni legacy. (El plan ordena esto para que cada fase deje `typecheck` **verde**.)
+Reemplazo directo (no hay producción): registro/identity/detect nuevos → cutover **atómico** de `brand.types`+consumidores (incl. `uppy.routes`, `folders`, `fixtures`, key-builder) → auth → key-builder → server Host-based → carga de secretos (Railway env) → docs. Sin compatibilidad con `<SLUG_UPPER_SNAKE>` ni legacy. (El plan ordena esto para que cada fase deje `typecheck` **verde**.)
 
 ## 10. Compliance (datos potencialmente de menores)
-Aislamiento por tenant **por bucket S3 por marca** (edo → `entourage-uploads`) + prefijo por usuario `original/{id}/` (D6); STS scoped en Fase 8. Auditoría (Secrets Manager+CloudTrail D8; Pino+requestId D10). Retención/borrado: lifecycle S3 por marca (infra, Fase 8). Cifrado SSE + buckets privados + CloudFront/OAC: infra (H24, verificar). Aislamiento por Host evita fuga cross-marca.
+Aislamiento por tenant **por bucket S3 por marca** (edo → `entourage-uploads`) + prefijo por usuario `original/{id}/` (D6); STS scoped en Fase 8. Auditoría (variables de servicio + logs de Railway; CloudTrail sólo si se usa SM/AWS — D8; Pino+requestId D10). Retención/borrado: lifecycle S3 por marca (infra, Fase 8). Cifrado SSE + buckets privados + CloudFront/OAC: infra (H24, verificar). Aislamiento por Host evita fuga cross-marca.
 
 ## 11. Riesgos y mitigaciones
 | Riesgo | Mitigación |
