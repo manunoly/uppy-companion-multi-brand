@@ -19,7 +19,7 @@
 - Secretos S3/OAuth por Secrets Manager, **no** en el override.
 - Presigned URLs `expiresIn` **≤ 300 s**.
 - whoami: `redirect:'manual'`, timeout **5000 ms**, body cap **16 KB**, caché namespace **`companion-whoami:{slug}:{sha256(cookie)}`** TTL **45 s fijo** guardando el **`BrandUser` completo**, breaker **3 fallos → open `EX 30`** con half-open. **Orden: `breaker.isOpen` ANTES de la caché.**
-- Identidad S3 = **`user.id` canónico para TODAS las marcas** (401 si falta; **NO se usa `edoId`** para keys — SA1). edo replica el esquema real de edonext `original/{id}/{yyyy}/{mm}/{dd}/{ts}/UPID_{orderId}/{file}` en bucket `entourage-uploads`. Aislamiento por **bucket** por marca (no por prefijo `brands/{slug}/`). `UPID_{orderId}` a confirmar con edo (smoke test).
+- Identidad S3 = **`user.id` canónico para TODAS las marcas** (401 si falta; **NO se usa `edoId`** para keys — SA1). Path **sencillo y homogéneo** `{s3Prefix}original/{userId}/{yyyy}/{mm}/{dd}/{ts}/{filename}` (**sin `UPID_`**), igual para edo y abe gracias a `normalizeBrandUser`; `buildS3Key` es **una sola función independiente de la marca**. Bucket por marca (edo → `entourage-uploads`); aislamiento por bucket.
 - TDD: test que falla → impl mínima → test pasa → commit. Rama por fase, **nunca commit directo a `main`**; **cada fase deja `typecheck` verde** (el cutover del contrato es atómico, ver Fase 2). PR por fase.
 
 ---
@@ -202,20 +202,21 @@ it('200 enriquece edoId y cachea el user completo', async () => {
 
 ## FASE 4 — S3: keys, límites, SSRF  ·  ~2 días
 
-### Task 4.1: Key-builder con id canónico + esquema de edonext (SA1)
+### Task 4.1: Key-builder con id canónico (path sencillo homogéneo, SA1)
 **Files:** Rewrite: `src/modules/companion/s3/s3.key-builder.ts`; Test: `s3.key-builder.test.ts`
-- [ ] **Step 1: Test:** edo con `user.id='1004'` + `metadata.orderId='8568744'` → `original/1004/2026/7/2/<ts>/UPID_8568744/<file>` (bucket `entourage-uploads`, sin prefijo `brands/`); **falta `user.id` → throw (→401)**; edo **sin `orderId`** → key sin el segmento `UPID_` (o el comportamiento que confirme edo — ver nota); marca con `assets.s3Prefix` no vacío → prefijo antepuesto; `buildUserKeyPrefix(brand,user)` = `{s3Prefix}original/{id}/`.
+- [ ] **Step 1: Test:** edo con `user.id='1004'` → `original/1004/2026/7/2/<ts>/<file>` (bucket `entourage-uploads`, sin prefijo `brands/`, **sin `UPID_`**); abe con `user.id='cuidXYZ'` → `original/cuidXYZ/…/<file>`; **falta `user.id` → throw (→401)**; marca con `assets.s3Prefix` no vacío → prefijo antepuesto; `buildUserKeyPrefix(brand,user)` = `{s3Prefix}original/{id}/`.
 ```ts
-it('edo usa id canónico + UPID (no edoId)', () => {
-  const key = buildS3Key({ req: reqWith({ id:'1004', edoId:854569 }, edo), filename:'f.png', metadata:{ orderId:'8568744' } });
-  expect(key).toMatch(/^original\/1004\/\d{4}\/\d{1,2}\/\d{1,2}\/\d+\/UPID_8568744\/f\.png$/);
-  expect(key).not.toContain('854569');   // el edoId NO aparece en la key
+it('usa id canónico y NO edoId, path simple sin UPID', () => {
+  const key = buildS3Key({ req: reqWith({ id:'1004', edoId:854569 }, edo), filename:'f.png' });
+  expect(key).toMatch(/^original\/1004\/\d{4}\/\d{1,2}\/\d{1,2}\/\d+\/f\.png$/);
+  expect(key).not.toContain('854569');   // el edoId NO aparece
+  expect(key).not.toContain('UPID');     // path simple
 });
 it('lanza si falta user.id', () => {
   expect(() => buildS3Key({ req: reqWith({ }, edo), filename:'f.png' })).toThrow();
 });
 ```
-- [ ] **Step 2:** FAIL. **Step 3:** Implementar: `const uid = user.id; if (!uid) throw;` (id canónico para TODAS las marcas — **no** ramificar por kind/slug ni usar `edoId`). Prefijo `brand.assets.s3Prefix` (vacío para edo). Esquema `{s3Prefix}original/{uid}/{yyyy}/{mm}/{dd}/{ts}/[UPID_{orderId}/]{filename}` con `orderId` desde `metadata`. **`UPID_{orderId}` a confirmar con edo (SA1, smoke test):** si `orderId` no está presente, omitir el segmento (comportamiento por defecto hasta confirmar si es obligatorio). **Step 4:** PASS. **Step 5:** Commit `feat(s3): keys con id canónico + esquema edonext (SA1)`.
+- [ ] **Step 2:** FAIL. **Step 3:** Implementar (**una sola función, sin ramificar por marca**): `const uid = user.id; if (!uid) throw;` (id canónico homogéneo). Prefijo `brand.assets.s3Prefix` (vacío para edo). Esquema `{s3Prefix}original/{uid}/{yyyy}/{mm}/{dd}/{ts}/{filename}` — **sin `UPID_{orderId}`** (decisión del usuario: path simple). **Step 4:** PASS. **Step 5:** Commit `feat(s3): keys con id canónico, path simple homogéneo (SA1)`.
 
 ### Task 4.2: Límite de tamaño declarado + sendIfKeyNotOwned
 **Files:** Modify: `s3/s3.controller.ts`; Test: `api.routes.integration.test.ts`
@@ -292,7 +293,7 @@ helmet({ contentSecurityPolicy: { directives: {
 ### Task 7.2: Smoke test contra stage (SA1/SA2/SA4)
 **Files:** Create: `scripts/smoke-whoami-stage.ts`
 - [ ] **Step 1:** Script que, con una cookie de sesión de prueba de edo (variable de entorno, no commiteada), ejecuta el flujo real `resolveSession(edo-stage, cookie)` contra `edonext-app.stage.entourageyearbooks.com` y valida `200` + **`user.id` canónico** presente (y `edoId` como extra). Imprime la key S3 que generaría el key-builder (`original/{id}/.../[UPID_{orderId}]/...`) para **contrastar el esquema con el equipo edo** (confirmar SA1: `UPID_{orderId}` y bucket `entourage-uploads`). Documentar cómo obtener la cookie.
-- [ ] **Step 2:** Ejecutar como gate manual antes de escribir a prod. Confirmar con el equipo edonext/infra: (SA1) esquema `UPID` + bucket, (SA2) DNS/TLS de `companion[.stage].entourageyearbooks.com`, (SA4) cookie stage `Domain=.entourageyearbooks.com` + `Secure`. **Step 3:** Commit `test(smoke): validación stage de edo (whoami + esquema S3)`.
+- [ ] **Step 2:** Ejecutar como gate manual antes de escribir a prod. Confirmar con el equipo edonext/infra: (SA1) que edonext registre las fotos por la **key notificada** (`publicUploadUrl`), no por convención de path + bucket `entourage-uploads`; (SA2) DNS/TLS de `companion[.stage].entourageyearbooks.com`; (SA4) cookie stage `Domain=.entourageyearbooks.com` + `Secure`. **Step 3:** Commit `test(smoke): validación stage de edo (whoami + registro S3)`.
 
 ---
 
@@ -319,7 +320,7 @@ helmet({ contentSecurityPolicy: { directives: {
 
 **Ficheros de alta superficie con task explícito:** `uppy.routes.ts`→5.3; `folders.service.ts`→5.5; `test-utils/{fixtures,http}`→2.7. ✓
 
-**Supuestos a confirmar (spec §2):** SA1 (id canónico + esquema `UPID_{orderId}`)→7.2; SA2 (companionHosts `companion.*`)→2.3/7.2; SA3 (folders, conservar)→5.5; SA4 (cookie stage + CORS wildcard)→7.2. ✓
+**Supuestos a confirmar (spec §2):** SA1 (id canónico, path simple sin UPID; registro por key notificada)→7.2; SA2 (companionHosts `companion.*`)→2.3/7.2; SA3 (folders, conservar)→5.5; SA4 (cookie stage + CORS wildcard)→7.2. ✓
 
 **Anti-typecheck-roto:** cutover atómico en 2.7; cada fase deja el árbol verde. ✓
 ```
