@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { toJsStringLiteral, safeJsonForHtmlScript, safePath, getEnabledPlugins } from './uppy.routes.js';
-import { makeBrand } from '../../test-utils/fixtures.js';
+import { describe, it, expect, vi } from 'vitest';
+import type { Response } from 'express';
+import { toJsStringLiteral, safeJsonForHtmlScript, safePath, getEnabledPlugins, serveUppyPage } from './uppy.routes.js';
+import { makeBrand, makeAppRequest, makeUser } from '../../test-utils/fixtures.js';
 
 describe('toJsStringLiteral', () => {
     it('wraps plain text in single quotes', () => {
@@ -144,5 +145,63 @@ describe('getEnabledPlugins (BAJO-3: typed EdoUploadPlugin allowlist)', () => {
     it('falls back to just Url when upload.plugins is empty and no providers are configured', () => {
         const brand = makeBrand({ upload: { plugins: [], system: 'x', systemDetails: 'y' }, providers: {} });
         expect(getEnabledPlugins(brand)).toEqual(['Url']);
+    });
+});
+
+// Security review: `brand.auth.whoamiUrl` is re-validated against its own
+// `whoamiAllowedHosts` allowlist right at the point it gets embedded into
+// client HTML — defense-in-depth on top of the server-side-only validation
+// `resolveSession` (session-resolver.ts) already performs before a caller
+// can ever reach this branch (it requires `req.user` to already be set).
+describe('serveUppyPage — whoamiUrl re-validated at the HTML-injection point', () => {
+    const makeRes = () => {
+        const state = { statusCode: 200, headers: {} as Record<string, string>, body: '' };
+        const res = {
+            locals: { cspNonce: 'test-nonce' },
+            set(name: string, value: string) {
+                state.headers[name] = value;
+                return res;
+            },
+            setHeader(name: string, value: string) {
+                state.headers[name] = value;
+                return res;
+            },
+            status(code: number) {
+                state.statusCode = code;
+                return res;
+            },
+            send(body: string) {
+                state.body = body;
+                return res;
+            },
+        };
+        return { res: res as unknown as Response, state };
+    };
+
+    it('omits whoamiUrl from the rendered page when it fails allowlist re-validation', async () => {
+        const brand = makeBrand({
+            auth: { whoamiUrl: 'https://evil.example.com/me', whoamiAllowedHosts: ['test.example.com'] },
+            public: {},
+        });
+        const req = makeAppRequest({ brand, user: makeUser() });
+        const { res, state } = makeRes();
+
+        await serveUppyPage(req, res, vi.fn());
+
+        expect(state.body.toLowerCase()).toContain('<!doctype html>');
+        expect(state.body).not.toContain('evil.example.com');
+    });
+
+    it('still injects a whoamiUrl that passes allowlist re-validation', async () => {
+        const brand = makeBrand({
+            auth: { whoamiUrl: 'https://api.test.example.com/auth/me', whoamiAllowedHosts: ['test.example.com'] },
+            public: {},
+        });
+        const req = makeAppRequest({ brand, user: makeUser() });
+        const { res, state } = makeRes();
+
+        await serveUppyPage(req, res, vi.fn());
+
+        expect(state.body).toContain('https://api.test.example.com/auth/me');
     });
 });

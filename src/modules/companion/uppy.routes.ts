@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { AppRequest } from '../../core/types/express.js';
 import type { Brand, EdoUploadPlugin } from '../brand/brand.types.js';
+import { resolveValidatedWhoamiTarget } from '../brand/identity.js';
 import { fetchFolders } from '../folders/folders.service.js';
 import { logger } from '../../lib/logger.js';
 const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Z]:)/, '$1');
@@ -237,7 +238,24 @@ export const serveUppyPage = async (
         html = html.replace(/BRAND_SLUG_VALUE/g, toJsStringLiteral(brand.slug));
         html = html.replace(/BRAND_NAME_VALUE/g, toJsStringLiteral(brand.name));
         html = html.replace(/BRAND_LOGO_URL_VALUE/g, toJsStringLiteral(''));
-        html = html.replace(/BRAND_USER_ENDPOINT_VALUE/g, toJsStringLiteral(brand.auth.whoamiUrl));
+        // Security review: re-validate whoamiUrl against its own
+        // `whoamiAllowedHosts` allowlist right here at the HTML-injection
+        // point, instead of trusting `brand.auth.whoamiUrl` as-is. Under the
+        // CURRENT auth flow this is unreachable in practice — reaching this
+        // branch already requires `req.user` to be set, which itself
+        // requires `resolveSession` (session-resolver.ts) to have already
+        // run this exact same check successfully — but it's cheap,
+        // pure/no-I/O, and a hard guarantee against this specific value ever
+        // reaching client HTML unvalidated if that coupling ever changes.
+        const whoamiTarget = resolveValidatedWhoamiTarget(brand);
+        if (!whoamiTarget.ok) {
+            logger.warn(
+                { brand: brand.slug, reason: whoamiTarget.reason },
+                '[uppy] whoamiUrl failed allowlist re-validation at HTML-injection point; omitting it from the page',
+            );
+        }
+        const safeWhoamiUrl = whoamiTarget.ok ? whoamiTarget.whoamiUrl.toString() : '';
+        html = html.replace(/BRAND_USER_ENDPOINT_VALUE/g, toJsStringLiteral(safeWhoamiUrl));
         html = html.replace(/COMPANION_URL_VALUE/g, toJsStringLiteral(brand.companionUrl));
         // Fase 5.1 retires the per-brand `/{slug}/...` mount path: this
         // Companion instance now serves the uppy page, the custom
