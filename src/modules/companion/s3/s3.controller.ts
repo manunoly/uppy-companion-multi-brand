@@ -18,15 +18,18 @@ import { logger } from '../../../lib/logger.js';
 // --- Helpers ---
 
 /**
- * Parses a client-declared size (e.g. `?contentLength=123`) into a finite
- * number, or `undefined` when absent/unparseable. Browsers forbid scripts
- * from setting the real `Content-Length` header, so the client declares the
- * size of the file it INTENDS to upload as an ordinary field instead.
+ * Parses a client-declared size (e.g. `?contentLength=123`) into a POSITIVE
+ * INTEGER number of bytes, or `undefined` when absent/unparseable/invalid.
+ * Browsers forbid scripts from setting the real `Content-Length` header, so
+ * the client declares the size of the file it INTENDS to upload as an
+ * ordinary field instead. Negative, fractional or zero values are malformed
+ * as a byte count and are treated as "not declared" (undefined) so the
+ * limit check stays consistent — a `-1` must never sneak past `> maxUploadBytes`.
  */
-const parseDeclaredLength = (raw: unknown): number | undefined => {
+export const parseDeclaredLength = (raw: unknown): number | undefined => {
     if (raw === undefined || raw === null || raw === '') return undefined;
     const n = Number(raw);
-    return Number.isFinite(n) ? n : undefined;
+    return Number.isInteger(n) && n > 0 ? n : undefined;
 };
 
 /**
