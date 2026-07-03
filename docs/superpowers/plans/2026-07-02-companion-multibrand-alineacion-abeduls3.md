@@ -17,6 +17,7 @@
 - Slugs válidos: **`abe`**, **`picaboo`**, **`edo`** (Entourage = `edo`).
 - **NO overridables** por `<SLUG>_BRAND_OVERRIDE`: `kind`, `whoamiAllowedHosts`, `assets.s3Prefix`, `companionHosts`, `s3`, `providers`. Solo overridables: campos string de `auth` (`whoamiUrl`, `signInUrl`, `signOutUrl`, `sessionCookieName`).
 - Secretos S3/OAuth por **variables de servicio (Railway; SM opcional)**, **no** en el override. En Railway el `S3Client` usa access/secret key explícitas (**no** hay IAM role de instancia).
+- **Infra inicial: todo en Railway** — servicio Companion + **Redis (plugin de Railway**, `REDIS_URL` provisto por Railway). Único recurso AWS = **S3** (bucket `entourage-uploads`). El código no depende de infra AWS-específica (agnóstico de proveedor).
 - Presigned URLs `expiresIn` **≤ 300 s**.
 - whoami: `redirect:'manual'`, timeout **5000 ms**, body cap **16 KB**, caché namespace **`companion-whoami:{slug}:{sha256(cookie)}`** TTL **45 s fijo** guardando el **`BrandUser` completo**, breaker **3 fallos → open `EX 30`** con half-open. **Orden: `breaker.isOpen` ANTES de la caché.**
 - Identidad S3 = **`user.id` canónico para TODAS las marcas** (401 si falta; **NO se usa `edoId`** para keys — SA1). Path **sencillo y homogéneo** `{s3Prefix}original/{userId}/{yyyy}/{mm}/{dd}/{ts}/{filename}` (**sin `UPID_`**), igual para edo y abe gracias a `normalizeBrandUser`; `buildS3Key` es **una sola función independiente de la marca**. Bucket por marca (edo → `entourage-uploads`); aislamiento por bucket.
@@ -113,7 +114,7 @@ describe('log context', () => {
 ### Task 1.2: Cliente Redis compartido
 **Files:** Create: `src/lib/redis.ts`, `redis.test.ts` · **Produces:** `getRedis()`, `closeRedis()`.
 - [ ] **Step 1: Test** (mock `ioredis`→`ioredis-mock`): singleton + set/get.
-- [ ] **Step 2:** FAIL. **Step 3:** `pnpm add ioredis@^5 && pnpm add -D ioredis-mock@^8`; implementar singleton (`new Redis(env.redisUrl,{maxRetriesPerRequest:2})`). **Step 4:** PASS. **Step 5:** Commit `feat(redis): cliente ioredis compartido`.
+- [ ] **Step 2:** FAIL. **Step 3:** `pnpm add ioredis@^5 && pnpm add -D ioredis-mock@^8`; implementar singleton (`new Redis(env.redisUrl,{maxRetriesPerRequest:2})`) — `env.redisUrl` = `REDIS_URL` del **plugin Redis de Railway**. **Step 4:** PASS. **Step 5:** Commit `feat(redis): cliente ioredis compartido`.
 
 ### Task 1.3: Readiness + graceful shutdown
 **Files:** Modify: `src/server.ts`, `src/index.ts`; Test: `server.integration.test.ts`
