@@ -177,6 +177,19 @@ export const createMultipartUpload = async (req: AppRequest, res: Response, _nex
             return;
         }
 
+        // MEDIO-2 (security audit): validate the client-declared Content-Type
+        // against the brand's allowlist, same helper/behavior as signS3.
+        // KNOWN LIMITATION (deferred to Fase 8, spec D14/8.5): byte-size
+        // limits are intentionally NOT enforced here. Unlike signS3, the
+        // client never declares a size anywhere in the multipart flow
+        // (createMultipartUpload/signPart both omit it), and signPart signs a
+        // plain SigV4 PUT-by-query-string per part — there is no
+        // `content-length-range` mechanism for that, unlike a presigned POST.
+        // Real server-side byte enforcement for multipart requires migrating
+        // to presigned POST, which is out of scope here (uppyModal.ts is
+        // browser-only, H21).
+        if (rejectIfOutsideLimits(brand, { contentType: type }, res)) return;
+
         const key = buildS3Key({ req, filename, metadata });
 
         const command = new CreateMultipartUploadCommand({

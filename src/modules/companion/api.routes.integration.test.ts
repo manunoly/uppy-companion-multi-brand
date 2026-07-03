@@ -406,5 +406,54 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
                 .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
             expect(res.status).toBe(200);
         });
+
+        // MEDIO-2 (security audit): createMultipartUpload previously never
+        // validated the client-declared `type` against
+        // brand.limits.allowedContentTypes at all — only signS3/signPart did.
+        it('createMultipartUpload rejects a Content-Type outside brand.limits.allowedContentTypes → 400', async () => {
+            setupAuthOk();
+            const brand = makeBrand({
+                slug: 'edo',
+                limits: { maxUploadBytes: 50 * 1024 * 1024, allowedContentTypes: ['image/jpeg'] },
+            });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .post('/api/uppy/s3/multipart')
+                .set('Host', EDO_HOST)
+                .set('Cookie', 'session=tok')
+                .send({ filename: 'a.png', type: 'image/png' });
+            expect(res.status).toBe(400);
+            expect(s3Mock.commandCalls(CreateMultipartUploadCommand)).toHaveLength(0);
+        });
+
+        it('createMultipartUpload allows a Content-Type inside brand.limits.allowedContentTypes → 200', async () => {
+            setupAuthOk();
+            s3Mock.on(CreateMultipartUploadCommand).resolves({ Key: 'kk', UploadId: 'up123' });
+            const brand = makeBrand({
+                slug: 'edo',
+                limits: { maxUploadBytes: 50 * 1024 * 1024, allowedContentTypes: ['image/jpeg'] },
+            });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .post('/api/uppy/s3/multipart')
+                .set('Host', EDO_HOST)
+                .set('Cookie', 'session=tok')
+                .send({ filename: 'a.jpg', type: 'image/jpeg' });
+            expect(res.status).toBe(200);
+            expect(res.body.uploadId).toBe('up123');
+        });
+
+        it('createMultipartUpload does not validate Content-Type when brand.limits.allowedContentTypes is undefined', async () => {
+            setupAuthOk();
+            s3Mock.on(CreateMultipartUploadCommand).resolves({ Key: 'kk', UploadId: 'up123' });
+            const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 50 * 1024 * 1024 } });
+            const { app } = await createTestApp({ brands: [brand] });
+            const res = await request(app)
+                .post('/api/uppy/s3/multipart')
+                .set('Host', EDO_HOST)
+                .set('Cookie', 'session=tok')
+                .send({ filename: 'a.exe', type: 'application/x-msdownload' });
+            expect(res.status).toBe(200);
+        });
     });
 });
