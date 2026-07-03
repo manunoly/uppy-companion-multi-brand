@@ -4,6 +4,7 @@ import http from 'node:http';
 import { env } from './config/index.js';
 import { createServer, attachCompanionSocket } from './server.js';
 import { closeRedis } from './lib/redis.js';
+import { logger } from './lib/logger.js';
 
 /**
  * Main entry point
@@ -15,9 +16,9 @@ const start = async () => {
 
     // Start listening
     server.listen(env.port, env.host, () => {
-        console.log(`[companion-platform] Server listening on ${env.protocol}://${env.host}:${env.port}`);
-        console.log(`[companion-platform] Public URL: ${env.protocol}://${env.publicHost}`);
-        console.log(`[companion-platform] Brands: ${Array.from(brandRegistry.brands.keys()).join(', ')}`);
+        logger.info({ url: `${env.protocol}://${env.host}:${env.port}` }, '[companion-platform] Server listening');
+        logger.info({ url: `${env.protocol}://${env.publicHost}` }, '[companion-platform] Public URL');
+        logger.info({ brands: Array.from(brandRegistry.brands.keys()) }, '[companion-platform] Brands loaded');
     });
 
     // Attach companion websocket
@@ -39,25 +40,25 @@ const start = async () => {
         if (shuttingDownStarted) return;
         shuttingDownStarted = true;
 
-        console.log(`[companion-platform] Received ${signal}. Shutting down...`);
+        logger.info({ signal }, '[companion-platform] Received shutdown signal');
         setShuttingDown(true);
 
         // Safety net: long-lived WS connections aren't tracked by
         // server.close()'s drain, so it may never invoke its callback.
         const forceExitTimer = setTimeout(() => {
-            console.warn('[companion-platform] Graceful shutdown timed out; forcing exit');
+            logger.warn('[companion-platform] Graceful shutdown timed out; forcing exit');
             process.exit(0);
         }, 10_000);
         forceExitTimer.unref();
 
         server.close((err) => {
             if (err) {
-                console.error('[companion-platform] Error during shutdown:', err);
+                logger.error({ err }, '[companion-platform] Error during shutdown');
             } else {
-                console.log('[companion-platform] Server closed.');
+                logger.info('[companion-platform] Server closed.');
             }
             closeRedis()
-                .catch((closeErr) => console.error('[companion-platform] Error closing Redis:', closeErr))
+                .catch((closeErr) => logger.error({ err: closeErr }, '[companion-platform] Error closing Redis'))
                 .finally(() => process.exit(err ? 1 : 0));
         });
     };
@@ -68,17 +69,17 @@ const start = async () => {
 
 // Start the server
 start().catch((error) => {
-    console.error('[companion-platform] Failed to start server:', error);
+    logger.error({ err: error }, '[companion-platform] Failed to start server');
     process.exit(1);
 });
 
 // Handle unhandled rejections
 process.on('unhandledRejection', (reason) => {
-    console.error('[companion-platform] Unhandled promise rejection:', reason);
+    logger.error({ err: reason }, '[companion-platform] Unhandled promise rejection');
 });
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
-    console.error('[companion-platform] Uncaught exception:', error);
+    logger.error({ err: error }, '[companion-platform] Uncaught exception');
     process.exit(1);
 });

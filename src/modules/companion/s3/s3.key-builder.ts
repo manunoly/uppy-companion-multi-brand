@@ -1,4 +1,5 @@
 import type { AppRequest } from '../../../core/types/express.js';
+import { logger } from '../../../lib/logger.js';
 
 /**
  * Sanitizes a filename to be safe for S3
@@ -38,7 +39,7 @@ export const buildS3Key = ({ req, filename, metadata }: BuildS3KeyParams): strin
 
     if (!sanitizedFilename || sanitizedFilename === 'untitled') {
         // Only log warning if we really couldn't find a name, but proceed with 'untitled' to avoid crash
-        if (!candidateName) console.warn('[s3] Filename missing in buildS3Key, using untitled');
+        if (!candidateName) logger.warn('[s3] Filename missing in buildS3Key, using untitled');
     }
 
     const brandSource = req.brand?.id ??

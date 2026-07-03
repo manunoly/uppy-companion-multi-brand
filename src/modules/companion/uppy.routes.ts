@@ -5,6 +5,7 @@ import type { AppRequest } from '../../core/types/express.js';
 import type { Brand } from '../brand/brand.types.js';
 import { authenticate } from '../auth/auth.service.js';
 import { fetchFolders } from '../folders/folders.service.js';
+import { logger } from '../../lib/logger.js';
 const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Z]:)/, '$1');
 
 /**
@@ -277,7 +278,7 @@ export const serveUppyPage = async (
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
     } catch (error) {
-        console.error(`[uppy] Error serving page for brand "${brand.id}":`, error);
+        logger.error({ err: error, brand: brand.id }, '[uppy] Error serving page for brand');
         res.status(500).send('Error loading upload page');
     }
 };
@@ -325,7 +326,7 @@ export const serveUppyModalJs = async (
         // crash, masking the real failure.
         const code = (err as NodeJS.ErrnoException).code;
         if (code !== 'ENOENT') {
-            console.error('[uppy] uppyModal.js exists but failed to access:', err);
+            logger.error({ err }, '[uppy] uppyModal.js exists but failed to access');
             res.status(500).send('Error loading script');
             return;
         }
@@ -338,7 +339,7 @@ export const serveUppyModalJs = async (
         res.setHeader('Content-Type', 'application/javascript');
         res.send(code);
     } catch (error) {
-        console.error('[uppy] Error serving uppyModal.js:', error);
+        logger.error({ err: error }, '[uppy] Error serving uppyModal.js');
         res.status(500).send('Error loading script');
     }
 };

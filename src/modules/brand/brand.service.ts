@@ -10,6 +10,7 @@ import type {
 } from './brand.types.js';
 import { getS3Client } from '../../lib/aws/s3Client.js';
 import { normalizeBrandSlug } from './brand.utils.js';
+import { logger } from '../../lib/logger.js';
 
 interface PublicDefaults {
     backendUrl?: string;
@@ -266,7 +267,7 @@ export const createBrandRegistry = (defaults: CreateBrandRegistryOptions): Brand
     for (const slug of slugs) {
         const brand = createBrand(slug, defaults);
         brands.set(slug, brand);
-        console.log(`[brand] Registered brand "${slug}"`);
+        logger.info({ brand: slug }, '[brand] Registered brand');
     }
 
     const defaultBrand = brands.get(slugs[0]) ?? null;

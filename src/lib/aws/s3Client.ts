@@ -1,4 +1,5 @@
 import { S3Client, S3ClientConfig } from "@aws-sdk/client-s3";
+import { logger } from "../logger.js";
 
 let s3ClientInstance: S3Client | null = null;
 
@@ -29,14 +30,14 @@ export function getS3Client({ regionParam, accessKeyIdParam, secretAccessKeyPara
     if (accessKeyId && secretAccessKey) {
         // Only log on singleton init to avoid per-request log spam.
         if (!hasExplicitConfig) {
-            console.log("[S3] Using explicit credentials (.env)");
+            logger.info("[S3] Using explicit credentials (.env)");
         }
         config.credentials = {
             accessKeyId,
             secretAccessKey
         };
     } else if (!hasExplicitConfig) {
-        console.log("[S3] Using IAM Task Role (Default Provider Chain)");
+        logger.info("[S3] Using IAM Task Role (Default Provider Chain)");
     }
 
     const client = new S3Client(config);

@@ -23,7 +23,7 @@ import {
     type CompanionInstance
 } from './modules/companion/index.js';
 import { getRedis } from './lib/redis.js';
-import { logger } from './lib/logger.js';
+import { logger, httpLogger, runWithContext } from './lib/logger.js';
 
 export interface AssembleAppParams {
     env: EnvConfig;
@@ -124,6 +124,17 @@ export const assembleApp = ({
 
     // Trust proxy for proper IP detection (Standard for Railway/AWS/Heroku)
     app.set('trust proxy', 1);
+
+    // Request logging + context, first so every downstream middleware/handler
+    // (including error handling) can log with requestId attached. pino-http
+    // assigns `req.id` (from `x-request-id` or a fresh UUID, see lib/logger.ts)
+    // before we open the AsyncLocalStorage frame for the rest of the request's
+    // async chain.
+    app.use((req, res, next) => {
+        httpLogger(req, res, () => {
+            runWithContext({ requestId: String(req.id) }, next);
+        });
+    });
 
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
@@ -329,13 +340,13 @@ export const assembleApp = ({
         // Mount companion at brand path
         app.use(brand.server.path, instance.app);
 
-        console.log(`[server] Mounted companion for "${brand.id}" at ${brand.server.path}`);
-        console.log(`[server] Uppy page at /${brand.id}/uppy`);
+        logger.info({ brand: brand.id, path: brand.server.path }, '[server] Mounted companion for brand');
+        logger.info({ brand: brand.id }, `[server] Uppy page at /${brand.id}/uppy`);
     }
 
     // Error handler
     app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-        console.error('[server] Unhandled error:', err);
+        logger.error({ err }, '[server] Unhandled error');
         res.status(500).json({ error: 'Internal server error' });
     });
 

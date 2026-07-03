@@ -59,18 +59,15 @@ export const createTestApp = async (
         env,
     }));
 
-    // Silence console.log during assembleApp to suppress mount messages.
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    try {
-        // Build companion instances with the mocked module.
-        const { createCompanionForBrand } = await import('../modules/companion/companion.factory.js');
-        const companionInstances: CompanionInstance[] = brands.map(brand => createCompanionForBrand(brand));
+    // assembleApp/createCompanionForBrand log via `lib/logger.js` (Pino), which
+    // is already silenced under Vitest (see logger.ts's `defaultLevel`) — no
+    // console spy needed here anymore.
+    // Build companion instances with the mocked module.
+    const { createCompanionForBrand } = await import('../modules/companion/companion.factory.js');
+    const companionInstances: CompanionInstance[] = brands.map(brand => createCompanionForBrand(brand));
 
-        const { assembleApp } = await import('../server.js');
-        const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });
+    const { assembleApp } = await import('../server.js');
+    const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });
 
-        return { app, brandRegistry, setShuttingDown };
-    } finally {
-        logSpy.mockRestore();
-    }
+    return { app, brandRegistry, setShuttingDown };
 };

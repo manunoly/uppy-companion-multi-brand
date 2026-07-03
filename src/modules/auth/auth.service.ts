@@ -2,6 +2,7 @@ import type { Brand } from '../brand/brand.types.js';
 import type { AuthResult } from './auth.types.js';
 import type { AppRequest } from '../../core/types/express.js';
 import { z } from 'zod';
+import { logger } from '../../lib/logger.js';
 
 /**
  * Zod schema for validating user response from auth endpoint
@@ -80,7 +81,7 @@ export const authenticate = async (
         return { authenticated: false, user: null };
 
     } catch (error) {
-        console.error(`[auth] Failed to verify user for brand "${brand.id}":`, error);
+        logger.error({ err: error, brand: brand.id }, '[auth] Failed to verify user');
         return { authenticated: false, user: null };
     }
 };

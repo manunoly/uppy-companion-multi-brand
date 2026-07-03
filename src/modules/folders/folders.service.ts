@@ -1,5 +1,6 @@
 import type { Brand } from '../brand/brand.types.js';
 import type { Folder, FoldersResponse } from './folders.types.js';
+import { logger } from '../../lib/logger.js';
 
 /**
  * Fetches user folders from the brand's folders endpoint
@@ -15,7 +16,7 @@ export const fetchFolders = async (
     const foldersUrl = brand.public.foldersUrl;
 
     if (!foldersUrl) {
-        console.warn(`[folders] No foldersUrl configured for brand "${brand.id}"`);
+        logger.warn({ brand: brand.id }, '[folders] No foldersUrl configured for brand');
         return [];
     }
 
@@ -34,7 +35,7 @@ export const fetchFolders = async (
         });
 
         if (!response.ok) {
-            console.error(`[folders] Failed to fetch folders for brand "${brand.id}": ${response.status}`);
+            logger.error({ brand: brand.id, status: response.status }, '[folders] Failed to fetch folders for brand');
             return [];
         }
 
@@ -46,7 +47,7 @@ export const fetchFolders = async (
 
         return [];
     } catch (error) {
-        console.error(`[folders] Error fetching folders for brand "${brand.id}":`, error);
+        logger.error({ err: error, brand: brand.id }, '[folders] Error fetching folders for brand');
         return [];
     }
 };

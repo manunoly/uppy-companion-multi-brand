@@ -4,6 +4,7 @@ import type { Brand } from '../brand/brand.types.js';
 import type { CompanionOptions, CompanionProviderOptions } from './companion.types.js';
 import type { AppRequest } from '../../core/types/express.js';
 import { buildS3Key } from './s3/s3.key-builder.js';
+import { logger } from '../../lib/logger.js';
 
 /**
  * Builds provider options from brand configuration
@@ -111,7 +112,7 @@ export const buildCompanionOptions = (brand: Brand): CompanionOptions => {
                 path: url.pathname.replace(/\/$/, ''), // remove trailing slash
             };
         } catch (err) {
-            console.error(`[companion] Invalid companionUrl for brand ${brand.id}:`, brand.companionUrl);
+            logger.error({ err, brand: brand.id, companionUrl: brand.companionUrl }, '[companion] Invalid companionUrl for brand');
         }
     }
 
@@ -166,7 +167,7 @@ export const createCompanionForBrand = (brand: Brand): CompanionInstance => {
 
     router.use(companionApp);
 
-    console.log(`[companion] Created instance for brand "${brand.id}"`);
+    logger.info({ brand: brand.id }, '[companion] Created instance for brand');
 
     return {
         brand,
