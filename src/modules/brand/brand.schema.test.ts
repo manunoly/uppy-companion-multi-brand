@@ -1,117 +1,48 @@
-import { describe, it, expect } from 'vitest';
-import { brandConfigSchema } from './brand.schema.js';
+import { describe, expect, it } from 'vitest';
+import { brandOverrideSchema, companionBrandConfigSchema } from './brand.schema.js';
+import { getBaseBrandConfig } from './registry.js';
 
-describe('brandConfigSchema', () => {
-    it('accepts an empty config', () => {
-        const result = brandConfigSchema.safeParse({});
-        expect(result.success).toBe(true);
+describe('companionBrandConfigSchema', () => {
+    it('parses the edo base registry entry', () => {
+        expect(() => companionBrandConfigSchema.parse(getBaseBrandConfig('edo'))).not.toThrow();
     });
 
-    it('accepts displayName + rootDomain + nested auth.url', () => {
-        const result = brandConfigSchema.safeParse({
-            displayName: 'Acme',
-            rootDomain: 'acme.example.com',
-            auth: { url: 'https://api.acme.example.com/me' },
-        });
-        expect(result.success).toBe(true);
+    it('parses the abe/picaboo placeholder entries (structurally valid, even though not servable)', () => {
+        expect(() => companionBrandConfigSchema.parse(getBaseBrandConfig('abe'))).not.toThrow();
+        expect(() => companionBrandConfigSchema.parse(getBaseBrandConfig('picaboo'))).not.toThrow();
     });
 
-    it('rejects auth.url without rootDomain (cookie auth invariant)', () => {
-        const result = brandConfigSchema.safeParse({
-            auth: { url: 'https://api.acme.example.com/me' },
-        });
-        expect(result.success).toBe(false);
-        if (!result.success) {
-            expect(result.error.issues.some(i =>
-                i.path.includes('rootDomain') &&
-                i.message.includes('rootDomain is required when auth.url is configured')
-            )).toBe(true);
-        }
+    it('rejects an unknown upload plugin', () => {
+        const edo = getBaseBrandConfig('edo');
+        const invalid = { ...edo, upload: { ...edo.upload, plugins: ['NotAPlugin'] } };
+        expect(() => companionBrandConfigSchema.parse(invalid)).toThrow();
     });
 
-    it('rejects legacy authUrl without rootDomain', () => {
-        const result = brandConfigSchema.safeParse({
-            authUrl: 'https://api.acme.example.com/me',
-        });
-        expect(result.success).toBe(false);
+    it('rejects an unknown auth kind', () => {
+        const edo = getBaseBrandConfig('edo');
+        const invalid = { ...edo, auth: { ...edo.auth, kind: 'oauth2' } };
+        expect(() => companionBrandConfigSchema.parse(invalid)).toThrow();
     });
+});
 
-    it('accepts legacy authUrl when rootDomain is also set', () => {
-        const result = brandConfigSchema.safeParse({
-            authUrl: 'https://api.acme.example.com/me',
-            rootDomain: 'acme.example.com',
-        });
-        expect(result.success).toBe(true);
-    });
-
-    it('rejects rootDomain without a TLD', () => {
-        const result = brandConfigSchema.safeParse({ rootDomain: 'localhost' });
-        expect(result.success).toBe(false);
-    });
-
-    it('rejects rootDomain with scheme', () => {
-        const result = brandConfigSchema.safeParse({ rootDomain: 'https://acme.example.com' });
-        expect(result.success).toBe(false);
-    });
-
-    it('accepts public.loginUrl when it is a valid URL', () => {
-        const result = brandConfigSchema.safeParse({
-            rootDomain: 'acme.example.com',
-            auth: { url: 'https://api.acme.example.com/me' },
-            public: { loginUrl: 'https://app.acme.example.com/login' },
-        });
-        expect(result.success).toBe(true);
-    });
-
-    it('rejects public.loginUrl that is not a URL', () => {
-        const result = brandConfigSchema.safeParse({
-            rootDomain: 'acme.example.com',
-            auth: { url: 'https://api.acme.example.com/me' },
-            public: { loginUrl: 'not-a-url' },
-        });
-        expect(result.success).toBe(false);
-    });
-
-    it('rejects unknown top-level keys (strict mode)', () => {
-        const result = brandConfigSchema.safeParse({
-            unknownField: 'oops',
-        });
-        expect(result.success).toBe(false);
-    });
-
-    it('transforms google legacy aliases (key/secret/apiKey) to preferred names', () => {
-        const result = brandConfigSchema.safeParse({
-            providers: {
-                google: { key: 'cid', secret: 'csec', apiKey: 'apik' },
+describe('brandOverrideSchema', () => {
+    it('parses a realistic EDO_BRAND_OVERRIDE example (stage cookie + whoami)', () => {
+        const example = {
+            auth: {
+                sessionCookieName: 'auth_session_stage',
+                whoamiUrl: 'https://edonext-app.stage.entourageyearbooks.com/api/user',
+                signInUrl: 'https://edonext.stage.entourageyearbooks.com/login',
+                signOutUrl: 'https://edonext-app.stage.entourageyearbooks.com/logout',
             },
-        });
-        expect(result.success).toBe(true);
-        if (result.success && result.data.providers?.google) {
-            expect(result.data.providers.google.clientId).toBe('cid');
-            expect(result.data.providers.google.clientSecret).toBe('csec');
-            expect(result.data.providers.google.driveApiKey).toBe('apik');
-            expect(result.data.providers.google.photosApiKey).toBe('apik');
-        }
+        };
+        expect(() => brandOverrideSchema.parse(example)).not.toThrow();
     });
 
-    it('preferred google keys win over legacy', () => {
-        const result = brandConfigSchema.safeParse({
-            providers: {
-                google: { clientId: 'preferred-cid', key: 'legacy-cid' },
-            },
-        });
-        expect(result.success).toBe(true);
-        if (result.success && result.data.providers?.google) {
-            expect(result.data.providers.google.clientId).toBe('preferred-cid');
-        }
+    it('rejects a structurally wrong-typed field (whoamiAllowedHosts as a string, not an array)', () => {
+        expect(() => brandOverrideSchema.parse({ auth: { whoamiAllowedHosts: 'not-an-array' } })).toThrow();
     });
 
-    it('accepts s3 with all fields optional', () => {
-        const r1 = brandConfigSchema.safeParse({ s3: {} });
-        expect(r1.success).toBe(true);
-        const r2 = brandConfigSchema.safeParse({
-            s3: { bucket: 'b', region: 'us-east-1', useAccelerateEndpoint: true },
-        });
-        expect(r2.success).toBe(true);
+    it('accepts an override with unrecognized top-level keys (passthrough; identity.ts is the runtime authority)', () => {
+        expect(() => brandOverrideSchema.parse({ auth: { signInUrl: 'https://x.example/login' }, somethingElse: true })).not.toThrow();
     });
 });

@@ -1,40 +1,54 @@
 import type { Brand } from '../brand/brand.types.js';
+import { buildCookieHeader } from '../brand/identity.js';
 import type { Folder, FoldersResponse } from './folders.types.js';
+import { logger } from '../../lib/logger.js';
 
 /**
- * Fetches user folders from the brand's folders endpoint
- * 
- * @param token - Auth token for the request
- * @param brand - Brand configuration
- * @returns Array of folders or empty array on failure
+ * Fetches user folders from the brand's folders endpoint (SA3: conserved,
+ * degrades to `[]` + a warn log on any failure — the designer doesn't
+ * currently consume this, but it's kept in case Dropbox/GoogleDrivePicker
+ * get enabled for a brand).
+ *
+ * `brand.public.foldersUrl` (D2) is expected to be a full absolute URL —
+ * unlike the legacy contract, there is no `public.backendUrl` to resolve a
+ * relative path against anymore.
+ *
+ * @param token - Raw session cookie value forwarded as `Cookie:` to foldersUrl.
+ * @param brand - Resolved brand configuration.
+ * @returns Array of folders or empty array on failure/misconfiguration.
  */
 export const fetchFolders = async (
     token: string,
     brand: Brand
 ): Promise<Folder[]> => {
-    const foldersUrl = brand.public.foldersUrl;
+    const foldersUrl = brand.public?.foldersUrl;
 
     if (!foldersUrl) {
-        console.warn(`[folders] No foldersUrl configured for brand "${brand.id}"`);
         return [];
     }
 
-    // Build full URL from backend URL + folders path
-    const fullUrl = foldersUrl.startsWith('http')
-        ? foldersUrl
-        : `${brand.public.backendUrl}${foldersUrl}`;
+    // Hallazgo BAJO-1: build the outgoing Cookie header through
+    // buildCookieHeader (identity.ts) — the single auditable point where a
+    // brand cookie is forwarded — instead of raw template-string
+    // interpolation. A delimiter/control-character-bearing token (`;`,
+    // CR/LF, ...) returns null here rather than silently producing a
+    // malformed/injectable header.
+    const cookie = buildCookieHeader(brand.auth.sessionCookieName, token);
+    if (!cookie) {
+        return [];
+    }
 
     try {
-        const response = await fetch(fullUrl, {
+        const response = await fetch(foldersUrl, {
             method: 'GET',
             headers: {
-                'Cookie': `${brand.auth.cookieName}=${token}`,
+                'Cookie': cookie,
             },
             signal: AbortSignal.timeout(5000),
         });
 
         if (!response.ok) {
-            console.error(`[folders] Failed to fetch folders for brand "${brand.id}": ${response.status}`);
+            logger.warn({ brand: brand.slug, status: response.status }, '[folders] Failed to fetch folders for brand');
             return [];
         }
 
@@ -46,7 +60,7 @@ export const fetchFolders = async (
 
         return [];
     } catch (error) {
-        console.error(`[folders] Error fetching folders for brand "${brand.id}":`, error);
+        logger.warn({ err: error, brand: brand.slug }, '[folders] Error fetching folders for brand');
         return [];
     }
 };

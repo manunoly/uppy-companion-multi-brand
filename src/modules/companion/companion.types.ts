@@ -36,6 +36,13 @@ export interface CompanionServerOptions {
     host: string;
     protocol: 'http' | 'https';
     path: string;
+    /**
+     * Allowlist for the OAuth `redirect_uri` handoff — Companion's
+     * `oauth-redirect` controller only redirects to a host in this list
+     * (`hasMatch(handlerHostName, options.server.validHosts)`). Derived from
+     * `companionUrl`/`companionHosts` (Task 4.3, spec D9, closes H7).
+     */
+    validHosts?: string[];
 }
 
 export interface CompanionOptions {

@@ -2,9 +2,10 @@ import type { Response, NextFunction } from 'express';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { AppRequest } from '../../core/types/express.js';
-import type { Brand } from '../brand/brand.types.js';
-import { authenticate } from '../auth/auth.service.js';
+import type { Brand, EdoUploadPlugin } from '../brand/brand.types.js';
+import { resolveValidatedWhoamiTarget } from '../brand/identity.js';
 import { fetchFolders } from '../folders/folders.service.js';
+import { logger } from '../../lib/logger.js';
 const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Z]:)/, '$1');
 
 /**
@@ -49,20 +50,27 @@ export const safeJsonForHtmlScript = (data: unknown): string => {
 };
 
 /**
- * Gets the list of enabled plugins based on brand configuration
- * Prefers explicit enabledPlugins config, falls back to provider detection
+ * Gets the list of enabled plugins based on brand configuration.
+ * Prefers the typed `upload.plugins` list (D2/7.1 — replaces the legacy
+ * CSV `enabledPlugins`), falls back to provider detection.
+ *
+ * Hallazgo BAJO-3: the fallback derivation must ONLY ever emit names from the
+ * typed `EdoUploadPlugin` allowlist. `companion.factory.ts`'s
+ * `PLUGIN_PROVIDER_KEY` only wires OAuth for Facebook/Dropbox/
+ * GoogleDrivePicker/GooglePhotosPicker/Url — `CompanionProviders` still
+ * declares instagram/onedrive/box/unsplash/zoom for structural completeness,
+ * but no `EdoUploadPlugin` maps to them. Emitting one of those names here
+ * would render a Dashboard tab in uppyModal.ts with no working OAuth backend
+ * behind it (a client-breaking bug, not just noise).
  */
-const getEnabledPlugins = (brand: Brand): string[] => {
-    // If brand has explicit enabledPlugins config, use it
-    if (brand.enabledPlugins && brand.enabledPlugins.length > 0) {
-        return brand.enabledPlugins;
+export const getEnabledPlugins = (brand: Brand): EdoUploadPlugin[] => {
+    if (brand.upload.plugins.length > 0) {
+        return [...brand.upload.plugins];
     }
 
-    // Fallback: detect plugins from configured providers
-    const plugins: string[] = [];
-
-    // URL plugin is always available
-    plugins.push('Url');
+    // Fallback: detect plugins from configured providers, restricted to the
+    // EdoUploadPlugin allowlist.
+    const plugins: EdoUploadPlugin[] = ['Url'];
 
     if (brand.providers.google) {
         plugins.push('GoogleDrivePicker');
@@ -75,23 +83,6 @@ const getEnabledPlugins = (brand: Brand): string[] => {
 
     if (brand.providers.facebook) {
         plugins.push('Facebook');
-        plugins.push('Instagram');
-    }
-
-    if (brand.providers.onedrive) {
-        plugins.push('OneDrive');
-    }
-
-    if (brand.providers.box) {
-        plugins.push('Box');
-    }
-
-    if (brand.providers.unsplash) {
-        plugins.push('Unsplash');
-    }
-
-    if (brand.providers.zoom) {
-        plugins.push('Zoom');
     }
 
     return plugins;
@@ -159,14 +150,15 @@ const generateErrorPage = (title: string, message: string): string => {
 };
 
 /**
- * When the brand session cookie is missing or invalid, redirect the user to
- * the brand's login page (with a `?redirect=` back to /uppy) if configured;
- * otherwise render a static 401 page with manual login instructions.
+ * When `req.user` is not populated (missing/invalid brand session, or — in
+ * the interim fail-closed shim, Task 2.7 → Fase 3 — always), redirect the
+ * user to the brand's `auth.signInUrl` (with a `?redirect=` back to /uppy) if
+ * configured; otherwise render a static 401 page with manual login instructions.
  *
- * Trust contract: the dashboard at `loginUrl` MUST validate the `?redirect=`
+ * Trust contract: the dashboard at `signInUrl` MUST validate the `?redirect=`
  * value against an allow-list (e.g. only redirect back to URLs whose host
- * matches `*.<rootDomain>`) to prevent open-redirect abuse. Companion only
- * constructs the URL — it does not validate the redirect target. The
+ * matches the brand's trusted apex) to prevent open-redirect abuse. Companion
+ * only constructs the URL — it does not validate the redirect target. The
  * defensive guard on `req.originalUrl` below is a server-side sanity check,
  * not a substitute for the dashboard's allow-list.
  */
@@ -175,21 +167,25 @@ const redirectToLoginOrShowError = (
     res: Response,
     brand: Brand,
 ): void => {
-    if (brand.public.loginUrl) {
-        const companionPublicUrl = brand.companionUrl
-            ?? `${brand.server.protocol}://${brand.server.host}`;
-        // Defensive: treat req.originalUrl strictly as a server-relative path.
-        // `new URL(absolute, base)` ignores the base when the first arg is
-        // absolute or protocol-relative, so a malformed/forwarded request with
-        // an absolute-form target could otherwise let an attacker craft the
-        // ?redirect= value pointed at any host (open-redirect amplifier).
-        const safeOriginalPath = safePath(req.originalUrl);
-        const fullCurrentUrl = new URL(safeOriginalPath, companionPublicUrl).toString();
+    if (brand.auth.signInUrl) {
+        try {
+            const companionPublicUrl = brand.companionUrl || `${req.protocol}://${req.get('host') ?? ''}`;
+            // Defensive: treat req.originalUrl strictly as a server-relative path.
+            // `new URL(absolute, base)` ignores the base when the first arg is
+            // absolute or protocol-relative, so a malformed/forwarded request with
+            // an absolute-form target could otherwise let an attacker craft the
+            // ?redirect= value pointed at any host (open-redirect amplifier).
+            const safeOriginalPath = safePath(req.originalUrl);
+            const fullCurrentUrl = new URL(safeOriginalPath, companionPublicUrl).toString();
 
-        const loginUrl = new URL(brand.public.loginUrl);
-        loginUrl.searchParams.set('redirect', fullCurrentUrl);
-        res.redirect(302, loginUrl.toString());
-        return;
+            const loginUrl = new URL(brand.auth.signInUrl);
+            loginUrl.searchParams.set('redirect', fullCurrentUrl);
+            res.redirect(302, loginUrl.toString());
+            return;
+        } catch (err) {
+            logger.error({ err, brand: brand.slug }, '[uppy] Failed to build login redirect URL');
+            // Fall through to the static error page below.
+        }
     }
 
     res.status(401).send(generateErrorPage(
@@ -199,7 +195,14 @@ const redirectToLoginOrShowError = (
 };
 
 /**
- * Serves the Uppy upload page for a brand
+ * Serves the Uppy upload page for a brand.
+ *
+ * `req.user` is expected to already be populated by `attachUser` (mounted
+ * upstream in server.ts) — this handler does NOT re-validate the session
+ * itself (no double-auth). During the interim fail-closed shim (Task 2.7 →
+ * Fase 3), `attachUser` is a no-op and never populates `req.user`, so every
+ * request falls through to the login redirect / static error page below
+ * until Fase 3 wires up the real session-resolver.
  */
 export const serveUppyPage = async (
     req: AppRequest,
@@ -213,32 +216,15 @@ export const serveUppyPage = async (
         return;
     }
 
-    // Brands without auth.url cannot receive authenticated uploads.
-    if (!brand.auth.url) {
-        res.status(403).send(generateErrorPage(
-            'Authentication Required',
-            'This upload page requires authentication but the brand has no auth URL configured.',
-        ));
+    if (!req.user) {
+        redirectToLoginOrShowError(req, res, brand);
         return;
     }
 
-    // Cookie-only auth: the browser sends the brand session cookie
-    // (Domain=.<rootDomain>) automatically when the user is logged in.
-    // No more query-string token, no more server-side token injection in the page.
-    const cookieToken = (req.cookies as Record<string, string>)?.[brand.auth.cookieName] ?? null;
-    if (!cookieToken) {
-        return redirectToLoginOrShowError(req, res, brand);
-    }
-
-    const authResult = await authenticate(cookieToken, brand);
-    if (!authResult.authenticated || !authResult.user) {
-        return redirectToLoginOrShowError(req, res, brand);
-    }
-
-    req.user = authResult.user;
-
     // Folders fetch happens only when we are about to render — saves a
-    // round-trip when the request would have redirected.
+    // round-trip when the request would have redirected. The raw session
+    // cookie value (not req.user) is what gets forwarded to foldersUrl.
+    const cookieToken = (req.cookies as Record<string, string> | undefined)?.[brand.auth.sessionCookieName] ?? '';
     const folders = await fetchFolders(cookieToken, brand);
 
     try {
@@ -247,20 +233,46 @@ export const serveUppyPage = async (
 
         const enabledPlugins = getEnabledPlugins(brand);
 
-        const companionUrl = brand.companionUrl
-            ? brand.companionUrl
-            : `${brand.server.protocol}://${brand.server.host}${brand.server.path}`;
-
         // Replace placeholders. The bearer-token placeholder is intentionally
         // absent — the page no longer carries the token in any form.
-        html = html.replace(/BRAND_SLUG_VALUE/g, toJsStringLiteral(brand.id));
-        html = html.replace(/BRAND_NAME_VALUE/g, toJsStringLiteral(brand.displayName));
+        html = html.replace(/BRAND_SLUG_VALUE/g, toJsStringLiteral(brand.slug));
+        html = html.replace(/BRAND_NAME_VALUE/g, toJsStringLiteral(brand.name));
         html = html.replace(/BRAND_LOGO_URL_VALUE/g, toJsStringLiteral(''));
-        html = html.replace(/BRAND_USER_ENDPOINT_VALUE/g, toJsStringLiteral(brand.auth.url ?? ''));
-        html = html.replace(/COMPANION_URL_VALUE/g, toJsStringLiteral(companionUrl));
-        html = html.replace(/SERVER_URL_VALUE/g, toJsStringLiteral(`/${brand.id}`));
-        html = html.replace(/PUBLIC_BACKEND_URL_VALUE/g, toJsStringLiteral(brand.public.backendUrl));
-        html = html.replace(/PUBLIC_UPLOAD_URL_VALUE/g, toJsStringLiteral(brand.public.uploadUrl));
+        // Security review: re-validate whoamiUrl against its own
+        // `whoamiAllowedHosts` allowlist right here at the HTML-injection
+        // point, instead of trusting `brand.auth.whoamiUrl` as-is. Under the
+        // CURRENT auth flow this is unreachable in practice — reaching this
+        // branch already requires `req.user` to be set, which itself
+        // requires `resolveSession` (session-resolver.ts) to have already
+        // run this exact same check successfully — but it's cheap,
+        // pure/no-I/O, and a hard guarantee against this specific value ever
+        // reaching client HTML unvalidated if that coupling ever changes.
+        const whoamiTarget = resolveValidatedWhoamiTarget(brand);
+        if (!whoamiTarget.ok) {
+            logger.warn(
+                { brand: brand.slug, reason: whoamiTarget.reason },
+                '[uppy] whoamiUrl failed allowlist re-validation at HTML-injection point; omitting it from the page',
+            );
+        }
+        const safeWhoamiUrl = whoamiTarget.ok ? whoamiTarget.whoamiUrl.toString() : '';
+        html = html.replace(/BRAND_USER_ENDPOINT_VALUE/g, toJsStringLiteral(safeWhoamiUrl));
+        html = html.replace(/COMPANION_URL_VALUE/g, toJsStringLiteral(brand.companionUrl));
+        // Fase 5.1 retires the per-brand `/{slug}/...` mount path: this
+        // Companion instance now serves the uppy page, the custom
+        // `/api/uppy/*` API, AND the OAuth callbacks from the SAME origin
+        // (brand.companionUrl), so SERVER_URL and COMPANION_URL are the same
+        // value. Deliberately NOT '' (relative) — uppyModal.ts's own default
+        // fallback is `SERVER_URL_VALUE || 'http://localhost:3000'`, and an
+        // empty string is falsy in JS, which would silently resurrect that
+        // unrelated dev fallback instead of the intended same-origin base.
+        html = html.replace(/SERVER_URL_VALUE/g, toJsStringLiteral(brand.companionUrl));
+        // `public.backendUrl`/`public.uploadUrl` are retired legacy fields
+        // (D2) — there is no abeduls3-aligned replacement yet for "where to
+        // notify the brand backend of a completed upload". Stubbed empty; the
+        // client-side fallback in uppy.html/uppyModal.ts covers this until
+        // that flow is redesigned (Fase 5/8.7).
+        html = html.replace(/PUBLIC_BACKEND_URL_VALUE/g, toJsStringLiteral(''));
+        html = html.replace(/PUBLIC_UPLOAD_URL_VALUE/g, toJsStringLiteral(''));
         html = html.replace(/GOOGLE_API_KEY_DRIVE_VALUE/g, toJsStringLiteral(brand.providers.google?.driveApiKey ?? ''));
         html = html.replace(/GOOGLE_API_KEY_PHOTOS_VALUE/g, toJsStringLiteral(brand.providers.google?.photosApiKey ?? ''));
         html = html.replace(/GOOGLE_CLIENT_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.clientId ?? ''));
@@ -272,12 +284,19 @@ export const serveUppyPage = async (
         html = html.replace(/FOLDERS_DATA_VALUE/g, safeJsonForHtmlScript(folders));
         html = html.replace(/ENABLED_PLUGINS_VALUE/g, safeJsonForHtmlScript(enabledPlugins));
 
+        // Fase 5.4: the inline <script type="module"> needs the SAME nonce
+        // helmet's CSP put in the script-src header for this request
+        // (res.locals.cspNonce, set by the nonce middleware in server.ts,
+        // Fase 5.2) — 'self' alone does not cover an inline script, and a
+        // mismatch here would silently make Uppy fail to initialize.
+        html = html.replace(/CSP_NONCE_VALUE/g, res.locals.cspNonce ?? '');
+
         // Authenticated, per-user document — never cached (OWASP recommendation).
         res.set('Cache-Control', 'no-store');
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
     } catch (error) {
-        console.error(`[uppy] Error serving page for brand "${brand.id}":`, error);
+        logger.error({ err: error, brand: brand.slug }, '[uppy] Error serving page for brand');
         res.status(500).send('Error loading upload page');
     }
 };
@@ -325,7 +344,7 @@ export const serveUppyModalJs = async (
         // crash, masking the real failure.
         const code = (err as NodeJS.ErrnoException).code;
         if (code !== 'ENOENT') {
-            console.error('[uppy] uppyModal.js exists but failed to access:', err);
+            logger.error({ err }, '[uppy] uppyModal.js exists but failed to access');
             res.status(500).send('Error loading script');
             return;
         }
@@ -338,7 +357,7 @@ export const serveUppyModalJs = async (
         res.setHeader('Content-Type', 'application/javascript');
         res.send(code);
     } catch (error) {
-        console.error('[uppy] Error serving uppyModal.js:', error);
+        logger.error({ err: error }, '[uppy] Error serving uppyModal.js');
         res.status(500).send('Error loading script');
     }
 };
