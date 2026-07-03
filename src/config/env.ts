@@ -69,6 +69,7 @@ const deriveEnv = (): EnvConfig => {
     const secret = process.env.COMPANION_SECRET ?? '';
     const healthCheckKey = process.env.HEALTH_CHECK_KEY;
     const filePath = process.env.COMPANION_FILE_PATH ?? '/tmp/';
+    const redisUrl = process.env.REDIS_URL;
 
     const corsOrigins = parseCsv(process.env.CORS_ALLOWED_ORIGINS);
     const brands = process.env.COMPANION_BRANDS ?? 'default';
@@ -128,6 +129,7 @@ const deriveEnv = (): EnvConfig => {
         secret,
         healthCheckKey,
         filePath,
+        redisUrl,
         corsOrigins,
         brands,
         publicBackendUrl: process.env.PUBLIC_BACKEND_URL,

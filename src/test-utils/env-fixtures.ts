@@ -8,6 +8,7 @@ export const makeValidEnv = (overrides: Partial<EnvConfig> = {}): EnvConfig => (
     secret: 'test-secret-value-1234567890',
     healthCheckKey: undefined,
     filePath: '/tmp/',
+    redisUrl: 'redis://localhost:6379',
     corsOrigins: [],
     brands: 'test',
     publicBackendUrl: 'https://app.test.example.com',

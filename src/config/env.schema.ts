@@ -30,6 +30,11 @@ export const envSchema = z.object({
     secret: z.string().min(16),
     healthCheckKey: z.string().min(1).optional(),
 
+    // Redis (shared state: readiness checks, and in later phases sessions/
+    // breaker/rate-limit). Provided by Railway's Redis plugin in production;
+    // defaults to a local dev instance so `pnpm dev`/tests don't need one set.
+    redisUrl: z.string().min(1).default('redis://localhost:6379'),
+
     // File storage
     filePath: z.string().min(1).default('/tmp/'),
 
