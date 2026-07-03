@@ -18,7 +18,7 @@ const start = async () => {
     server.listen(env.port, env.host, () => {
         logger.info({ url: `${env.protocol}://${env.host}:${env.port}` }, '[companion-platform] Server listening');
         logger.info({ url: `${env.protocol}://${env.publicHost}` }, '[companion-platform] Public URL');
-        logger.info({ brands: Array.from(brandRegistry.brands.keys()) }, '[companion-platform] Brands loaded');
+        logger.info({ brands: Object.keys(brandRegistry) }, '[companion-platform] Brands loaded');
     });
 
     // Attach companion websocket

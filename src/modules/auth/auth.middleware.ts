@@ -1,76 +1,35 @@
 import type { Response, NextFunction } from 'express';
 import type { AppRequest } from '../../core/types/express.js';
-import { extractToken, authenticate } from './auth.service.js';
 
 /**
- * Middleware that requires authentication.
+ * Interim fail-closed auth shim (Task 2.7 → Fase 3 of the abeduls3-alignment
+ * plan). The legacy `GET brand.auth.url` cookie-forwarding flow
+ * (`auth.service.ts`) has been deleted along with the rest of the legacy
+ * brand model — Fase 3 replaces it with `resolveSession` (`partner-whoami`
+ * fetch, SSRF gate, circuit breaker, Redis cache; see
+ * `docs/superpowers/specs/2026-07-02-companion-multibrand-alineacion-abeduls3-design.md`
+ * D5). Until then, this module is an explicit, minimal shim:
  *
- * Order of checks:
- *   1. Brand must be resolved.
- *   2. Brand must have an auth backend configured (`brand.auth.url`). Brands
- *      without one return 403 — there is no way to validate identity, and we
- *      refuse to attribute uploads to anyone.
- *   3. If `attachUser` already populated `req.user` upstream, skip re-auth.
- *   4. Extract token, validate against the brand backend, populate `req.user`.
+ *   - `attachUser` is a NO-OP. It never populates `req.user`. There is no
+ *     interim session validation — pretending to authenticate with the
+ *     retired model would be worse than refusing outright.
+ *   - `requireAuth` ALWAYS responds 401, regardless of brand/cookie/req.user
+ *     state. An upload-signing endpoint must NEVER let a request through
+ *     unauthenticated; refusing everything is the only safe failure mode
+ *     until the real session-resolver is wired in.
  */
-export const requireAuth = async (
-    req: AppRequest,
-    res: Response,
-    next: NextFunction
+export const attachUser = async (
+    _req: AppRequest,
+    _res: Response,
+    next: NextFunction,
 ): Promise<void> => {
-    const brand = req.brand;
-
-    if (!brand) {
-        res.status(400).json({ error: 'Brand not resolved' });
-        return;
-    }
-
-    if (!brand.auth.url) {
-        res.status(403).json({ error: 'This brand does not support authenticated uploads' });
-        return;
-    }
-
-    if (req.user) {
-        next();
-        return;
-    }
-
-    const token = extractToken(req, brand);
-    if (!token) {
-        res.status(401).json({ error: 'No token provided' });
-        return;
-    }
-
-    const result = await authenticate(token, brand);
-    if (!result.authenticated || !result.user) {
-        res.status(401).json({ error: 'Invalid or expired token' });
-        return;
-    }
-
-    req.user = result.user;
     next();
 };
 
-/**
- * Middleware that optionally attaches user to request
- * Does not fail if no token or invalid token
- */
-export const attachUser = async (
-    req: AppRequest,
-    _res: Response,
-    next: NextFunction
+export const requireAuth = async (
+    _req: AppRequest,
+    res: Response,
+    _next: NextFunction,
 ): Promise<void> => {
-    const brand = req.brand;
-
-    if (brand) {
-        const token = extractToken(req, brand);
-        if (token) {
-            const result = await authenticate(token, brand);
-            if (result.authenticated) {
-                req.user = result.user;
-            }
-        }
-    }
-
-    next();
+    res.status(401).json({ error: 'Authentication is not available yet (pending Fase 3 session-resolver)' });
 };

@@ -3,39 +3,40 @@ import type { Folder, FoldersResponse } from './folders.types.js';
 import { logger } from '../../lib/logger.js';
 
 /**
- * Fetches user folders from the brand's folders endpoint
- * 
- * @param token - Auth token for the request
- * @param brand - Brand configuration
- * @returns Array of folders or empty array on failure
+ * Fetches user folders from the brand's folders endpoint (SA3: conserved,
+ * degrades to `[]` + a warn log on any failure — the designer doesn't
+ * currently consume this, but it's kept in case Dropbox/GoogleDrivePicker
+ * get enabled for a brand).
+ *
+ * `brand.public.foldersUrl` (D2) is expected to be a full absolute URL —
+ * unlike the legacy contract, there is no `public.backendUrl` to resolve a
+ * relative path against anymore.
+ *
+ * @param token - Raw session cookie value forwarded as `Cookie:` to foldersUrl.
+ * @param brand - Resolved brand configuration.
+ * @returns Array of folders or empty array on failure/misconfiguration.
  */
 export const fetchFolders = async (
     token: string,
     brand: Brand
 ): Promise<Folder[]> => {
-    const foldersUrl = brand.public.foldersUrl;
+    const foldersUrl = brand.public?.foldersUrl;
 
     if (!foldersUrl) {
-        logger.warn({ brand: brand.id }, '[folders] No foldersUrl configured for brand');
         return [];
     }
 
-    // Build full URL from backend URL + folders path
-    const fullUrl = foldersUrl.startsWith('http')
-        ? foldersUrl
-        : `${brand.public.backendUrl}${foldersUrl}`;
-
     try {
-        const response = await fetch(fullUrl, {
+        const response = await fetch(foldersUrl, {
             method: 'GET',
             headers: {
-                'Cookie': `${brand.auth.cookieName}=${token}`,
+                'Cookie': `${brand.auth.sessionCookieName}=${token}`,
             },
             signal: AbortSignal.timeout(5000),
         });
 
         if (!response.ok) {
-            logger.error({ brand: brand.id, status: response.status }, '[folders] Failed to fetch folders for brand');
+            logger.warn({ brand: brand.slug, status: response.status }, '[folders] Failed to fetch folders for brand');
             return [];
         }
 
@@ -47,7 +48,7 @@ export const fetchFolders = async (
 
         return [];
     } catch (error) {
-        logger.error({ err: error, brand: brand.id }, '[folders] Error fetching folders for brand');
+        logger.warn({ err: error, brand: brand.slug }, '[folders] Error fetching folders for brand');
         return [];
     }
 };

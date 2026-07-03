@@ -10,7 +10,7 @@ import {
     createBrandRegistry,
     getAllBrands,
     type Brand,
-    type BrandRegistry
+    type ResolvedBrandRegistry
 } from './modules/brand/index.js';
 import { attachUser, requireAuth } from './modules/auth/index.js';
 import { corsForBrand } from './core/cors.js';
@@ -27,7 +27,7 @@ import { logger, httpLogger, runWithContext } from './lib/logger.js';
 
 export interface AssembleAppParams {
     env: EnvConfig;
-    brandRegistry: BrandRegistry;
+    brandRegistry: ResolvedBrandRegistry;
     companionInstances: CompanionInstance[];
 }
 
@@ -39,7 +39,7 @@ export interface AssembledApp {
 
 interface ServerResult {
     app: express.Express;
-    brandRegistry: BrandRegistry;
+    brandRegistry: ResolvedBrandRegistry;
     companionInstances: CompanionInstance[];
     setShuttingDown: (value: boolean) => void;
 }
@@ -82,7 +82,7 @@ const checkRedis = async (): Promise<boolean> => {
  * If no brand has S3 configured (e.g. a minimal dev setup), there is nothing
  * to check and we don't fail readiness for it.
  */
-const checkS3 = async (brandRegistry: BrandRegistry): Promise<boolean> => {
+const checkS3 = async (brandRegistry: ResolvedBrandRegistry): Promise<boolean> => {
     const brand: Brand | undefined = getAllBrands(brandRegistry).find(b => b.s3.client && b.s3.bucket);
     if (!brand?.s3.client) return true;
 
@@ -101,7 +101,7 @@ const checkS3 = async (brandRegistry: BrandRegistry): Promise<boolean> => {
         );
         return true;
     } catch (error) {
-        logger.warn({ err: error, brand: brand.id }, '[readyz] S3 check failed');
+        logger.warn({ err: error, brand: brand.slug }, '[readyz] S3 check failed');
         return false;
     } finally {
         clearTimeout(abortTimer);
@@ -146,14 +146,18 @@ export const assembleApp = ({
     // and path, so cookies cannot leak across brands and OAuth state from one
     // brand cannot overwrite another's. `saveUninitialized: true` is intentional:
     // Companion's OAuth flow requires a persisted session before the redirect.
-    const buildSessionMiddleware = (brandId: string) => session({
-        name: `companion.sid.${brandId}`,
+    // TODO(Fase 5.2, D7): move to a single static session name (`companion.sid`)
+    // backed by connect-redis — per-brand path mounting is retired once brand
+    // resolution moves to Host-based (Fase 5.1), at which point each brand
+    // already lives on its own host and the browser isolates the cookie for us.
+    const buildSessionMiddleware = (brandSlug: string) => session({
+        name: `companion.sid.${brandSlug}`,
         secret: envParam.secret,
         resave: false,
         saveUninitialized: true,
         proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
         cookie: {
-            path: `/${brandId}`,
+            path: `/${brandSlug}`,
             secure: envParam.protocol === 'https',
             sameSite: envParam.protocol === 'https' ? 'none' : 'lax',
             httpOnly: true,
@@ -204,11 +208,14 @@ export const assembleApp = ({
             return `****...${value.slice(-4)}`;
         };
 
+        const maskedProvider = (provider: { key: string; secret: string } | undefined) =>
+            provider ? { key: maskSecret(provider.key), secret: maskSecret(provider.secret) } : null;
+
         const brands = getAllBrands(brandRegistry).map(brand => {
             // Basic info (always shown)
             const basicInfo = {
-                id: brand.id,
-                displayName: brand.displayName,
+                id: brand.slug,
+                displayName: brand.name,
             };
 
             // Return only basic info if key doesn't match
@@ -219,20 +226,17 @@ export const assembleApp = ({
             // Detailed info (only when key matches)
             return {
                 ...basicInfo,
-                // URLs (safe to show)
                 urls: {
-                    companion: brand.companionUrl ?? `${brand.server.protocol}://${brand.server.host}${brand.server.path}`,
-                    auth: brand.auth.url,
-                    backendPublic: brand.public.backendUrl,
-                    uploadPublic: brand.public.uploadUrl,
-                    foldersPublic: brand.public.foldersUrl ?? null,
+                    companion: brand.companionUrl,
+                    whoami: brand.auth.whoamiUrl,
+                    signIn: brand.auth.signInUrl,
+                    signOut: brand.auth.signOutUrl ?? null,
+                    foldersPublic: brand.public?.foldersUrl ?? null,
                 },
-                // Auth config
                 auth: {
-                    url: brand.auth.url,
-                    cookieName: brand.auth.cookieName,
+                    kind: brand.auth.kind,
+                    sessionCookieName: brand.auth.sessionCookieName,
                 },
-                // S3 config (masked secrets)
                 s3: {
                     bucket: brand.s3.bucket,
                     region: brand.s3.region,
@@ -241,7 +245,6 @@ export const assembleApp = ({
                     useAccelerateEndpoint: brand.s3.useAccelerateEndpoint ?? false,
                     clientConfigured: !!brand.s3.client,
                 },
-                // Providers (masked secrets)
                 providers: {
                     google: brand.providers.google ? {
                         clientId: brand.providers.google.clientId,
@@ -250,40 +253,18 @@ export const assembleApp = ({
                         photosApiKey: maskSecret(brand.providers.google.photosApiKey),
                         appId: brand.providers.google.appId ?? null,
                     } : null,
-                    dropbox: brand.providers.dropbox ? {
-                        key: maskSecret(brand.providers.dropbox.key),
-                        secret: maskSecret(brand.providers.dropbox.secret),
-                    } : null,
-                    facebook: brand.providers.facebook ? {
-                        key: maskSecret(brand.providers.facebook.key),
-                        secret: maskSecret(brand.providers.facebook.secret),
-                    } : null,
-                    instagram: brand.providers.instagram ? {
-                        key: maskSecret(brand.providers.instagram.key),
-                        secret: maskSecret(brand.providers.instagram.secret),
-                    } : null,
-                    onedrive: brand.providers.onedrive ? {
-                        key: maskSecret(brand.providers.onedrive.key),
-                        secret: maskSecret(brand.providers.onedrive.secret),
-                    } : null,
-                    box: brand.providers.box ? {
-                        key: maskSecret(brand.providers.box.key),
-                        secret: maskSecret(brand.providers.box.secret),
-                    } : null,
-                    unsplash: brand.providers.unsplash ? {
-                        key: maskSecret(brand.providers.unsplash.key),
-                        secret: maskSecret(brand.providers.unsplash.secret),
-                    } : null,
-                    zoom: brand.providers.zoom ? {
-                        key: maskSecret(brand.providers.zoom.key),
-                        secret: maskSecret(brand.providers.zoom.secret),
-                    } : null,
+                    dropbox: maskedProvider(brand.providers.dropbox),
+                    facebook: maskedProvider(brand.providers.facebook),
+                    instagram: maskedProvider(brand.providers.instagram),
+                    onedrive: maskedProvider(brand.providers.onedrive),
+                    box: maskedProvider(brand.providers.box),
+                    unsplash: maskedProvider(brand.providers.unsplash),
+                    zoom: maskedProvider(brand.providers.zoom),
                 },
-                // Enabled plugins
-                enabledPlugins: brand.enabledPlugins,
-                // CORS
-                corsOrigins: brand.corsOrigins.map(o => typeof o === 'string' ? o : o.toString()),
-                uploadUrls: brand.uploadUrls,
+                upload: brand.upload,
+                limits: brand.limits,
+                domains: brand.domains,
+                companionHosts: brand.companionHosts,
             };
         });
 
@@ -297,51 +278,42 @@ export const assembleApp = ({
     // Mount companion for each brand
     for (const instance of companionInstances) {
         const brand = instance.brand;
+        const mountPath = `/${brand.slug}`;
 
         // Session is scoped to brand routes only — see buildSessionMiddleware comment above.
-        app.use(`/${brand.id}`, buildSessionMiddleware(brand.id));
+        app.use(mountPath, buildSessionMiddleware(brand.slug));
 
-        // Attach the concrete brand for routes under /{brandId}
-        // NOTE: Using createBrandMiddleware() here would fall back to defaultBrand because
+        // Attach the concrete brand for routes under /{brandSlug}
+        // NOTE: Using createBrandMiddleware() here would fall back to no brand because
         // req.params.brand is not populated when mounting on a literal path like '/acme'.
-        app.use(`/${brand.id}`, (req, _res, next) => {
+        app.use(mountPath, (req, _res, next) => {
             (req as AppRequest).brand = brand;
             next();
         });
 
-        // Fix unexpected /default segment in OAuth callbacks for non-default brands
-        if (brand.id !== brandRegistry.defaultBrand?.id) {
-            app.use(`/${brand.id}`, (req, _res, next) => {
-                if (req.url.startsWith('/default/')) {
-                    req.url = req.url.replace(/^\/default/, '');
-                }
-                next();
-            });
-        }
-
         // Optional user attachment
-        app.use(`/${brand.id}`, attachUser);
+        app.use(mountPath, attachUser);
 
         // Uppy upload page - shows plugins based on brand providers
-        app.get(`/${brand.id}/uppy`, serveUppyPage);
-        app.get(`/${brand.id}/uppyModal.js`, serveUppyModalJs);
+        app.get(`${mountPath}/uppy`, serveUppyPage);
+        app.get(`${mountPath}/uppyModal.js`, serveUppyModalJs);
 
         // Mount custom API (S3 signing, etc.) behind per-brand CORS.
-        // The middleware accepts any *.<rootDomain> origin (HTTPS-only in prod)
-        // so dashboards on sibling subdomains can call /api/uppy/* with cookies.
-        app.use(`/${brand.id}/api`, corsForBrand(brand, envParam.protocol), apiRouter);
+        // The middleware accepts any *.<apex> origin (HTTPS-only in prod) so
+        // dashboards on sibling subdomains can call /api/uppy/* with cookies.
+        app.use(`${mountPath}/api`, corsForBrand(brand, envParam.protocol), apiRouter);
 
         // Companion's own S3 multipart endpoints (/:brand/s3/...) invoke the
         // s3.getKey callback which calls buildS3Key — that callback throws if
         // req.user is not populated. Without requireAuth here, an unauthenticated
         // request would surface as 500 instead of a clean 401.
-        app.use(`/${brand.id}/s3`, requireAuth);
+        app.use(`${mountPath}/s3`, requireAuth);
 
         // Mount companion at brand path
-        app.use(brand.server.path, instance.app);
+        app.use(mountPath, instance.app);
 
-        logger.info({ brand: brand.id, path: brand.server.path }, '[server] Mounted companion for brand');
-        logger.info({ brand: brand.id }, `[server] Uppy page at /${brand.id}/uppy`);
+        logger.info({ brand: brand.slug, path: mountPath }, '[server] Mounted companion for brand');
+        logger.info({ brand: brand.slug }, `[server] Uppy page at ${mountPath}/uppy`);
     }
 
     // Error handler
@@ -357,28 +329,11 @@ export const assembleApp = ({
  * Creates and configures the Express application
  */
 export const createServer = (): ServerResult => {
-    const brandRegistry: BrandRegistry = createBrandRegistry({
-        corsOrigins: env.corsOrigins,
-        secret: env.secret,
-        filePath: env.filePath,
-        host: env.publicHost,
-        protocol: env.protocol,
-        brands: env.brands,
-        brandConfigs: env.brandConfigs,
-        publicDefaults: {
-            backendUrl: env.publicBackendUrl,
-            uploadUrl: env.publicUploadUrl,
-            foldersUrl: env.publicFoldersUrl,
-        },
-        s3Defaults: env.s3Defaults,
-        providerDefaults: env.providerDefaults,
-    });
+    const brandRegistry: ResolvedBrandRegistry = createBrandRegistry({ secret: env.secret });
 
-    const companionInstances: CompanionInstance[] = [];
-    for (const brand of brandRegistry.brands.values()) {
-        const instance = createCompanionForBrand(brand);
-        companionInstances.push(instance);
-    }
+    const companionInstances: CompanionInstance[] = getAllBrands(brandRegistry).map(
+        (brand) => createCompanionForBrand(brand, env.filePath),
+    );
 
     const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });
 

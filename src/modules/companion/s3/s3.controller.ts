@@ -49,7 +49,7 @@ const sendIfKeyNotOwned = (req: AppRequest, key: string, res: Response): boolean
     // resolution), and `sanitizeFilename` allows dots so legitimate filenames
     // like `weird..file.jpg` produce keys containing `..`. The authoritative
     // gate is the user/brand prefix below.
-    const prefix = buildUserKeyPrefix(req.brand.id, req.user.id);
+    const prefix = buildUserKeyPrefix(req.brand.slug, req.user.id);
     if (!key.startsWith(prefix)) {
         res.status(403).json({ error: 's3: key does not belong to authenticated user' });
         return true;
@@ -67,7 +67,7 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
     try {
         const brand = req.brand;
         if (!brand || !brand.s3.client || !brand.s3.bucket) {
-            logger.error({ brand: brand?.id }, '[s3] Missing brand S3 config');
+            logger.error({ brand: brand?.slug }, '[s3] Missing brand S3 config');
             res.status(400).json({ error: 'S3 configuration incomplete for this brand' });
             return;
         }
@@ -101,7 +101,7 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
             fields: {},
         });
     } catch (error) {
-        logger.error({ err: error, brand: req.brand?.id }, '[s3] Error signing URL');
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error signing URL');
         res.status(500).json({ error: 'Error signing upload' });
     }
 };
@@ -139,7 +139,7 @@ export const createMultipartUpload = async (req: AppRequest, res: Response, _nex
             uploadId: s3Data.UploadId,
         });
     } catch (error) {
-        logger.error({ err: error, brand: req.brand?.id }, '[s3] Error adding multipart');
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error adding multipart');
         res.status(500).json({ error: 'Error initiating multipart upload' });
     }
 };
@@ -181,7 +181,7 @@ export const signPart = async (req: AppRequest, res: Response, _next: NextFuncti
 
         res.json({ url, expires: expiresIn });
     } catch (error) {
-        logger.error({ err: error, brand: req.brand?.id }, '[s3] Error signing part');
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error signing part');
         res.status(500).json({ error: 'Error signing part' });
     }
 };
@@ -231,7 +231,7 @@ export const listParts = async (req: AppRequest, res: Response, _next: NextFunct
 
         res.json(parts);
     } catch (error) {
-        logger.error({ err: error, brand: req.brand?.id }, '[s3] Error listing parts');
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error listing parts');
         res.status(500).json({ error: 'Error listing parts' });
     }
 };
@@ -274,7 +274,7 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
             location: data.Location,
         });
     } catch (error) {
-        logger.error({ err: error, brand: req.brand?.id }, '[s3] Error completing multipart');
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error completing multipart');
         res.status(500).json({ error: 'Error completing multipart' });
     }
 };
@@ -309,7 +309,7 @@ export const abortMultipartUpload = async (req: AppRequest, res: Response, _next
 
         res.status(200).json({});
     } catch (error) {
-        logger.error({ err: error, brand: req.brand?.id }, '[s3] Error aborting multipart');
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error aborting multipart');
         res.status(500).json({ error: 'Error aborting multipart' });
     }
 };

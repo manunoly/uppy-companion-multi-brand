@@ -1,21 +1,15 @@
 import { z } from 'zod';
-import { brandConfigSchema } from '../modules/brand/brand.schema.js';
-
-const providerDefaultSchema = z.object({
-    key: z.string().min(1).optional(),
-    secret: z.string().min(1).optional(),
-}).strict();
-
-const googleProviderDefaultSchema = z.object({
-    clientId: z.string().min(1).optional(),
-    clientSecret: z.string().min(1).optional(),
-    driveApiKey: z.string().min(1).optional(),
-    photosApiKey: z.string().min(1).optional(),
-    appId: z.string().min(1).optional(),
-}).strict();
 
 /**
- * Environment schema with Zod validation
+ * Environment schema with Zod validation.
+ *
+ * Task 2.7 (abeduls3-alignment cutover) drops the legacy per-brand
+ * env-derived config (`COMPANION_BRANDS` CSV, `<SLUG_UPPER_SNAKE>` JSON
+ * blobs, global `PUBLIC_*`/`AWS_*`/OAuth-provider fallbacks). Brands are now
+ * resolved entirely by `createBrandRegistry()` (modules/brand/brand.service.ts)
+ * from the code-only base registry + `<SLUG>_BRAND_OVERRIDE` + per-brand
+ * secrets — none of that is part of the global `EnvConfig` anymore. What
+ * remains here is genuinely global, brand-independent server config.
  */
 export const envSchema = z.object({
     // Server
@@ -35,43 +29,8 @@ export const envSchema = z.object({
     // defaults to a local dev instance so `pnpm dev`/tests don't need one set.
     redisUrl: z.string().min(1).default('redis://localhost:6379'),
 
-    // File storage
+    // Companion's own local temp-file storage path (brand-independent).
     filePath: z.string().min(1).default('/tmp/'),
-
-    // CORS origins (comma-separated)
-    corsOrigins: z.array(z.string()).default([]),
-
-    // Brands (comma-separated slugs)
-    brands: z.string().min(1).default('default'),
-
-    // Global public URLs fallback
-    publicBackendUrl: z.string().min(1).optional(),
-    publicUploadUrl: z.string().min(1).optional(),
-    publicFoldersUrl: z.string().min(1).optional(),
-
-    // Global AWS fallback
-    s3Defaults: z.object({
-        bucket: z.string().min(1).optional(),
-        region: z.string().min(1).optional(),
-        accessKey: z.string().min(1).optional(),
-        secretKey: z.string().min(1).optional(),
-        useAccelerateEndpoint: z.boolean().optional(),
-    }).strict(),
-
-    // Global provider fallback
-    providerDefaults: z.object({
-        google: googleProviderDefaultSchema,
-        dropbox: providerDefaultSchema,
-        facebook: providerDefaultSchema,
-        instagram: providerDefaultSchema,
-        onedrive: providerDefaultSchema,
-        box: providerDefaultSchema,
-        unsplash: providerDefaultSchema,
-        zoom: providerDefaultSchema,
-    }).strict(),
-
-    // Per-brand JSON configuration (already validated)
-    brandConfigs: z.record(z.string(), brandConfigSchema).default({}),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

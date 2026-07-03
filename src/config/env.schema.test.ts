@@ -34,14 +34,6 @@ describe('envSchema', () => {
         expect(result.success).toBe(false);
     });
 
-    it('defaults brands to "default" when omitted', () => {
-        const env: Record<string, unknown> = { ...makeValidEnv() };
-        delete env.brands;
-        const result = envSchema.safeParse(env);
-        expect(result.success).toBe(true);
-        if (result.success) expect(result.data.brands).toBe('default');
-    });
-
     it('defaults port to 3020 when omitted', () => {
         const env: Record<string, unknown> = { ...makeValidEnv() };
         delete env.port;
@@ -50,29 +42,24 @@ describe('envSchema', () => {
         if (result.success) expect(result.data.port).toBe(3020);
     });
 
+    it('defaults redisUrl to a local dev instance when omitted', () => {
+        const env: Record<string, unknown> = { ...makeValidEnv() };
+        delete env.redisUrl;
+        const result = envSchema.safeParse(env);
+        expect(result.success).toBe(true);
+        if (result.success) expect(result.data.redisUrl).toBe('redis://localhost:6379');
+    });
+
+    it('defaults filePath to "/tmp/" when omitted', () => {
+        const env: Record<string, unknown> = { ...makeValidEnv() };
+        delete env.filePath;
+        const result = envSchema.safeParse(env);
+        expect(result.success).toBe(true);
+        if (result.success) expect(result.data.filePath).toBe('/tmp/');
+    });
+
     it('healthCheckKey is optional', () => {
         const result = envSchema.safeParse(makeValidEnv({ healthCheckKey: undefined }));
-        expect(result.success).toBe(true);
-    });
-
-    it('rejects unknown brand JSON config (delegates to brandConfigSchema)', () => {
-        const result = envSchema.safeParse({
-            ...makeValidEnv(),
-            brandConfigs: { foo: { unknownField: 'x' } },
-        });
-        expect(result.success).toBe(false);
-    });
-
-    it('accepts brandConfigs with valid brand JSON', () => {
-        const result = envSchema.safeParse({
-            ...makeValidEnv(),
-            brandConfigs: {
-                foo: {
-                    rootDomain: 'foo.example.com',
-                    auth: { url: 'https://api.foo.example.com' },
-                },
-            },
-        });
         expect(result.success).toBe(true);
     });
 });

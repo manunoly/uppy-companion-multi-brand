@@ -1,12 +1,22 @@
 import type { Response, NextFunction } from 'express';
 import type { AppRequest } from '../../core/types/express.js';
-import type { BrandRegistry } from './brand.types.js';
-import { resolveBrand } from './brand.service.js';
+import type { ResolvedBrandRegistry } from './brand.service.js';
+import { isBrandSlug } from './slugs.js';
+import { normalizeBrandSlug } from './brand.utils.js';
 
 /**
- * Creates a middleware that resolves the brand from URL params
+ * Creates a middleware that resolves the brand from URL params/query/header.
+ *
+ * NOTE: per the Gotchas in CLAUDE.md, this is NOT used for the per-brand
+ * mount chains in `server.ts` — those attach `req.brand` directly, since
+ * `req.params.brand` is empty on a literal mount path. This middleware exists
+ * for routes that take `:brand` as an explicit path/query/header parameter.
+ *
+ * Unlike the legacy CSV-based registry, there is no "default brand" concept
+ * in the abeduls3-aligned model (D4) — brands are resolved by exact slug
+ * match only. When no identifier is supplied, `req.brand` is left unset.
  */
-export const createBrandMiddleware = (registry: BrandRegistry) => {
+export const createBrandMiddleware = (registry: ResolvedBrandRegistry) => {
     return (req: AppRequest, res: Response, next: NextFunction): void => {
         // Try to get brand from URL params first
         const brandParam = req.params.brand;
@@ -22,7 +32,8 @@ export const createBrandMiddleware = (registry: BrandRegistry) => {
             brandHeader;
 
         if (identifier) {
-            const brand = resolveBrand(registry, identifier);
+            const normalized = normalizeBrandSlug(identifier);
+            const brand = isBrandSlug(normalized) ? registry[normalized] : undefined;
             if (brand) {
                 req.brand = brand;
                 next();
@@ -34,11 +45,9 @@ export const createBrandMiddleware = (registry: BrandRegistry) => {
             return;
         }
 
-        // No brand specified, use default
-        if (registry.defaultBrand) {
-            req.brand = registry.defaultBrand;
-        }
-
+        // No identifier supplied and no default-brand concept (D4) — leave
+        // req.brand unset and let downstream middleware (e.g. requireBrand)
+        // decide whether that's fatal.
         next();
     };
 };

@@ -6,6 +6,8 @@ import type { AppRequest } from '../../core/types/express.js';
 import { buildS3Key } from './s3/s3.key-builder.js';
 import { logger } from '../../lib/logger.js';
 
+const DEFAULT_FILE_PATH = '/tmp/';
+
 /**
  * Builds provider options from brand configuration
  */
@@ -71,60 +73,68 @@ const buildProviderOptions = (brand: Brand): Record<string, CompanionProviderOpt
         };
     }
 
-    // [NEW] Use companionUrl to determine the public domain for OAuth redirects
-    // This fixes the issue where implicit path construction adds extra segments like /default/
-    const oauthDomain = brand.companionUrl
-        ? new URL(brand.companionUrl).host
-        : brand.server.host;
-    const oauthPath = brand.companionUrl
-        ? new URL(brand.companionUrl).pathname.replace(/\/$/, '') || '/'
-        : brand.server.path;
+    // `companionUrl` is mandatory on the abeduls3-aligned Brand contract (D2) —
+    // it is always the source of truth for the public domain used in OAuth
+    // redirect_uri generation. This is what eliminates the old `/default/`
+    // segment mis-derivation hack (spec D4).
+    const oauthUrl = parseCompanionUrl(brand);
 
     // We attach it to every provider so Companion uses it for redirect_uri generation
     Object.keys(providers).forEach((key) => {
-        providers[key].oauthDomain = oauthDomain;
-        providers[key].oauthProtocol = brand.companionUrl
-            ? (new URL(brand.companionUrl).protocol.replace(':', '') as 'http' | 'https')
-            : brand.server.protocol;
-        providers[key].oauthPath = oauthPath;
+        providers[key].oauthDomain = oauthUrl.host;
+        providers[key].oauthProtocol = oauthUrl.protocol;
+        providers[key].oauthPath = oauthUrl.path;
     });
 
     return providers;
 };
 
+interface ParsedCompanionUrl {
+    host: string;
+    protocol: 'http' | 'https';
+    path: string;
+}
+
+/**
+ * Parses `brand.companionUrl` into Companion's server-options shape. Falls
+ * back to a safe default when the URL is empty/malformed — in practice this
+ * only happens for the non-servable placeholder registry entries (abe,
+ * picaboo today), which never actually get a companion instance created
+ * (`createBrandRegistry` only resolves servable slugs).
+ */
+const parseCompanionUrl = (brand: Brand): ParsedCompanionUrl => {
+    try {
+        const url = new URL(brand.companionUrl);
+        return {
+            host: url.host,
+            protocol: url.protocol.replace(':', '') as 'http' | 'https',
+            path: url.pathname.replace(/\/$/, '') || '/',
+        };
+    } catch (err) {
+        logger.error({ err, brand: brand.slug, companionUrl: brand.companionUrl }, '[companion] Invalid or missing companionUrl for brand');
+        return { host: 'localhost', protocol: 'http', path: `/${brand.slug}` };
+    }
+};
+
 /**
  * Builds companion options for a brand
  */
-export const buildCompanionOptions = (brand: Brand): CompanionOptions => {
-    let serverOptions = {
-        host: brand.server.host,
-        protocol: brand.server.protocol,
-        path: brand.server.path,
-    };
-
-    // [NEW] Use companionUrl to override server settings for public URLs (e.g. Proxy)
-    if (brand.companionUrl) {
-        try {
-            const url = new URL(brand.companionUrl);
-            serverOptions = {
-                host: url.host, // includes port if present
-                protocol: url.protocol.replace(':', '') as 'http' | 'https',
-                path: url.pathname.replace(/\/$/, ''), // remove trailing slash
-            };
-        } catch (err) {
-            logger.error({ err, brand: brand.id, companionUrl: brand.companionUrl }, '[companion] Invalid companionUrl for brand');
-        }
-    }
+export const buildCompanionOptions = (brand: Brand, filePath: string = DEFAULT_FILE_PATH): CompanionOptions => {
+    const serverOptions = parseCompanionUrl(brand);
 
     const options: CompanionOptions = {
         providerOptions: buildProviderOptions(brand),
         server: serverOptions,
-        filePath: brand.filePath,
+        filePath,
         secret: brand.secret,
-        uploadUrls: brand.uploadUrls,
-        corsOrigins: brand.corsOrigins,
+        // TODO(Fase 4.3, D9): `uploadUrls`/`allowLocalUrls` are still the
+        // unhardened legacy defaults. Fase 4.3 derives `uploadUrls` from
+        // `brand.s3.bucket`/`companionUrl`/`domains` and sets
+        // `allowLocalUrls: env.protocol === 'http'` + `validHosts` (closes H1/H2/H7).
+        uploadUrls: ['*'],
+        corsOrigins: brand.domains.map((domain) => `https://${domain}`),
         metrics: false,
-        allowLocalUrls: true, // Allow uploads to localhost
+        allowLocalUrls: true,
         enableGooglePickerEndpoint: true,
     };
 
@@ -152,8 +162,8 @@ export interface CompanionInstance {
 /**
  * Creates a Companion instance for a brand
  */
-export const createCompanionForBrand = (brand: Brand): CompanionInstance => {
-    const options = buildCompanionOptions(brand);
+export const createCompanionForBrand = (brand: Brand, filePath: string = DEFAULT_FILE_PATH): CompanionInstance => {
+    const options = buildCompanionOptions(brand, filePath);
 
     const { app: companionApp } = companion.app(options as Parameters<typeof companion.app>[0]);
 
@@ -167,7 +177,7 @@ export const createCompanionForBrand = (brand: Brand): CompanionInstance => {
 
     router.use(companionApp);
 
-    logger.info({ brand: brand.id }, '[companion] Created instance for brand');
+    logger.info({ brand: brand.slug }, '[companion] Created instance for brand');
 
     return {
         brand,

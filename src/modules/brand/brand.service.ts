@@ -1,294 +1,95 @@
-import type {
-    Brand,
-    BrandRegistry,
-    BrandS3Config,
-    BrandProviderConfig,
-    BrandProviderInputConfig,
-    BrandConfigJSON,
-    BrandGoogleProviderInputConfig,
-    BrandGoogleProviderConfig
-} from './brand.types.js';
 import { getS3Client } from '../../lib/aws/s3Client.js';
-import { normalizeBrandSlug } from './brand.utils.js';
-import { logger } from '../../lib/logger.js';
+import type { Brand, CompanionBrandConfig } from './brand.contract.js';
+import { companionBrandConfigSchema } from './brand.schema.js';
+import { resolveEffectiveAuth } from './identity.js';
+import { getBaseBrandConfig, getServableSlugs } from './registry.js';
+import type { BrandSlug } from './slugs.js';
 
-interface PublicDefaults {
-    backendUrl?: string;
-    uploadUrl?: string;
-    foldersUrl?: string;
+/**
+ * `createBrandRegistry`/`resolveBrand` over the brand contract. Landed here by
+ * the Task 2.7 atomic cutover (renamed from `brand.service.next.ts`, which
+ * coexisted with the legacy CSV/JSON-based `brand.service.ts` until every
+ * consumer — `server.ts`/`config/env.ts` in particular — moved onto it).
+ *
+ * Secrets are loaded from plain env vars here (a stub): Fase 6 replaces this
+ * with `loadBrandSecrets(slug)` (`SECRETS_SOURCE=env|aws`). The shape of
+ * `ResolveBrandOptions`/the env-var naming below is deliberately close to
+ * that future loader so the Fase 6 swap is a small diff.
+ */
+export interface ResolveBrandOptions {
+    /** Global Companion secret (COMPANION_SECRET) — one value shared by every brand. */
+    secret?: string;
+    /** Injectable for tests; defaults to `process.env`. */
+    env?: NodeJS.ProcessEnv;
 }
 
-interface S3Defaults {
-    bucket?: string;
-    region?: string;
-    accessKey?: string;
-    secretKey?: string;
-    useAccelerateEndpoint?: boolean;
+function envPrefix(slug: BrandSlug): string {
+    return slug.toUpperCase().replace(/-/g, '_');
 }
 
-interface ProviderDefaults {
-    google?: BrandGoogleProviderInputConfig;
-    dropbox?: BrandProviderInputConfig;
-    facebook?: BrandProviderInputConfig;
-    instagram?: BrandProviderInputConfig;
-    onedrive?: BrandProviderInputConfig;
-    box?: BrandProviderInputConfig;
-    unsplash?: BrandProviderInputConfig;
-    zoom?: BrandProviderInputConfig;
+/**
+ * Stub S3 credential loader: per-brand env vars (`<SLUG>_AWS_ACCESS_KEY_ID` /
+ * `_AWS_SECRET_ACCESS_KEY`) falling back to the global `AWS_*` pair — mirrors
+ * the legacy `brand.service.ts` fallback chain. Fase 6 (`loadBrandSecrets`)
+ * replaces this with a `SECRETS_SOURCE=env|aws` abstraction.
+ */
+function readStubS3Secrets(slug: BrandSlug, env: NodeJS.ProcessEnv): { accessKey?: string; secretKey?: string } {
+    const prefix = envPrefix(slug);
+    return {
+        accessKey: env[`${prefix}_AWS_ACCESS_KEY_ID`] ?? env.AWS_ACCESS_KEY_ID,
+        secretKey: env[`${prefix}_AWS_SECRET_ACCESS_KEY`] ?? env.AWS_SECRET_ACCESS_KEY,
+    };
 }
 
-export interface CreateBrandRegistryOptions {
-    corsOrigins: (string | RegExp)[];
-    secret: string;
-    filePath: string;
-    host: string;
-    protocol: 'http' | 'https';
-    brands: string;
-    brandConfigs: Record<string, BrandConfigJSON>;
-    publicDefaults: PublicDefaults;
-    s3Defaults: S3Defaults;
-    providerDefaults: ProviderDefaults;
-}
+/**
+ * Resolves one servable brand: base registry config -> `<SLUG>_BRAND_OVERRIDE`
+ * (`identity.ts`, auth fields only) -> S3 credentials from env (stub) ->
+ * fully-formed `Brand` with an initialized `S3Client`.
+ */
+export function resolveBrand(slug: BrandSlug, options: ResolveBrandOptions = {}): Brand {
+    const env = options.env ?? process.env;
+    const base: CompanionBrandConfig = getBaseBrandConfig(slug);
+    // Structural sanity check — throws on a malformed registry entry (defense in depth; the registry
+    // itself is a static, code-reviewed literal, so this should never actually fail in practice).
+    companionBrandConfigSchema.parse(base);
 
-export { normalizeBrandSlug };
+    const auth = resolveEffectiveAuth(base);
+    const stubSecrets = readStubS3Secrets(slug, env);
+    const s3 = {
+        bucket: base.s3.bucket,
+        region: base.s3.region,
+        accessKey: base.s3.accessKey ?? stubSecrets.accessKey,
+        secretKey: base.s3.secretKey ?? stubSecrets.secretKey,
+        useAccelerateEndpoint: base.s3.useAccelerateEndpoint,
+    };
 
-const createProviderConfig = (
-    providerConfig: BrandProviderInputConfig | undefined,
-    globalConfig: BrandProviderInputConfig | undefined,
-    options: { allowKeyOnly?: boolean } = {}
-): BrandProviderConfig | undefined => {
-    const allowKeyOnly = options.allowKeyOnly ?? false;
-
-    if (providerConfig?.key && (providerConfig.secret || allowKeyOnly)) {
-        return {
-            key: providerConfig.key,
-            secret: providerConfig.secret ?? '',
-        };
-    }
-
-    if (globalConfig?.key && (globalConfig.secret || allowKeyOnly)) {
-        return {
-            key: globalConfig.key,
-            secret: globalConfig.secret ?? '',
-        };
-    }
-
-    return undefined;
-};
-
-const createGoogleProviderConfig = (
-    providerConfig: BrandGoogleProviderInputConfig | undefined,
-    globalConfig: BrandGoogleProviderInputConfig | undefined
-): BrandGoogleProviderConfig | undefined => {
-    const clientId = providerConfig?.clientId
-        ?? globalConfig?.clientId;
-
-    if (!clientId) return undefined;
-
-    const clientSecret = providerConfig?.clientSecret
-        ?? globalConfig?.clientSecret
-        ?? '';
-
-    const driveApiKey = providerConfig?.driveApiKey
-        ?? globalConfig?.driveApiKey;
-    const photosApiKey = providerConfig?.photosApiKey
-        ?? globalConfig?.photosApiKey;
-    const appId = providerConfig?.appId ?? globalConfig?.appId;
+    const client = s3.region
+        ? getS3Client({ regionParam: s3.region, accessKeyIdParam: s3.accessKey, secretAccessKeyParam: s3.secretKey })
+        : undefined;
 
     return {
-        clientId,
-        clientSecret,
-        driveApiKey,
-        photosApiKey,
-        appId,
+        ...base,
+        auth,
+        secret: options.secret ?? env.COMPANION_SECRET ?? base.secret,
+        s3: { ...s3, client },
     };
-};
-
-const createS3Config = (
-    s3Config: BrandConfigJSON['s3'] | undefined,
-    defaults: S3Defaults
-): BrandS3Config => {
-    const config: BrandS3Config = {
-        bucket: s3Config?.bucket ?? defaults.bucket ?? '',
-        region: s3Config?.region ?? defaults.region ?? '',
-        accessKey: s3Config?.accessKey ?? defaults.accessKey ?? undefined,
-        secretKey: s3Config?.secretKey ?? defaults.secretKey ?? undefined,
-        useAccelerateEndpoint: s3Config?.useAccelerateEndpoint ?? defaults.useAccelerateEndpoint ?? false,
-    };
-
-    if (config.region) {
-        config.client = getS3Client({
-            regionParam: config.region,
-            accessKeyIdParam: config.accessKey,
-            secretAccessKeyParam: config.secretKey,
-        });
-    }
-
-    return config;
-};
+}
 
 /**
- * Parses CORS origins
+ * Runtime brand registry: every servable slug resolved into a fully-formed
+ * `Brand` (secrets loaded, `S3Client` initialized). Distinct from
+ * `BrandRegistry` (`brand.contract.ts`), which is the declarative, pre-secret
+ * base registry keyed by EVERY known slug (including non-servable ones).
  */
-const parseCorsOrigins = (
-    configuredOrigins: string[] | undefined,
-    defaults: (string | RegExp)[]
-): (string | RegExp)[] => {
-    if (configuredOrigins && Array.isArray(configuredOrigins)) {
-        return configuredOrigins;
-    }
-    return defaults;
-};
+export type ResolvedBrandRegistry = Readonly<Partial<Record<BrandSlug, Brand>>>;
 
-/**
- * Valid Uppy plugin names (case-insensitive mapping)
- */
-const VALID_PLUGINS: Record<string, string> = {
-    'url': 'Url',
-    'googledrivepicker': 'GoogleDrivePicker',
-    'googlephotospicker': 'GooglePhotosPicker',
-    'googledrive': 'GoogleDrive',
-    'googlephotos': 'GooglePhotos',
-    'dropbox': 'Dropbox',
-    'facebook': 'Facebook',
-    'instagram': 'Instagram',
-    'onedrive': 'OneDrive',
-    'box': 'Box',
-    'unsplash': 'Unsplash',
-    'zoom': 'Zoom',
-};
+/** Resolves every servable brand (non-empty `companionHosts`) into a frozen slug -> Brand map. */
+export function createBrandRegistry(options: ResolveBrandOptions = {}): ResolvedBrandRegistry {
+    const entries = getServableSlugs().map((slug) => [slug, resolveBrand(slug, options)] as const);
+    return Object.freeze(Object.fromEntries(entries)) as ResolvedBrandRegistry;
+}
 
-/**
- * Parses enabled plugins from comma-separated string
- * Returns normalized plugin names (case-insensitive input)
- */
-const parseEnabledPlugins = (enabledPlugins: string | undefined): string[] => {
-    if (!enabledPlugins) return [];
-
-    return enabledPlugins
-        .split(',')
-        .map(p => p.trim().toLowerCase())
-        .filter(p => p.length > 0)
-        .map(p => VALID_PLUGINS[p])
-        .filter((p): p is string => p !== undefined);
-};
-
-/**
- * Creates a brand descriptor from injected defaults and optional pre-validated
- * brand-specific configuration.
- */
-export const createBrand = (
-    slug: string,
-    defaults: CreateBrandRegistryOptions
-): Brand => {
-    const mountPath = `/${slug}`;
-    const config = defaults.brandConfigs[slug] ?? {};
-
-    const serverHost = defaults.host;
-    const serverProtocol = defaults.protocol;
-
-    return {
-        id: slug,
-        displayName: config.displayName ?? slug,
-        rootDomain: config.rootDomain ?? null,
-
-        // Proxy Support
-        companionUrl: config.companionUrl,
-
-        // Auth
-        auth: {
-            url: config.auth?.url ?? config.authUrl ?? null,
-            cookieName: config.auth?.cookieName ?? config.authCookieName ?? 'session',
-        },
-
-        s3: createS3Config(config.s3, defaults.s3Defaults),
-
-        providers: {
-            google: createGoogleProviderConfig(config.providers?.google, defaults.providerDefaults.google),
-            dropbox: createProviderConfig(config.providers?.dropbox, defaults.providerDefaults.dropbox),
-            facebook: createProviderConfig(config.providers?.facebook, defaults.providerDefaults.facebook),
-            instagram: createProviderConfig(config.providers?.instagram, defaults.providerDefaults.instagram),
-            onedrive: createProviderConfig(config.providers?.onedrive, defaults.providerDefaults.onedrive),
-            box: createProviderConfig(config.providers?.box, defaults.providerDefaults.box),
-            unsplash: createProviderConfig(config.providers?.unsplash, defaults.providerDefaults.unsplash),
-            zoom: createProviderConfig(config.providers?.zoom, defaults.providerDefaults.zoom),
-        },
-
-        corsOrigins: parseCorsOrigins(config.corsOrigins, defaults.corsOrigins),
-        uploadUrls: config.uploadUrls ?? ['*'],
-
-        public: (() => {
-            const backendUrl = config.public?.backendUrl
-                ?? config.publicBackendUrl
-                ?? defaults.publicDefaults.backendUrl
-                ?? 'http://localhost';
-
-            const uploadUrl = config.public?.uploadUrl
-                ?? config.publicUploadUrl
-                ?? defaults.publicDefaults.uploadUrl
-                ?? `${backendUrl}/api/frame/contents/upload/public`;
-
-            const foldersUrl = config.public?.foldersUrl
-                ?? defaults.publicDefaults.foldersUrl;
-
-            const loginUrl = config.public?.loginUrl;
-
-            return {
-                backendUrl,
-                uploadUrl,
-                foldersUrl,
-                loginUrl,
-            };
-        })(),
-
-        secret: defaults.secret,
-        server: {
-            host: serverHost,
-            protocol: serverProtocol,
-            path: mountPath,
-        },
-        filePath: defaults.filePath,
-        enabledPlugins: parseEnabledPlugins(config.enabledPlugins),
-    };
-};
-
-export const createBrandRegistry = (defaults: CreateBrandRegistryOptions): BrandRegistry => {
-    const rawBrandList = defaults.brands;
-    const slugs = [...new Set(
-        rawBrandList.split(',').map(normalizeBrandSlug).filter(Boolean)
-    )];
-
-    if (slugs.length === 0) {
-        throw new Error('No brands configured: options.brands is empty (typically sourced from COMPANION_BRANDS).');
-    }
-
-    const brands = new Map<string, Brand>();
-
-    for (const slug of slugs) {
-        const brand = createBrand(slug, defaults);
-        brands.set(slug, brand);
-        logger.info({ brand: slug }, '[brand] Registered brand');
-    }
-
-    const defaultBrand = brands.get(slugs[0]) ?? null;
-
-    return { brands, defaultBrand };
-};
-
-/**
- * Resolves a brand by identifier
- */
-export const resolveBrand = (
-    registry: BrandRegistry,
-    identifier: string | undefined | null
-): Brand | null => {
-    if (!identifier) return null;
-    return registry.brands.get(normalizeBrandSlug(identifier)) ?? null;
-};
-
-/**
- * Gets all brands as an array
- */
-export const getAllBrands = (registry: BrandRegistry): Brand[] => {
-    return Array.from(registry.brands.values());
-};
+/** All resolved brands in a `ResolvedBrandRegistry`, in slug-key iteration order. */
+export function getAllBrands(registry: ResolvedBrandRegistry): Brand[] {
+    return Object.values(registry).filter((brand): brand is Brand => brand !== undefined);
+}

@@ -12,13 +12,14 @@ describe('fetchFolders', () => {
     });
 
     it('returns [] when foldersUrl is not configured', async () => {
-        const brand = makeBrand({
-            public: {
-                backendUrl: 'https://x',
-                uploadUrl: 'https://x/upload',
-                foldersUrl: undefined,
-            },
-        });
+        const brand = makeBrand({ public: { foldersUrl: undefined } });
+        const folders = await fetchFolders('tok', brand);
+        expect(folders).toEqual([]);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('returns [] when public block is absent entirely', async () => {
+        const brand = makeBrand({ public: undefined });
         const folders = await fetchFolders('tok', brand);
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -63,7 +64,7 @@ describe('fetchFolders', () => {
         expect(folders).toEqual([]);
     });
 
-    it('forwards cookie token to backend (not Authorization)', async () => {
+    it('forwards cookie token to backend under the brand session cookie name (not Authorization)', async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
             ok: true,
             json: async () => ({ success: true, data: [] }),
@@ -73,17 +74,13 @@ describe('fetchFolders', () => {
         expect(call[1]?.headers?.Cookie).toBe('session=cookietok');
     });
 
-    it('treats relative foldersUrl as path appended to backendUrl', async () => {
+    it('fetches the configured absolute foldersUrl as-is', async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
             ok: true,
             json: async () => ({ success: true, data: [] }),
         });
         await fetchFolders('t', makeBrand({
-            public: {
-                backendUrl: 'https://x.example.com',
-                uploadUrl: 'https://x.example.com/upload',
-                foldersUrl: '/api/folders',
-            },
+            public: { foldersUrl: 'https://x.example.com/api/folders' },
         }));
         const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
         expect(call[0]).toBe('https://x.example.com/api/folders');

@@ -17,9 +17,14 @@ const sanitizeBrand = (brandSource: string): string =>
  * Returns the S3 key prefix that scopes uploads to a single (brand, user) pair.
  * Used both to build new keys and to validate that a client-supplied key
  * belongs to the authenticated user (defense against BOLA).
+ *
+ * NOTE: this still branches on the brand slug (a legacy-shaped path). Fase 4
+ * (Task 4.1) replaces this with the abeduls3-aligned, brand-independent
+ * scheme `{assets.s3Prefix}original/{userId}/...` (SA1/D6) — kept as-is here
+ * per Task 2.7's "minimal compile" scope for the key-builder.
  */
-export const buildUserKeyPrefix = (brandId: string, userId: string): string =>
-    `${sanitizeBrand(brandId)}/original/${userId}/`;
+export const buildUserKeyPrefix = (brandSlug: string, userId: string): string =>
+    `${sanitizeBrand(brandSlug)}/original/${userId}/`;
 
 export interface BuildS3KeyParams {
     req: AppRequest;
@@ -42,7 +47,7 @@ export const buildS3Key = ({ req, filename, metadata }: BuildS3KeyParams): strin
         if (!candidateName) logger.warn('[s3] Filename missing in buildS3Key, using untitled');
     }
 
-    const brandSource = req.brand?.id ??
+    const brandSource = req.brand?.slug ??
         (metadata?.brand as string | undefined) ??
         'default';
     const sanitizedBrand = sanitizeBrand(brandSource);

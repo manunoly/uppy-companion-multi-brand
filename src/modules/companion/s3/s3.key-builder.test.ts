@@ -7,7 +7,7 @@ describe('buildUserKeyPrefix', () => {
         expect(buildUserKeyPrefix('acme', 'u123')).toBe('acme/original/u123/');
     });
 
-    it('lowercases and sanitizes brand id', () => {
+    it('lowercases and sanitizes brand slug', () => {
         expect(buildUserKeyPrefix('AcmeBrand!', 'u1')).toBe('acmebrand-/original/u1/');
     });
 });
@@ -23,12 +23,12 @@ describe('buildS3Key', () => {
 
     it('produces a key with brand/original/userId/year/month/day/timestamp/filename shape', () => {
         const req = makeAppRequest({
-            brand: makeBrand({ id: 'test' }),
+            brand: makeBrand({ slug: 'edo' }),
             user: makeUser({ id: 'u123' }),
         } as never);
         const key = buildS3Key({ req, filename: 'photo.jpg' });
         // 2026/4/29 (month is 0-indexed +1, day is 1-31)
-        expect(key).toMatch(/^test\/original\/u123\/\d{4}\/\d{1,2}\/\d{1,2}\/\d+\/photo\.jpg$/);
+        expect(key).toMatch(/^edo\/original\/u123\/\d{4}\/\d{1,2}\/\d{1,2}\/\d+\/photo\.jpg$/);
     });
 
     it('throws when req.user is not populated', () => {
@@ -52,13 +52,13 @@ describe('buildS3Key', () => {
         expect(key.split('/').pop()).toBe('myphoto1.jpg');
     });
 
-    it('uses brand.id as the prefix', () => {
+    it('uses brand.slug as the prefix', () => {
         const req = makeAppRequest({
-            brand: makeBrand({ id: 'acme' }),
+            brand: makeBrand({ slug: 'abe' }),
             user: makeUser({ id: 'u123' }),
         } as never);
         const key = buildS3Key({ req, filename: 'x.jpg' });
-        expect(key.startsWith('acme/original/u123/')).toBe(true);
+        expect(key.startsWith('abe/original/u123/')).toBe(true);
     });
 
     it('falls back to "untitled" when no filename or metadata.name', () => {
@@ -82,10 +82,10 @@ describe('buildS3Key', () => {
     it('writes sanitized brand back to metadata.brand', () => {
         const meta: Record<string, unknown> = {};
         const req = makeAppRequest({
-            brand: makeBrand({ id: 'AcmeBrand' }),
+            brand: makeBrand({ slug: 'edo' }),
             user: makeUser({ id: 'u' }),
         } as never);
         buildS3Key({ req, filename: 'x.jpg', metadata: meta });
-        expect(meta.brand).toBe('acmebrand');
+        expect(meta.brand).toBe('edo');
     });
 });
