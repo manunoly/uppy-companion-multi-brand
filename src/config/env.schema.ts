@@ -29,6 +29,16 @@ export const envSchema = z.object({
     // defaults to a local dev instance so `pnpm dev`/tests don't need one set.
     redisUrl: z.string().min(1).default('redis://localhost:6379'),
 
+    // Per-brand secrets source (Fase 6, `src/lib/secrets.ts#loadBrandSecrets`):
+    // `env` (default, Railway service variables) or `aws` (AWS Secrets
+    // Manager, one JSON secret per brand). See `.env.example` for the full
+    // per-brand variable scheme. Brand-independent — selects HOW every
+    // brand's S3/OAuth secrets are loaded, not brand-specific values
+    // themselves, so it belongs in the global `EnvConfig` unlike the actual
+    // secrets (which are read directly from `process.env`/Secrets Manager at
+    // brand-resolution time, not through this schema).
+    secretsSource: z.enum(['env', 'aws']).default('env'),
+
     // Companion's own local temp-file storage path (brand-independent).
     filePath: z.string().min(1).default('/tmp/'),
 

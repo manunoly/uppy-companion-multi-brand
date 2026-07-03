@@ -78,4 +78,26 @@ describe('envSchema', () => {
         expect(result.success).toBe(true);
         if (result.success) expect(result.data.rateLimitMax).toBe(300);
     });
+
+    it('defaults secretsSource to "env" when omitted', () => {
+        const env: Record<string, unknown> = { ...makeValidEnv() };
+        delete env.secretsSource;
+        const result = envSchema.safeParse(env);
+        expect(result.success).toBe(true);
+        if (result.success) expect(result.data.secretsSource).toBe('env');
+    });
+
+    it('accepts secretsSource "aws"', () => {
+        const result = envSchema.safeParse(makeValidEnv({ secretsSource: 'aws' }));
+        expect(result.success).toBe(true);
+        if (result.success) expect(result.data.secretsSource).toBe('aws');
+    });
+
+    it('rejects secretsSource values other than env/aws', () => {
+        const result = envSchema.safeParse({
+            ...makeValidEnv(),
+            secretsSource: 'gcp',
+        });
+        expect(result.success).toBe(false);
+    });
 });

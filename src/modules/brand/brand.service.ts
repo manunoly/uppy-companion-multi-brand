@@ -1,5 +1,6 @@
 import { getS3Client } from '../../lib/aws/s3Client.js';
-import type { Brand, CompanionBrandConfig } from './brand.contract.js';
+import { loadBrandSecrets } from '../../lib/secrets.js';
+import type { Brand, CompanionBrandConfig, CompanionS3Config } from './brand.contract.js';
 import { companionBrandConfigSchema } from './brand.schema.js';
 import { resolveEffectiveAuth } from './identity.js';
 import { getBaseBrandConfig, getServableSlugs } from './registry.js';
@@ -11,10 +12,12 @@ import type { BrandSlug } from './slugs.js';
  * coexisted with the legacy CSV/JSON-based `brand.service.ts` until every
  * consumer — `server.ts`/`config/env.ts` in particular — moved onto it).
  *
- * Secrets are loaded from plain env vars here (a stub): Fase 6 replaces this
- * with `loadBrandSecrets(slug)` (`SECRETS_SOURCE=env|aws`). The shape of
- * `ResolveBrandOptions`/the env-var naming below is deliberately close to
- * that future loader so the Fase 6 swap is a small diff.
+ * Secrets (S3 credentials + OAuth provider keys) are loaded via
+ * `loadBrandSecrets(slug)` (Fase 6, `src/lib/secrets.ts`), which picks
+ * between the `env` (Railway service vars, default) and `aws` (Secrets
+ * Manager) sources per `SECRETS_SOURCE` and fails fast if a servable brand
+ * ends up without a usable S3 bucket/region (and, under the `env` source,
+ * without S3 credentials — see `finalizeBrandSecrets` in `secrets.ts`).
  */
 export interface ResolveBrandOptions {
     /** Global Companion secret (COMPANION_SECRET) — one value shared by every brand. */
@@ -23,28 +26,11 @@ export interface ResolveBrandOptions {
     env?: NodeJS.ProcessEnv;
 }
 
-function envPrefix(slug: BrandSlug): string {
-    return slug.toUpperCase().replace(/-/g, '_');
-}
-
-/**
- * Stub S3 credential loader: per-brand env vars (`<SLUG>_AWS_ACCESS_KEY_ID` /
- * `_AWS_SECRET_ACCESS_KEY`) falling back to the global `AWS_*` pair — mirrors
- * the legacy `brand.service.ts` fallback chain. Fase 6 (`loadBrandSecrets`)
- * replaces this with a `SECRETS_SOURCE=env|aws` abstraction.
- */
-function readStubS3Secrets(slug: BrandSlug, env: NodeJS.ProcessEnv): { accessKey?: string; secretKey?: string } {
-    const prefix = envPrefix(slug);
-    return {
-        accessKey: env[`${prefix}_AWS_ACCESS_KEY_ID`] ?? env.AWS_ACCESS_KEY_ID,
-        secretKey: env[`${prefix}_AWS_SECRET_ACCESS_KEY`] ?? env.AWS_SECRET_ACCESS_KEY,
-    };
-}
-
 /**
  * Resolves one servable brand: base registry config -> `<SLUG>_BRAND_OVERRIDE`
- * (`identity.ts`, auth fields only) -> S3 credentials from env (stub) ->
- * fully-formed `Brand` with an initialized `S3Client`.
+ * (`identity.ts`, auth fields only) -> S3 credentials + OAuth provider
+ * secrets (`loadBrandSecrets`) -> fully-formed `Brand` with an initialized
+ * `S3Client`.
  */
 export function resolveBrand(slug: BrandSlug, options: ResolveBrandOptions = {}): Brand {
     const env = options.env ?? process.env;
@@ -54,22 +40,29 @@ export function resolveBrand(slug: BrandSlug, options: ResolveBrandOptions = {})
     companionBrandConfigSchema.parse(base);
 
     const auth = resolveEffectiveAuth(base);
-    const stubSecrets = readStubS3Secrets(slug, env);
-    const s3 = {
-        bucket: base.s3.bucket,
-        region: base.s3.region,
-        accessKey: base.s3.accessKey ?? stubSecrets.accessKey,
-        secretKey: base.s3.secretKey ?? stubSecrets.secretKey,
-        useAccelerateEndpoint: base.s3.useAccelerateEndpoint,
+    const { s3: loadedS3, providers } = loadBrandSecrets(slug, { env });
+
+    // `loadBrandSecrets` guarantees bucket/region are set (it throws otherwise — see
+    // `finalizeBrandSecrets`), but `BrandS3Secrets` types them as optional since the
+    // `aws`-source raw payload doesn't. Narrow explicitly rather than widening the
+    // shared type or asserting with `!`.
+    if (!loadedS3.bucket || !loadedS3.region) {
+        throw new Error(`[brand] loadBrandSecrets returned no bucket/region for "${slug}" — this should be unreachable`);
+    }
+    const s3: CompanionS3Config = {
+        bucket: loadedS3.bucket,
+        region: loadedS3.region,
+        accessKey: loadedS3.accessKey,
+        secretKey: loadedS3.secretKey,
+        useAccelerateEndpoint: loadedS3.useAccelerateEndpoint,
     };
 
-    const client = s3.region
-        ? getS3Client({ regionParam: s3.region, accessKeyIdParam: s3.accessKey, secretAccessKeyParam: s3.secretKey })
-        : undefined;
+    const client = getS3Client({ regionParam: s3.region, accessKeyIdParam: s3.accessKey, secretAccessKeyParam: s3.secretKey });
 
     return {
         ...base,
         auth,
+        providers,
         secret: options.secret ?? env.COMPANION_SECRET ?? base.secret,
         s3: { ...s3, client },
     };

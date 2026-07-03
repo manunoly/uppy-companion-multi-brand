@@ -11,5 +11,6 @@ export const makeValidEnv = (overrides: Partial<EnvConfig> = {}): EnvConfig => (
     filePath: '/tmp/',
     rateLimitWindowMs: 60_000,
     rateLimitMax: 300,
+    secretsSource: 'env',
     ...overrides,
 });
