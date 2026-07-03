@@ -2,7 +2,7 @@ import type { Response, NextFunction } from 'express';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { AppRequest } from '../../core/types/express.js';
-import type { Brand } from '../brand/brand.types.js';
+import type { Brand, EdoUploadPlugin } from '../brand/brand.types.js';
 import { fetchFolders } from '../folders/folders.service.js';
 import { logger } from '../../lib/logger.js';
 const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Z]:)/, '$1');
@@ -52,17 +52,24 @@ export const safeJsonForHtmlScript = (data: unknown): string => {
  * Gets the list of enabled plugins based on brand configuration.
  * Prefers the typed `upload.plugins` list (D2/7.1 — replaces the legacy
  * CSV `enabledPlugins`), falls back to provider detection.
+ *
+ * Hallazgo BAJO-3: the fallback derivation must ONLY ever emit names from the
+ * typed `EdoUploadPlugin` allowlist. `companion.factory.ts`'s
+ * `PLUGIN_PROVIDER_KEY` only wires OAuth for Facebook/Dropbox/
+ * GoogleDrivePicker/GooglePhotosPicker/Url — `CompanionProviders` still
+ * declares instagram/onedrive/box/unsplash/zoom for structural completeness,
+ * but no `EdoUploadPlugin` maps to them. Emitting one of those names here
+ * would render a Dashboard tab in uppyModal.ts with no working OAuth backend
+ * behind it (a client-breaking bug, not just noise).
  */
-const getEnabledPlugins = (brand: Brand): string[] => {
+export const getEnabledPlugins = (brand: Brand): EdoUploadPlugin[] => {
     if (brand.upload.plugins.length > 0) {
         return [...brand.upload.plugins];
     }
 
-    // Fallback: detect plugins from configured providers
-    const plugins: string[] = [];
-
-    // URL plugin is always available
-    plugins.push('Url');
+    // Fallback: detect plugins from configured providers, restricted to the
+    // EdoUploadPlugin allowlist.
+    const plugins: EdoUploadPlugin[] = ['Url'];
 
     if (brand.providers.google) {
         plugins.push('GoogleDrivePicker');
@@ -75,23 +82,6 @@ const getEnabledPlugins = (brand: Brand): string[] => {
 
     if (brand.providers.facebook) {
         plugins.push('Facebook');
-        plugins.push('Instagram');
-    }
-
-    if (brand.providers.onedrive) {
-        plugins.push('OneDrive');
-    }
-
-    if (brand.providers.box) {
-        plugins.push('Box');
-    }
-
-    if (brand.providers.unsplash) {
-        plugins.push('Unsplash');
-    }
-
-    if (brand.providers.zoom) {
-        plugins.push('Zoom');
     }
 
     return plugins;
@@ -249,7 +239,15 @@ export const serveUppyPage = async (
         html = html.replace(/BRAND_LOGO_URL_VALUE/g, toJsStringLiteral(''));
         html = html.replace(/BRAND_USER_ENDPOINT_VALUE/g, toJsStringLiteral(brand.auth.whoamiUrl));
         html = html.replace(/COMPANION_URL_VALUE/g, toJsStringLiteral(brand.companionUrl));
-        html = html.replace(/SERVER_URL_VALUE/g, toJsStringLiteral(`/${brand.slug}`));
+        // Fase 5.1 retires the per-brand `/{slug}/...` mount path: this
+        // Companion instance now serves the uppy page, the custom
+        // `/api/uppy/*` API, AND the OAuth callbacks from the SAME origin
+        // (brand.companionUrl), so SERVER_URL and COMPANION_URL are the same
+        // value. Deliberately NOT '' (relative) — uppyModal.ts's own default
+        // fallback is `SERVER_URL_VALUE || 'http://localhost:3000'`, and an
+        // empty string is falsy in JS, which would silently resurrect that
+        // unrelated dev fallback instead of the intended same-origin base.
+        html = html.replace(/SERVER_URL_VALUE/g, toJsStringLiteral(brand.companionUrl));
         // `public.backendUrl`/`public.uploadUrl` are retired legacy fields
         // (D2) — there is no abeduls3-aligned replacement yet for "where to
         // notify the brand backend of a completed upload". Stubbed empty; the

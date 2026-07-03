@@ -164,6 +164,26 @@ describe('server integration', () => {
         expect(res.text.toLowerCase()).toContain('<!doctype html>');
     });
 
+    it('GET /uppy page points the client at the brand companionUrl, not a retired /{slug}/ path prefix', async () => {
+        (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+            new Response(
+                JSON.stringify({ id: 'u123', email: 'test@example.com', name: 'Test User', imageUrl: null }),
+                { status: 200 },
+            ),
+        );
+        const { app } = await createTestApp({
+            brands: [makeBrand({ slug: 'edo', companionUrl: 'https://companion.example.com' })],
+        });
+        const res = await request(app).get('/uppy').set('Host', EDO_HOST).set('Cookie', 'session=valid-session-token');
+        expect(res.status).toBe(200);
+        // uppyModal.ts does `fetch(`${SERVER_URL}/api/uppy/sign-s3`, ...)` — a
+        // literal '/edo' (the old per-brand mount path, Fase 5.1 retires it)
+        // would 404 under Host-based routing since the server no longer
+        // mounts anything under that prefix.
+        expect(res.text).not.toContain("'/edo'");
+        expect(res.text).toContain("'https://companion.example.com'");
+    });
+
     it('GET /uppy on an unrecognized Host → 404 (never falls back to a default brand)', async () => {
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app).get('/uppy').set('Host', 'evil.example.com');

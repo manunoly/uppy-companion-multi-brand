@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { toJsStringLiteral, safeJsonForHtmlScript, safePath } from './uppy.routes.js';
+import { toJsStringLiteral, safeJsonForHtmlScript, safePath, getEnabledPlugins } from './uppy.routes.js';
+import { makeBrand } from '../../test-utils/fixtures.js';
 
 describe('toJsStringLiteral', () => {
     it('wraps plain text in single quotes', () => {
@@ -104,5 +105,44 @@ describe('safePath', () => {
 
     it('falls back to "/" for path that does not start with /', () => {
         expect(safePath('foo')).toBe('/');
+    });
+});
+
+// Hallazgo BAJO-3: getEnabledPlugins must only ever emit plugin names from the
+// typed EdoUploadPlugin allowlist. companion.factory.ts's PLUGIN_PROVIDER_KEY
+// only wires OAuth for Facebook/Dropbox/GoogleDrivePicker/GooglePhotosPicker/
+// Url — emitting an out-of-allowlist name (Instagram/OneDrive/Box/Unsplash/
+// Zoom) would render a Dashboard tab in uppyModal.ts with no working backend
+// behind it, breaking the client.
+describe('getEnabledPlugins (BAJO-3: typed EdoUploadPlugin allowlist)', () => {
+    it('returns brand.upload.plugins verbatim when non-empty', () => {
+        const brand = makeBrand({ upload: { plugins: ['Facebook', 'Url'], system: 'x', systemDetails: 'y' } });
+        expect(getEnabledPlugins(brand)).toEqual(['Facebook', 'Url']);
+    });
+
+    it('never derives an out-of-allowlist plugin, even when legacy providers are configured', () => {
+        const brand = makeBrand({
+            upload: { plugins: [], system: 'x', systemDetails: 'y' },
+            providers: {
+                facebook: { key: 'k', secret: 's' },
+                dropbox: { key: 'k', secret: 's' },
+                google: { clientId: 'c' },
+                instagram: { key: 'k', secret: 's' },
+                onedrive: { key: 'k', secret: 's' },
+                box: { key: 'k', secret: 's' },
+                unsplash: { key: 'k', secret: 's' },
+                zoom: { key: 'k', secret: 's' },
+            },
+        });
+        const plugins = getEnabledPlugins(brand);
+        expect(plugins).toEqual(expect.arrayContaining(['Url', 'Facebook', 'Dropbox', 'GoogleDrivePicker', 'GooglePhotosPicker']));
+        for (const forbidden of ['Instagram', 'OneDrive', 'Box', 'Unsplash', 'Zoom']) {
+            expect(plugins).not.toContain(forbidden);
+        }
+    });
+
+    it('falls back to just Url when upload.plugins is empty and no providers are configured', () => {
+        const brand = makeBrand({ upload: { plugins: [], system: 'x', systemDetails: 'y' }, providers: {} });
+        expect(getEnabledPlugins(brand)).toEqual(['Url']);
     });
 });
