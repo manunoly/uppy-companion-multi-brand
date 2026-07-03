@@ -48,6 +48,18 @@ export const envSchema = z.object({
     // abuse of the (network-bound) whoami/S3-signing endpoints.
     rateLimitWindowMs: z.number().int().positive().default(60_000),
     rateLimitMax: z.number().int().positive().default(300),
+
+    // Global per-IP rate limit (MEDIO-1, security review 2026-07-02): mounted
+    // BEFORE express-session/attachUser so it bounds the whoami-fetch DoS
+    // surface for EVERY brand route (incl. `/`, OAuth, `/s3`) and `/api/brands`,
+    // not just `/uppy`/`/api/*` (which the per-brand+user limiter above already
+    // covers, but only after attachUser has already paid the whoami-fetch cost).
+    // Deliberately more generous than the per-route limit above since it's a
+    // coarse first line of defense shared across every path, not a
+    // per-endpoint budget — `/api/healthz`/`/api/readyz` are exempted via
+    // `skip` (see server.ts#buildGlobalRateLimiter), not by being cheaper.
+    rateLimitGlobalWindowMs: z.number().int().positive().default(60_000),
+    rateLimitGlobalMax: z.number().int().positive().default(600),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

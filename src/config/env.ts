@@ -29,6 +29,8 @@ const deriveEnv = (): EnvConfig => {
     const redisUrl = process.env.REDIS_URL;
     const rateLimitWindowMs = coerceNumber(process.env.RATE_LIMIT_WINDOW_MS, 60_000);
     const rateLimitMax = coerceNumber(process.env.RATE_LIMIT_MAX, 300);
+    const rateLimitGlobalWindowMs = coerceNumber(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS, 60_000);
+    const rateLimitGlobalMax = coerceNumber(process.env.RATE_LIMIT_GLOBAL_MAX, 600);
     // Tolerant/never-throws normalization, mirroring `lib/secrets.ts#resolveSecretsSource`
     // (duplicated on purpose — that module reads raw `process.env` per-call at brand
     // resolution time; this is the one-time, brand-independent boot-time value).
@@ -45,6 +47,8 @@ const deriveEnv = (): EnvConfig => {
         redisUrl,
         rateLimitWindowMs,
         rateLimitMax,
+        rateLimitGlobalWindowMs,
+        rateLimitGlobalMax,
         secretsSource,
     });
 };

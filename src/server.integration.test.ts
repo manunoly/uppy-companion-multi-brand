@@ -318,16 +318,32 @@ describe('server integration', () => {
             expect(buildSessionStore()).toBeInstanceOf(RedisStore);
         });
 
-        it('sets a single static session cookie (companion.sid) with Path=/', async () => {
+        it('is configured with the single static cookie name/path (companion.sid, Path=/)', async () => {
+            const { buildSessionOptions } = await import('./server.js');
+            const options = buildSessionOptions(makeValidEnv());
+            expect(options.name).toBe('companion.sid');
+            expect(options.cookie?.path).toBe('/');
+        });
+
+        // Security review MEDIO-2: previously `saveUninitialized: true`, which
+        // made express-session persist (and Set-Cookie) a brand-new EMPTY
+        // session on every anonymous request, regardless of whether anything
+        // ever touched `req.session` — letting an attacker fill Redis with
+        // garbage sessions 1:1 with request volume, no valid cookie or auth
+        // needed. `serveUppyPage` never touches `req.session`, so a bare
+        // unauthenticated `/uppy` request must no longer persist/Set-Cookie
+        // a session at all.
+        it('does NOT set a session cookie on a bare /uppy request that never touches req.session (MEDIO-2)', async () => {
+            const { buildSessionOptions } = await import('./server.js');
+            expect(buildSessionOptions(makeValidEnv()).saveUninitialized).toBe(false);
+
             const { app } = await createTestApp({
                 brands: [makeBrand({ slug: 'edo', auth: { signInUrl: '' } })],
             });
             const res = await request(app).get('/uppy').set('Host', EDO_HOST);
             const setCookie = res.headers['set-cookie'] as unknown as string[] | undefined;
-            expect(setCookie).toBeDefined();
             const sessionCookie = setCookie?.find((c) => c.startsWith('companion.sid='));
-            expect(sessionCookie).toBeDefined();
-            expect(sessionCookie).toMatch(/Path=\//);
+            expect(sessionCookie).toBeUndefined();
         });
     });
 
@@ -361,6 +377,55 @@ describe('server integration', () => {
         });
     });
 
+    // Security review MEDIO-1: attachUser (which triggers a whoami fetch)
+    // runs as global middleware BEFORE the per-route limiter above ever
+    // applies (that one is only mounted on /uppy and /api/*) — a caller with
+    // arbitrary cookies could otherwise drive 1:1 load against the partner's
+    // whoami through ANY brand route. `buildGlobalRateLimiter` closes that by
+    // running ahead of express-session/attachUser, keyed by IP alone.
+    describe('global per-IP rate limiting (MEDIO-1)', () => {
+        it('GET / (falls through to the brand Companion instance) → 429 once the global limit is exceeded', async () => {
+            const env = makeValidEnv({ rateLimitGlobalMax: 2, rateLimitGlobalWindowMs: 60_000 });
+            const { app } = await createTestApp({ env, brands: [makeBrand({ slug: 'edo' })] });
+            const hit = () => request(app).get('/').set('Host', EDO_HOST);
+            await hit();
+            await hit();
+            const last = await hit();
+            expect(last.status).toBe(429);
+        });
+
+        // BAJO-1: /api/brands previously had no rate limit of any kind.
+        it('GET /api/brands → 429 once the global limit is exceeded (BAJO-1)', async () => {
+            const env = makeValidEnv({ rateLimitGlobalMax: 2, rateLimitGlobalWindowMs: 60_000 });
+            const { app } = await createTestApp({ env, brands: [makeBrand({ slug: 'edo' })] });
+            const hit = () => request(app).get('/api/brands');
+            await hit();
+            await hit();
+            const last = await hit();
+            expect(last.status).toBe(429);
+        });
+
+        it('GET /api/healthz is exempt from the global limit (orchestrator polls it continuously)', async () => {
+            const env = makeValidEnv({ rateLimitGlobalMax: 2, rateLimitGlobalWindowMs: 60_000 });
+            const { app } = await createTestApp({ env, brands: [makeBrand({ slug: 'edo' })] });
+            let last = { status: 0 };
+            for (let i = 0; i < 5; i++) {
+                last = await request(app).get('/api/healthz');
+            }
+            expect(last.status).toBe(200);
+        });
+
+        it('GET /api/readyz is exempt from the global limit (orchestrator polls it continuously)', async () => {
+            const env = makeValidEnv({ rateLimitGlobalMax: 2, rateLimitGlobalWindowMs: 60_000 });
+            const { app } = await createTestApp({ env, brands: [makeBrand({ slug: 'edo' })] });
+            let last = { status: 0 };
+            for (let i = 0; i < 5; i++) {
+                last = await request(app).get('/api/readyz');
+            }
+            expect(last.status).toBe(200);
+        });
+    });
+
     // Fase 5.2: helmet CSP with a per-request nonce — uppy.html's inline
     // <script type="module"> (Fase 5.4) needs 'nonce-<x>' since 'self' alone
     // does not cover it, and 'unsafe-inline' would defeat the CSP entirely.
@@ -385,6 +450,53 @@ describe('server integration', () => {
             expect(nonce1).toBeTruthy();
             expect(nonce2).toBeTruthy();
             expect(nonce1).not.toBe(nonce2);
+        });
+    });
+
+    // Security review MEDIO-3: helmet's un-derived defaults would block the
+    // direct-to-S3 upload (connect-src falls back to 'self'), the designer
+    // <iframe> embed of /uppy (frame-ancestors falls back to 'self'), and the
+    // Google Picker. The CSP header is now derived per-request from the
+    // resolved brand (core/csp.ts) — resolved from the Host header, so it
+    // applies even before req.brand is attached by the later middleware.
+    describe('CSP per-brand directives (MEDIO-3)', () => {
+        it('connect-src includes the brand S3 bucket host', async () => {
+            const { app } = await createTestApp({
+                brands: [makeBrand({
+                    slug: 'edo',
+                    s3: { bucket: 'entourage-uploads', region: 'us-east-1' },
+                })],
+            });
+            const res = await request(app).get('/uppy').set('Host', EDO_HOST);
+            const csp = res.headers['content-security-policy'];
+            expect(csp).toMatch(/connect-src[^;]*https:\/\/entourage-uploads\.s3\.us-east-1\.amazonaws\.com/);
+        });
+
+        it("frame-ancestors includes the brand's designer domain(s)", async () => {
+            const { app } = await createTestApp({
+                brands: [makeBrand({
+                    slug: 'edo',
+                    domains: ['linkdesigner.entourageyearbooks.com'],
+                })],
+            });
+            const res = await request(app).get('/uppy').set('Host', EDO_HOST);
+            const csp = res.headers['content-security-policy'];
+            expect(csp).toMatch(/frame-ancestors[^;]*https:\/\/linkdesigner\.entourageyearbooks\.com/);
+        });
+
+        it('img-src allows blob: (Uppy thumbnail previews)', async () => {
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res = await request(app).get('/uppy').set('Host', EDO_HOST);
+            const csp = res.headers['content-security-policy'];
+            expect(csp).toMatch(/img-src[^;]*blob:/);
+        });
+
+        it('falls back to the safe minimal defaults for a request that resolves no brand', async () => {
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res = await request(app).get('/api/healthz');
+            const csp = res.headers['content-security-policy'];
+            expect(csp).toMatch(/connect-src 'self'/);
+            expect(csp).toMatch(/frame-ancestors 'self'/);
         });
     });
 });
