@@ -106,6 +106,17 @@ const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\
  * of `companionUrl` (the source of truth for the public origin, D4/D9), so a
  * forged `state` param can never redirect the OAuth callback to an
  * arbitrary attacker-controlled host.
+ *
+ * Security review BAJO-2: Companion's own `hasMatch` (server/helpers/
+ * utils.js) does `value === i || new RegExp(i).test(value)` — UNANCHORED,
+ * and with no escaping of its own. Handing it a plain hostname like
+ * `companion.example.com` lets the unescaped `.` match ANY character, and
+ * being unanchored, lets the pattern match as a mere SUBSTRING of a longer,
+ * attacker-influenced `handlerHostName` (e.g.
+ * `evil-companion.example.com.attacker.test` would satisfy an unanchored
+ * `new RegExp('companion.example.com').test(...)`). Every entry is anchored
+ * (`^...$`) and regex-escaped here so `hasMatch` can only ever match the
+ * EXACT host — same allowlist, strictly narrower matching.
  */
 const buildValidHosts = (brand: Brand): string[] => {
     const hosts = new Set<string>(brand.companionHosts);
@@ -114,7 +125,7 @@ const buildValidHosts = (brand: Brand): string[] => {
     } catch {
         // Malformed companionUrl is already logged by parseCompanionUrl.
     }
-    return Array.from(hosts);
+    return Array.from(hosts, (host) => `^${escapeRegExp(host)}$`);
 };
 
 /**

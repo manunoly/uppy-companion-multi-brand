@@ -39,6 +39,13 @@ describe('buildCompanionOptions — SSRF hardening (D9)', () => {
         expect(matchesAny('https://evil.example.com/steal')).toBe(false);
     });
 
+    // Companion consumes `validHosts` via its own `hasMatch(value, criteria)`
+    // (`value === i || new RegExp(i).test(value)`) — these tests exercise
+    // that exact consumption pattern rather than asserting on the raw
+    // (now anchored/escaped, BAJO-2) pattern strings themselves.
+    const matchesHost = (validHosts: string[] | undefined, host: string): boolean =>
+        (validHosts ?? []).some((pattern) => pattern === host || new RegExp(pattern).test(host));
+
     it('server.validHosts is present and derived from companionUrl + companionHosts (H7)', () => {
         const brand = makeBrand({
             companionUrl: 'https://companion.entourageyearbooks.com',
@@ -46,9 +53,8 @@ describe('buildCompanionOptions — SSRF hardening (D9)', () => {
         });
         const options = buildCompanionOptions(brand, { protocol: 'https' });
 
-        expect(options.server.validHosts).toEqual(
-            expect.arrayContaining(['companion.entourageyearbooks.com', 'companion.stage.entourageyearbooks.com']),
-        );
+        expect(matchesHost(options.server.validHosts, 'companion.entourageyearbooks.com')).toBe(true);
+        expect(matchesHost(options.server.validHosts, 'companion.stage.entourageyearbooks.com')).toBe(true);
     });
 
     it('validHosts does not include arbitrary/unrelated hosts (redirect_uri allowlist, H7)', () => {
@@ -58,6 +64,7 @@ describe('buildCompanionOptions — SSRF hardening (D9)', () => {
         });
         const options = buildCompanionOptions(brand, { protocol: 'https' });
         expect(options.server.validHosts).not.toContain('evil.example.com');
+        expect(matchesHost(options.server.validHosts, 'evil.example.com')).toBe(false);
     });
 
     it('validHosts still includes the companionUrl host even if absent from companionHosts', () => {
@@ -66,7 +73,30 @@ describe('buildCompanionOptions — SSRF hardening (D9)', () => {
             companionHosts: ['companion.entourageyearbooks.com'],
         });
         const options = buildCompanionOptions(brand, { protocol: 'https' });
-        expect(options.server.validHosts).toContain('companion.other.example.com');
+        expect(matchesHost(options.server.validHosts, 'companion.other.example.com')).toBe(true);
+    });
+
+    // Security review BAJO-2: Companion's own `hasMatch` treats every
+    // `validHosts` entry as an UNANCHORED regex with no escaping of its own.
+    // A raw hostname like `companion.entourageyearbooks.com` would let the
+    // unescaped `.` match ANY character and, being unanchored, match as a
+    // mere substring of a longer attacker-influenced host. Anchoring +
+    // escaping (companion.factory.ts#buildValidHosts) closes that without
+    // narrowing what's legitimately allowed.
+    it('validHosts entries are anchored/escaped so an attacker cannot satisfy them with a superstring/wildcard-dot host (BAJO-2)', () => {
+        const brand = makeBrand({
+            companionUrl: 'https://companion.entourageyearbooks.com',
+            companionHosts: ['companion.entourageyearbooks.com'],
+        });
+        const options = buildCompanionOptions(brand, { protocol: 'https' });
+
+        // The legitimate host still matches.
+        expect(matchesHost(options.server.validHosts, 'companion.entourageyearbooks.com')).toBe(true);
+        // A host that merely CONTAINS the legit host as a substring must not.
+        expect(matchesHost(options.server.validHosts, 'evil-companion.entourageyearbooks.com.attacker.test')).toBe(false);
+        // If '.' were left unescaped (matching ANY character), this would
+        // wrongly match too.
+        expect(matchesHost(options.server.validHosts, 'companionXentourageyearbooksXcom')).toBe(false);
     });
 
     describe('provider mapping from brand.upload.plugins (EdoUploadPlugin)', () => {
