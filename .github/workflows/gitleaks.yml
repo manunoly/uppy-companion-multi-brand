@@ -1,0 +1,23 @@
+name: gitleaks
+
+on:
+    push:
+        branches:
+            - '**'
+    pull_request:
+        branches:
+            - main
+
+jobs:
+    scan:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: gitleaks/gitleaks-action@v2
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  # Only required for private repositories; unused/no-op on public repos.
+                  # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
