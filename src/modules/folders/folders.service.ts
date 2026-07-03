@@ -1,4 +1,5 @@
 import type { Brand } from '../brand/brand.types.js';
+import { buildCookieHeader } from '../brand/identity.js';
 import type { Folder, FoldersResponse } from './folders.types.js';
 import { logger } from '../../lib/logger.js';
 
@@ -26,11 +27,22 @@ export const fetchFolders = async (
         return [];
     }
 
+    // Hallazgo BAJO-1: build the outgoing Cookie header through
+    // buildCookieHeader (identity.ts) — the single auditable point where a
+    // brand cookie is forwarded — instead of raw template-string
+    // interpolation. A delimiter/control-character-bearing token (`;`,
+    // CR/LF, ...) returns null here rather than silently producing a
+    // malformed/injectable header.
+    const cookie = buildCookieHeader(brand.auth.sessionCookieName, token);
+    if (!cookie) {
+        return [];
+    }
+
     try {
         const response = await fetch(foldersUrl, {
             method: 'GET',
             headers: {
-                'Cookie': `${brand.auth.sessionCookieName}=${token}`,
+                'Cookie': cookie,
             },
             signal: AbortSignal.timeout(5000),
         });

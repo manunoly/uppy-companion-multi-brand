@@ -74,6 +74,29 @@ describe('fetchFolders', () => {
         expect(call[1]?.headers?.Cookie).toBe('session=cookietok');
     });
 
+    // Hallazgo BAJO-1: the outgoing Cookie header must be built through
+    // buildCookieHeader (identity.ts) — the single auditable point where a
+    // brand cookie is forwarded — instead of raw template-string
+    // interpolation, so a delimiter/control-character-bearing token can never
+    // inject an extra `name=value` pair into the outgoing header.
+    it('returns [] and never calls fetch when the cookie token is malformed (delimiter char)', async () => {
+        const folders = await fetchFolders('bad;value', makeBrand());
+        expect(folders).toEqual([]);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('returns [] and never calls fetch when the cookie token contains a control character (CRLF)', async () => {
+        const folders = await fetchFolders('bad\r\nvalue', makeBrand());
+        expect(folders).toEqual([]);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('returns [] and never calls fetch when the cookie token is empty', async () => {
+        const folders = await fetchFolders('', makeBrand());
+        expect(folders).toEqual([]);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
     it('fetches the configured absolute foldersUrl as-is', async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
             ok: true,
