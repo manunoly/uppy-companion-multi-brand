@@ -456,4 +456,49 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             expect(res.status).toBe(200);
         });
     });
+
+    // MEDIO-1 (security audit): attachUser (global) and requireAuth (mounted
+    // on apiRouter) previously each called resolveSession independently
+    // whenever the session wasn't `authenticated` — 2 whoami fetches for a
+    // single inbound request. attachUser now stashes the full result on
+    // req.sessionResult and requireAuth reuses it, so exactly ONE fetch call
+    // should reach the partner's whoami endpoint per request, regardless of
+    // outcome.
+    describe('MEDIO-1: attachUser + requireAuth resolve the session at most once per request', () => {
+        it('cookie rejected by whoami (401 unauthenticated) → single fetch call, endpoint responds 401', async () => {
+            (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(new Response(null, { status: 401 }));
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res = await request(app)
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
+                .set('Cookie', 'session=bad-token')
+                .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
+            expect(res.status).toBe(401);
+            expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+        });
+
+        it('whoami partner down (5xx, unavailable) → single fetch call, endpoint responds 503', async () => {
+            (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(new Response('boom', { status: 500 }));
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res = await request(app)
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
+                .set('Cookie', 'session=tok')
+                .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
+            expect(res.status).toBe(503);
+            expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+        });
+
+        it('authenticated session → single fetch call, endpoint responds 200', async () => {
+            setupAuthOk();
+            const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+            const res = await request(app)
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
+                .set('Cookie', 'session=tok')
+                .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
+            expect(res.status).toBe(200);
+            expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+        });
+    });
 });
