@@ -30,6 +30,22 @@ import type { BrandSlug } from '../brand/slugs.js';
  *    (by returning `false`, i.e. "not open, go ahead") — every other concurrent
  *    caller keeps observing `isOpen() === true` until the prober reports back
  *    via `recordSuccess`/`recordFailure`.
+ *
+ * KNOWN LIMITATION (security audit BAJO-3): `recordFailure` below does its
+ * `INCR` and its `SET open` as two separate Redis round-trips, not one atomic
+ * operation. If a concurrent `recordSuccess` for the same slug lands in the
+ * window between those two commands, it can `DEL` the failures/open/probe
+ * keys AFTER the `INCR` already pushed the count to the threshold but BEFORE
+ * (or racing) the `SET open` — the net effect is the circuit can spuriously
+ * flip back open right as it was being closed, for at most one
+ * `OPEN_DURATION_MS` (30s) window. Impact is transitory and self-heals on the
+ * next successful call; it does not affect correctness of individual auth
+ * decisions (fail-closed still holds — see session-resolver.ts's ordering).
+ * The robust fix is a single atomic Lua/MULTI script for INCR+conditional-SET,
+ * but `ioredis-mock` (used by whoami-breaker.test.ts) does not execute Lua,
+ * so that fix is deferred rather than implemented against a mocked Redis.
+ * TODO(Fase 8.9): atomize INCR+open with Lua/MULTI once CI runs against a
+ * real Redis (testcontainers).
  */
 
 const FAILURE_THRESHOLD = 3;
@@ -62,12 +78,21 @@ export async function recordSuccess(slug: BrandSlug): Promise<void> {
 }
 
 /**
- * Atomically increments the failure counter; at `FAILURE_THRESHOLD` (3),
- * (re)opens the circuit by stamping the current time. Called again while
- * already open (e.g. a failed half-open probe) immediately re-stamps the open
- * timestamp, restarting the cooldown — a probe failure does not need to wait
- * for the counter to reach the threshold again as long as the failure window
- * hasn't expired.
+ * Increments the failure counter (the `INCR` itself is atomic); at
+ * `FAILURE_THRESHOLD` (3), (re)opens the circuit by stamping the current
+ * time. Called again while already open (e.g. a failed half-open probe)
+ * immediately re-stamps the open timestamp, restarting the cooldown — a
+ * probe failure does not need to wait for the counter to reach the threshold
+ * again as long as the failure window hasn't expired.
+ *
+ * BAJO-3 (known limitation, not fixed here): the `INCR` and the `SET open`
+ * below are two separate commands, not one atomic transaction. A concurrent
+ * `recordSuccess` for the same slug landing between them can clear the
+ * breaker state right as this call is opening it, spuriously re-closing the
+ * circuit for up to `OPEN_DURATION_MS`. See the module doc comment above for
+ * the full rationale on why this isn't atomized yet.
+ * TODO(Fase 8.9): atomize INCR+open with Lua/MULTI when CI has a real Redis
+ * (testcontainers) — ioredis-mock doesn't execute Lua scripts.
  */
 export async function recordFailure(slug: BrandSlug): Promise<void> {
     const client = redis();
