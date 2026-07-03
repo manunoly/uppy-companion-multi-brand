@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fetchFolders } from './folders.service.js';
 import { makeBrand } from '../../test-utils/fixtures.js';
+import { logger } from '../../lib/logger.js';
 
 describe('fetchFolders', () => {
     beforeEach(() => {
@@ -95,6 +96,20 @@ describe('fetchFolders', () => {
         const folders = await fetchFolders('', makeBrand());
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    // A present-but-rejected token is anomalous and logged at debug for
+    // diagnosability; the ordinary "no token" case stays silent (no noise).
+    it('logs a debug line when a non-empty token is rejected by buildCookieHeader', async () => {
+        const debugSpy = vi.spyOn(logger, 'debug');
+        await fetchFolders('bad;value', makeBrand());
+        expect(debugSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT log when the token is empty (no session ≠ malformed cookie)', async () => {
+        const debugSpy = vi.spyOn(logger, 'debug');
+        await fetchFolders('', makeBrand());
+        expect(debugSpy).not.toHaveBeenCalled();
     });
 
     it('fetches the configured absolute foldersUrl as-is', async () => {

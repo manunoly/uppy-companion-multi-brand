@@ -15,6 +15,12 @@ describe('buildUserKeyPrefix', () => {
         expect(buildUserKeyPrefix(brand, user)).toBe('brands/abe/original/cuidXYZ/');
     });
 
+    it('normalizes a non-empty s3Prefix missing its trailing slash (no "brands/abeoriginal/...")', () => {
+        const brand = makeBrand({ slug: 'abe', assets: { s3Prefix: 'brands/abe' } });
+        const user = makeUser({ id: 'cuidXYZ' });
+        expect(buildUserKeyPrefix(brand, user)).toBe('brands/abe/original/cuidXYZ/');
+    });
+
     it('throws when user.id is missing', () => {
         const brand = makeBrand();
         const user = makeUser({ id: undefined as unknown as string });

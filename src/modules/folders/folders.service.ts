@@ -4,10 +4,12 @@ import type { Folder, FoldersResponse } from './folders.types.js';
 import { logger } from '../../lib/logger.js';
 
 /**
- * Fetches user folders from the brand's folders endpoint (SA3: conserved,
- * degrades to `[]` + a warn log on any failure — the designer doesn't
- * currently consume this, but it's kept in case Dropbox/GoogleDrivePicker
- * get enabled for a brand).
+ * Fetches user folders from the brand's folders endpoint (SA3: conserved —
+ * the designer doesn't currently consume this, but it's kept in case
+ * Dropbox/GoogleDrivePicker get enabled for a brand). Every path degrades to
+ * `[]`; the config/precondition paths return silently — no configured
+ * `foldersUrl` is expected, a non-empty token rejected by `buildCookieHeader`
+ * is logged at debug — while a fetch that throws or returns non-ok logs a warn.
  *
  * `brand.public.foldersUrl` (D2) is expected to be a full absolute URL —
  * unlike the legacy contract, there is no `public.backendUrl` to resolve a
@@ -35,6 +37,12 @@ export const fetchFolders = async (
     // malformed/injectable header.
     const cookie = buildCookieHeader(brand.auth.sessionCookieName, token);
     if (!cookie) {
+        // A present-but-rejected token (delimiter/control char) is anomalous — a
+        // well-formed session cookie never contains those — so surface it at
+        // debug for diagnosability, without logging the ordinary "no token" case.
+        if (token) {
+            logger.debug({ brand: brand.slug }, '[folders] Session cookie token rejected by buildCookieHeader');
+        }
         return [];
     }
 

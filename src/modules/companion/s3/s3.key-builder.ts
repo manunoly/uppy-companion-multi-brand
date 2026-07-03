@@ -28,7 +28,15 @@ export const buildUserKeyPrefix = (brand: Brand, user: BrandUser): string => {
     if (!uid) {
         throw new Error('s3.key-builder: user.id required (canonical id missing)');
     }
-    return `${brand.assets.s3Prefix}original/${uid}/`;
+    // Normalize the (code-only) s3Prefix to be either '' or '/'-terminated so a
+    // future brand config that sets e.g. 'brands/abe' (no trailing slash) can't
+    // silently produce a malformed 'brands/abeoriginal/...' key. This is the
+    // SINGLE source of truth for both key building and the BOLA ownership check
+    // (sendIfKeyNotOwned), so normalizing here keeps them consistent by
+    // construction. edo ('') and abe/picaboo ('brands/.../') are unaffected.
+    const rawPrefix = brand.assets.s3Prefix;
+    const prefix = !rawPrefix || rawPrefix.endsWith('/') ? rawPrefix : `${rawPrefix}/`;
+    return `${prefix}original/${uid}/`;
 };
 
 export interface BuildS3KeyParams {
