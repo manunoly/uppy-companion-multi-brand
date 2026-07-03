@@ -1,5 +1,5 @@
 import { getBaseBrandConfig, getServableSlugs } from './registry.js';
-import { type BrandSlug, isBrandSlug } from './slugs.js';
+import { BRAND_SLUG_VALUES, type BrandSlug, isBrandSlug } from './slugs.js';
 
 /** Lowercases, trims, and strips a trailing `:<port>` from a `Host` header value. */
 export function normalizeHost(host: string | null | undefined): string {
@@ -39,4 +39,34 @@ export function resolveBrandByHost(host?: string | null, options: ResolveBrandBy
         return options.devDefaultSlug;
     }
     return null;
+}
+
+/**
+ * Boot-time guard (Hallazgo BAJO-4). `BRAND_FORCE` always wins in
+ * `resolveBrandByHost` above, but `createBrandRegistry()` (brand.service.ts)
+ * only ever builds a Companion instance for SERVABLE slugs (non-empty
+ * `companionHosts`). Without this check, forcing a registered-but-not-yet-
+ * servable brand (e.g. `abe`/`picaboo` today) — or a typo that isn't a brand
+ * slug at all — would boot "successfully" and then 404 on every single
+ * request forever, with nothing in the logs pointing at `BRAND_FORCE` as the
+ * cause. Call this once at process startup (see `server.ts#createServer`),
+ * never per-request.
+ */
+export function assertBrandForceIsServable(): void {
+    const raw = (process.env.BRAND_FORCE ?? '').trim().toLowerCase();
+    if (!raw) return;
+
+    if (!isBrandSlug(raw)) {
+        throw new Error(
+            `BRAND_FORCE="${raw}" is not a recognized brand slug (expected one of: ${BRAND_SLUG_VALUES.join(', ')})`,
+        );
+    }
+
+    const servable = getServableSlugs();
+    if (!servable.includes(raw)) {
+        throw new Error(
+            `BRAND_FORCE="${raw}" is not a servable brand (companionHosts is empty in the registry). ` +
+            `Servable brands: ${servable.join(', ') || '(none)'}`,
+        );
+    }
 }

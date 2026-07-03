@@ -38,12 +38,18 @@ vi.mock('../../config/index.js', () => ({
 const s3Mock = mockClient(S3Client);
 const getSignedUrlMock = vi.mocked(getSignedUrl);
 
+// Real companionHosts entry for `edo` (modules/brand/registry.ts) — see the
+// note in server.integration.test.ts: Host-based resolution (Fase 5.1) keys
+// off the code-only base registry, not the makeBrand() fixture's own fields.
+const EDO_HOST = 'companion.stage.entourageyearbooks.com';
+
 describe('api.routes integration (cookie auth + S3 mock)', () => {
     beforeEach(async () => {
         s3Mock.reset();
         getSignedUrlMock.mockClear();
         getSignedUrlMock.mockResolvedValue('https://signed.example.com/url');
         vi.stubGlobal('fetch', vi.fn());
+        vi.stubEnv('BRAND_FORCE', '');
         // Every test below authenticates as the same brand+cookie pair, so
         // resolveSession's whoami cache (and the circuit breaker) would
         // otherwise carry state from one test into the next.
@@ -52,6 +58,7 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
     });
     afterEach(() => {
         vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
     });
 
     // A real whoami 200 response shaped for the default test brand's
@@ -68,19 +75,21 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         );
     };
 
-    it('every /edo/api/uppy/* request without a cookie → 401', async () => {
+    it('every /api/uppy/* request without a cookie → 401', async () => {
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .get('/edo/api/uppy/sign-s3')
+            .get('/api/uppy/sign-s3')
+            .set('Host', EDO_HOST)
             .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
         expect(res.status).toBe(401);
     });
 
-    it('GET /edo/api/uppy/sign-s3 with cookie → 200 with signed URL', async () => {
+    it('GET /api/uppy/sign-s3 with cookie → 200 with signed URL', async () => {
         setupAuthOk();
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .get('/edo/api/uppy/sign-s3')
+            .get('/api/uppy/sign-s3')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
         expect(res.status).toBe(200);
@@ -88,12 +97,13 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         expect(res.body.method).toBe('PUT');
     });
 
-    it('POST /edo/api/uppy/s3/multipart → returns key + uploadId', async () => {
+    it('POST /api/uppy/s3/multipart → returns key + uploadId', async () => {
         setupAuthOk();
         s3Mock.on(CreateMultipartUploadCommand).resolves({ Key: 'kk', UploadId: 'up123' });
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .post('/edo/api/uppy/s3/multipart')
+            .post('/api/uppy/s3/multipart')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .send({ filename: 'a.jpg', type: 'image/jpeg' });
         expect(res.status).toBe(200);
@@ -101,38 +111,41 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         expect(res.body.key).toBe('kk');
     });
 
-    it('POST /edo/api/uppy/s3/multipart with non-string filename → 400', async () => {
+    it('POST /api/uppy/s3/multipart with non-string filename → 400', async () => {
         setupAuthOk();
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .post('/edo/api/uppy/s3/multipart')
+            .post('/api/uppy/s3/multipart')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .send({ filename: 123, type: 'image/jpeg' });
         expect(res.status).toBe(400);
     });
 
-    it('GET /edo/api/uppy/s3/multipart/:uploadId/:partNumber rejects part number out of range', async () => {
+    it('GET /api/uppy/s3/multipart/:uploadId/:partNumber rejects part number out of range', async () => {
         setupAuthOk();
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .get('/edo/api/uppy/s3/multipart/u/0')
+            .get('/api/uppy/s3/multipart/u/0')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ key: 'original/u123/x.jpg' });
         expect(res.status).toBe(400);
         expect(res.body.error).toMatch(/part number/);
     });
 
-    it('GET /edo/api/uppy/s3/multipart/:uploadId/:partNumber rejects key not owned by user', async () => {
+    it('GET /api/uppy/s3/multipart/:uploadId/:partNumber rejects key not owned by user', async () => {
         setupAuthOk();
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .get('/edo/api/uppy/s3/multipart/up1/1')
+            .get('/api/uppy/s3/multipart/up1/1')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ key: 'original/EVIL/x.jpg' });
         expect(res.status).toBe(403);
     });
 
-    it('GET /edo/api/uppy/s3/multipart/:uploadId (list parts) returns array', async () => {
+    it('GET /api/uppy/s3/multipart/:uploadId (list parts) returns array', async () => {
         setupAuthOk();
         s3Mock.on(ListPartsCommand).resolves({
             Parts: [{ PartNumber: 1, ETag: '"abc"' }],
@@ -140,19 +153,21 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         });
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .get('/edo/api/uppy/s3/multipart/up1')
+            .get('/api/uppy/s3/multipart/up1')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ key: 'original/u123/x.jpg' });
         expect(res.status).toBe(200);
         expect(res.body).toEqual([{ PartNumber: 1, ETag: '"abc"' }]);
     });
 
-    it('POST /edo/api/uppy/s3/multipart/:uploadId/complete sends CompleteMultipartUploadCommand', async () => {
+    it('POST /api/uppy/s3/multipart/:uploadId/complete sends CompleteMultipartUploadCommand', async () => {
         setupAuthOk();
         s3Mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://s3/ok' });
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .post('/edo/api/uppy/s3/multipart/up1/complete')
+            .post('/api/uppy/s3/multipart/up1/complete')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ key: 'original/u123/x.jpg' })
             .send({ parts: [{ PartNumber: 1, ETag: '"abc"' }] });
@@ -161,12 +176,13 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         expect(s3Mock.commandCalls(CompleteMultipartUploadCommand)).toHaveLength(1);
     });
 
-    it('DELETE /edo/api/uppy/s3/multipart/:uploadId sends AbortMultipartUploadCommand', async () => {
+    it('DELETE /api/uppy/s3/multipart/:uploadId sends AbortMultipartUploadCommand', async () => {
         setupAuthOk();
         s3Mock.on(AbortMultipartUploadCommand).resolves({});
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .delete('/edo/api/uppy/s3/multipart/up1')
+            .delete('/api/uppy/s3/multipart/up1')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ key: 'original/u123/x.jpg' });
         expect(res.status).toBe(200);
@@ -188,7 +204,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         });
         const { app } = await createTestApp({ brands: [brand] });
         const res = await request(app)
-            .get('/edo/api/uppy/sign-s3')
+            .get('/api/uppy/sign-s3')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ filename: 'photo.jpg', contentType: 'image/png' });
         expect(res.status).toBe(200);
@@ -210,7 +227,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         });
         const { app } = await createTestApp({ brands: [brand] });
         const res = await request(app)
-            .get('/edo/api/uppy/s3/multipart/up1/3')
+            .get('/api/uppy/s3/multipart/up1/3')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ key: 'original/u123/file.bin' });
         expect(res.status).toBe(200);
@@ -231,7 +249,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         s3Mock.on(CreateMultipartUploadCommand).rejects(new Error('AccessDenied'));
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .post('/edo/api/uppy/s3/multipart')
+            .post('/api/uppy/s3/multipart')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .send({ filename: 'a.jpg', type: 'image/jpeg' });
         expect(res.status).toBe(500);
@@ -245,7 +264,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         getSignedUrlMock.mockRejectedValueOnce(new Error('SignatureDoesNotMatch'));
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
         const res = await request(app)
-            .get('/edo/api/uppy/sign-s3')
+            .get('/api/uppy/sign-s3')
+            .set('Host', EDO_HOST)
             .set('Cookie', 'session=tok')
             .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
         expect(res.status).toBe(500);
@@ -265,7 +285,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1024 } });
             const { app } = await createTestApp({ brands: [brand] });
             const res = await request(app)
-                .get('/edo/api/uppy/sign-s3')
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
                 .set('Cookie', 'session=tok')
                 .query({ filename: 'a.jpg', contentType: 'image/jpeg', contentLength: '2048' });
             expect(res.status).toBe(400);
@@ -277,7 +298,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1024 } });
             const { app } = await createTestApp({ brands: [brand] });
             const res = await request(app)
-                .get('/edo/api/uppy/sign-s3')
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
                 .set('Cookie', 'session=tok')
                 .query({ filename: 'a.jpg', contentType: 'image/jpeg', contentLength: '512' });
             expect(res.status).toBe(200);
@@ -291,7 +313,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             });
             const { app } = await createTestApp({ brands: [brand] });
             const res = await request(app)
-                .get('/edo/api/uppy/sign-s3')
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
                 .set('Cookie', 'session=tok')
                 .query({ filename: 'a.png', contentType: 'image/png' });
             expect(res.status).toBe(400);
@@ -306,7 +329,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             });
             const { app } = await createTestApp({ brands: [brand] });
             const res = await request(app)
-                .get('/edo/api/uppy/sign-s3')
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
                 .set('Cookie', 'session=tok')
                 .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
             expect(res.status).toBe(200);
@@ -317,7 +341,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 50 * 1024 * 1024 } });
             const { app } = await createTestApp({ brands: [brand] });
             const res = await request(app)
-                .get('/edo/api/uppy/sign-s3')
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
                 .set('Cookie', 'session=tok')
                 .query({ filename: 'a.exe', contentType: 'application/x-msdownload' });
             expect(res.status).toBe(200);
@@ -328,7 +353,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1024 } });
             const { app } = await createTestApp({ brands: [brand] });
             const res = await request(app)
-                .get('/edo/api/uppy/s3/multipart/up1/1')
+                .get('/api/uppy/s3/multipart/up1/1')
+                .set('Host', EDO_HOST)
                 .set('Cookie', 'session=tok')
                 .query({ key: 'original/u123/x.jpg', contentLength: '2048' });
             expect(res.status).toBe(400);
@@ -340,7 +366,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1024 } });
             const { app } = await createTestApp({ brands: [brand] });
             const res = await request(app)
-                .get('/edo/api/uppy/s3/multipart/up1/1')
+                .get('/api/uppy/s3/multipart/up1/1')
+                .set('Host', EDO_HOST)
                 .set('Cookie', 'session=tok')
                 .query({ key: 'original/u123/x.jpg', contentLength: '512' });
             expect(res.status).toBe(200);
@@ -351,7 +378,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 1 } }); // absurdly small
             const { app } = await createTestApp({ brands: [brand] });
             const res = await request(app)
-                .get('/edo/api/uppy/sign-s3')
+                .get('/api/uppy/sign-s3')
+                .set('Host', EDO_HOST)
                 .set('Cookie', 'session=tok')
                 .query({ filename: 'a.jpg', contentType: 'image/jpeg' });
             expect(res.status).toBe(200);

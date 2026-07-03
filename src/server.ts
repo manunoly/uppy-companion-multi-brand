@@ -9,6 +9,8 @@ import type { AppRequest } from './core/types/express.js';
 import {
     createBrandRegistry,
     getAllBrands,
+    resolveBrandByHost,
+    assertBrandForceIsServable,
     type Brand,
     type ResolvedBrandRegistry
 } from './modules/brand/index.js';
@@ -140,34 +142,11 @@ export const assembleApp = ({
     app.use(express.urlencoded({ extended: false }));
     app.use(cookieParser());
 
-    // Session middleware is mounted per-brand below (not globally) so health
-    // checks, /api/brands, and 404s don't create empty sessions or set cookies.
-    // Each brand gets its own middleware instance with a brand-scoped cookie name
-    // and path, so cookies cannot leak across brands and OAuth state from one
-    // brand cannot overwrite another's. `saveUninitialized: true` is intentional:
-    // Companion's OAuth flow requires a persisted session before the redirect.
-    // TODO(Fase 5.2, D7): move to a single static session name (`companion.sid`)
-    // backed by connect-redis — per-brand path mounting is retired once brand
-    // resolution moves to Host-based (Fase 5.1), at which point each brand
-    // already lives on its own host and the browser isolates the cookie for us.
-    const buildSessionMiddleware = (brandSlug: string) => session({
-        name: `companion.sid.${brandSlug}`,
-        secret: envParam.secret,
-        resave: false,
-        saveUninitialized: true,
-        proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
-        cookie: {
-            path: `/${brandSlug}`,
-            secure: envParam.protocol === 'https',
-            sameSite: envParam.protocol === 'https' ? 'none' : 'lax',
-            httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000, // 1 day
-        },
-    });
-
     // Liveness: is the process itself still able to serve traffic at all?
     // Stays 200 until a SIGTERM drain starts (see index.ts), independent of
-    // downstream dependencies (Redis/S3) — those are readyz's job.
+    // downstream dependencies (Redis/S3) — those are readyz's job. Registered
+    // BEFORE Host-based brand resolution below so it answers regardless of
+    // which (or whether any) brand host the caller used.
     app.get('/api/healthz', (_req, res) => {
         if (shuttingDown) {
             res.status(503).json({ status: 'shutting-down', timestamp: Date.now() });
@@ -275,45 +254,104 @@ export const assembleApp = ({
         });
     });
 
-    // Mount companion for each brand
-    for (const instance of companionInstances) {
-        const brand = instance.brand;
-        const mountPath = `/${brand.slug}`;
+    // --- Host-based brand resolution (Fase 5.1 / spec D4) ---
+    //
+    // Replaces the old per-brand path mount (`/{brandSlug}/...`). Every brand
+    // now lives on its own Companion host (`brand.companionHosts`, code-only)
+    // and is resolved once per request from the inbound `Host` header via
+    // `resolveBrandByHost` (exact-match against the registry, `BRAND_FORCE`
+    // always wins). This is also what retires the `/default/` OAuth-callback
+    // segment hack: `companionUrl` (already root-pathed for every brand) is
+    // the sole source of truth for `redirect_uri` generation.
+    const instancesBySlug = new Map<string, CompanionInstance>(
+        companionInstances.map((instance) => [instance.brand.slug, instance]),
+    );
 
-        // Session is scoped to brand routes only — see buildSessionMiddleware comment above.
-        app.use(mountPath, buildSessionMiddleware(brand.slug));
+    app.use((req, res, next) => {
+        const slug = resolveBrandByHost(req.headers.host);
+        const instance = slug ? instancesBySlug.get(slug) : undefined;
+        if (!instance) {
+            res.status(404).json({ error: 'Unknown host' });
+            return;
+        }
+        (req as AppRequest).brand = instance.brand;
+        next();
+    });
 
-        // Attach the concrete brand for routes under /{brandSlug}
-        // NOTE: Using createBrandMiddleware() here would fall back to no brand because
-        // req.params.brand is not populated when mounting on a literal path like '/acme'.
-        app.use(mountPath, (req, _res, next) => {
-            (req as AppRequest).brand = brand;
+    // Companion's own session (OAuth handshake state), independent of the
+    // brand's partner session cookie. Single static config (D7): the cookie
+    // name/path no longer vary per brand — isolation across brands is now
+    // provided by the Host itself (each brand has a distinct companionHost),
+    // not by the cookie path. `store`/rate-limiting/CSP nonce land in Fase 5.2.
+    app.use(session({
+        name: 'companion.sid',
+        secret: envParam.secret,
+        resave: false,
+        saveUninitialized: true,
+        proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
+        cookie: {
+            path: '/',
+            secure: envParam.protocol === 'https',
+            sameSite: envParam.protocol === 'https' ? 'none' : 'lax',
+            httpOnly: true,
+            maxAge: 24 * 60 * 60 * 1000, // 1 day
+        },
+    }));
+
+    // Optional user attachment — populates req.user from the brand's partner
+    // session cookie (modules/auth/session-resolver.ts). Never rejects.
+    app.use(attachUser);
+
+    // Uppy upload page - shows plugins based on brand providers
+    app.get('/uppy', serveUppyPage);
+    app.get('/uppyModal.js', serveUppyModalJs);
+
+    // Per-brand CORS, resolved dynamically per request via req.brand (no
+    // longer baked in at a per-brand mount time). Precomputed once per brand
+    // at boot since the middleware itself is a pure function of `brand`.
+    const corsMiddlewareBySlug = new Map(
+        companionInstances.map((instance) => [instance.brand.slug, corsForBrand(instance.brand, envParam.protocol)] as const),
+    );
+
+    // Mount custom API (S3 signing, etc.) behind per-brand CORS. The
+    // middleware accepts any *.<apex> origin (HTTPS-only in prod) so
+    // dashboards on sibling subdomains can call /api/uppy/* with cookies.
+    app.use('/api', (req, res, next) => {
+        const brand = (req as AppRequest).brand;
+        const cors = brand && corsMiddlewareBySlug.get(brand.slug);
+        if (!cors) {
             next();
-        });
+            return;
+        }
+        cors(req, res, next);
+    }, apiRouter);
 
-        // Optional user attachment
-        app.use(mountPath, attachUser);
+    // Companion's own S3 multipart endpoints (/s3/...) invoke the s3.getKey
+    // callback which calls buildS3Key — that callback throws if req.user is
+    // not populated. Without requireAuth here, an unauthenticated request
+    // would surface as 500 instead of a clean 401.
+    app.use('/s3', requireAuth);
 
-        // Uppy upload page - shows plugins based on brand providers
-        app.get(`${mountPath}/uppy`, serveUppyPage);
-        app.get(`${mountPath}/uppyModal.js`, serveUppyModalJs);
+    // Dispatch whatever falls through (OAuth connect/callback, Companion's
+    // built-in /s3 endpoints, etc.) to the resolved brand's isolated
+    // `@uppy/companion` instance. Each instance is still a fully separate
+    // Express app/router — Host-based routing changes how we PICK it per
+    // request, not the underlying per-brand isolation.
+    app.use((req, res, next) => {
+        const brand = (req as AppRequest).brand;
+        const instance = brand && instancesBySlug.get(brand.slug);
+        if (!instance) {
+            next();
+            return;
+        }
+        instance.app(req, res, next);
+    });
 
-        // Mount custom API (S3 signing, etc.) behind per-brand CORS.
-        // The middleware accepts any *.<apex> origin (HTTPS-only in prod) so
-        // dashboards on sibling subdomains can call /api/uppy/* with cookies.
-        app.use(`${mountPath}/api`, corsForBrand(brand, envParam.protocol), apiRouter);
-
-        // Companion's own S3 multipart endpoints (/:brand/s3/...) invoke the
-        // s3.getKey callback which calls buildS3Key — that callback throws if
-        // req.user is not populated. Without requireAuth here, an unauthenticated
-        // request would surface as 500 instead of a clean 401.
-        app.use(`${mountPath}/s3`, requireAuth);
-
-        // Mount companion at brand path
-        app.use(mountPath, instance.app);
-
-        logger.info({ brand: brand.slug, path: mountPath }, '[server] Mounted companion for brand');
-        logger.info({ brand: brand.slug }, `[server] Uppy page at ${mountPath}/uppy`);
+    for (const instance of companionInstances) {
+        logger.info(
+            { brand: instance.brand.slug, companionHosts: instance.brand.companionHosts },
+            '[server] Brand ready (Host-based routing)',
+        );
     }
 
     // Error handler
@@ -329,6 +367,10 @@ export const assembleApp = ({
  * Creates and configures the Express application
  */
 export const createServer = (): ServerResult => {
+    // BAJO-4: fail fast if BRAND_FORCE names a brand that isn't servable —
+    // see detect.ts for why this can't just be left to resolveBrandByHost.
+    assertBrandForceIsServable();
+
     const brandRegistry: ResolvedBrandRegistry = createBrandRegistry({ secret: env.secret });
 
     const companionInstances: CompanionInstance[] = getAllBrands(brandRegistry).map(

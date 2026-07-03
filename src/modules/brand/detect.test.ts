@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { normalizeHost, resolveBrandByHost } from './detect.js';
+import { assertBrandForceIsServable, normalizeHost, resolveBrandByHost } from './detect.js';
 
 beforeEach(() => {
     vi.stubEnv('BRAND_FORCE', '');
@@ -97,5 +97,38 @@ describe('resolveBrandByHost: dev default is configurable per caller', () => {
     it('a real host match wins over the devDefaultSlug option', () => {
         vi.stubEnv('NODE_ENV', 'development');
         expect(resolveBrandByHost('companion.entourageyearbooks.com', { devDefaultSlug: 'abe' })).toBe('edo');
+    });
+});
+
+// BAJO-4: BRAND_FORCE always wins in resolveBrandByHost, but createBrandRegistry()
+// only ever builds Companion instances for SERVABLE slugs. Without this guard, an
+// operator setting BRAND_FORCE=abe (registered but not servable — empty
+// companionHosts) would boot successfully and then 404 on every single request,
+// with no indication of why. This must fail loudly at startup instead.
+describe('assertBrandForceIsServable (BAJO-4)', () => {
+    it('does nothing when BRAND_FORCE is unset', () => {
+        expect(() => assertBrandForceIsServable()).not.toThrow();
+    });
+
+    it('does nothing when BRAND_FORCE names a servable brand', () => {
+        vi.stubEnv('BRAND_FORCE', 'edo');
+        expect(() => assertBrandForceIsServable()).not.toThrow();
+    });
+
+    it('normalizes whitespace/case before checking', () => {
+        vi.stubEnv('BRAND_FORCE', '  EDO ');
+        expect(() => assertBrandForceIsServable()).not.toThrow();
+    });
+
+    it('throws a clear error when BRAND_FORCE is not a recognized brand slug', () => {
+        vi.stubEnv('BRAND_FORCE', 'not-a-brand');
+        expect(() => assertBrandForceIsServable()).toThrow(/not-a-brand/);
+        expect(() => assertBrandForceIsServable()).toThrow(/not a recognized brand slug/);
+    });
+
+    it('throws a clear error when BRAND_FORCE names a registered but non-servable brand', () => {
+        vi.stubEnv('BRAND_FORCE', 'abe');
+        expect(() => assertBrandForceIsServable()).toThrow(/abe/);
+        expect(() => assertBrandForceIsServable()).toThrow(/not a servable brand/);
     });
 });

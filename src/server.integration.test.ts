@@ -15,14 +15,24 @@ vi.mock('ioredis', async () => {
 
 const s3Mock = mockClient(S3Client);
 
+// Real companionHosts entry for `edo` in the code-only base registry
+// (modules/brand/registry.ts) — Host-based resolution (Fase 5.1/D4) is keyed
+// against THIS registry, not against whatever `makeBrand()` fixture fields a
+// test passes to `createTestApp`. `req.brand` itself still comes from the
+// fixture (via the slug match), so brand-specific overrides (auth.signInUrl,
+// limits, s3, etc.) still take effect.
+const EDO_HOST = 'companion.stage.entourageyearbooks.com';
+
 describe('server integration', () => {
     beforeEach(() => {
         vi.stubGlobal('fetch', vi.fn());
+        vi.stubEnv('BRAND_FORCE', '');
         s3Mock.reset();
         s3Mock.on(HeadBucketCommand).resolves({});
     });
     afterEach(() => {
         vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
     });
 
     it('GET /api/healthz → 200 with status:ok', async () => {
@@ -74,31 +84,31 @@ describe('server integration', () => {
         expect(brand.s3.secretKey).toMatch(/^\*+\.\.\.\w{4}$/);
     });
 
-    it('GET /edo/uppy without a session → 302 to auth.signInUrl with redirect param', async () => {
+    it('GET /uppy without a session → 302 to auth.signInUrl with redirect param', async () => {
         const { app } = await createTestApp({
             brands: [makeBrand({
                 slug: 'edo',
                 auth: { signInUrl: 'https://app.test.example.com/login' },
             })],
         });
-        const res = await request(app).get('/edo/uppy');
+        const res = await request(app).get('/uppy').set('Host', EDO_HOST);
         expect(res.status).toBe(302);
         expect(res.headers.location).toMatch(/^https:\/\/app\.test\.example\.com\/login\?redirect=/);
     });
 
-    it('GET /edo/uppy without a session + no signInUrl → 401 static page', async () => {
+    it('GET /uppy without a session + no signInUrl → 401 static page', async () => {
         const { app } = await createTestApp({
             brands: [makeBrand({
                 slug: 'edo',
                 auth: { signInUrl: '' },
             })],
         });
-        const res = await request(app).get('/edo/uppy');
+        const res = await request(app).get('/uppy').set('Host', EDO_HOST);
         expect(res.status).toBe(401);
         expect(res.text).toContain('Session Expired');
     });
 
-    it('GET /edo/uppy with a valid session → 200 HTML with no-store cache', async () => {
+    it('GET /uppy with a valid session → 200 HTML with no-store cache', async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
             new Response(
                 JSON.stringify({ id: 'u123', email: 'test@example.com', name: 'Test User', imageUrl: null }),
@@ -108,18 +118,35 @@ describe('server integration', () => {
         const { app } = await createTestApp({
             brands: [makeBrand({ slug: 'edo' })],
         });
-        const res = await request(app).get('/edo/uppy').set('Cookie', 'session=valid-session-token');
+        const res = await request(app).get('/uppy').set('Host', EDO_HOST).set('Cookie', 'session=valid-session-token');
         expect(res.status).toBe(200);
         expect(res.headers['cache-control']).toBe('no-store');
         expect(res.text.toLowerCase()).toContain('<!doctype html>');
     });
 
-    it('OPTIONS /edo/api/uppy/sign-s3 with valid origin → 204 with CORS headers', async () => {
+    it('GET /uppy on an unrecognized Host → 404 (never falls back to a default brand)', async () => {
+        const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+        const res = await request(app).get('/uppy').set('Host', 'evil.example.com');
+        expect(res.status).toBe(404);
+    });
+
+    it('GET /uppy with BRAND_FORCE=edo routes to edo regardless of Host', async () => {
+        vi.stubEnv('BRAND_FORCE', 'edo');
+        const { app } = await createTestApp({
+            brands: [makeBrand({ slug: 'edo', auth: { signInUrl: '' } })],
+        });
+        const res = await request(app).get('/uppy').set('Host', 'anything.example.com');
+        expect(res.status).toBe(401);
+        expect(res.text).toContain('Session Expired');
+    });
+
+    it('OPTIONS /api/uppy/sign-s3 with valid origin → 204 with CORS headers', async () => {
         const { app } = await createTestApp({
             brands: [makeBrand({ slug: 'edo' })],
         });
         const res = await request(app)
-            .options('/edo/api/uppy/sign-s3')
+            .options('/api/uppy/sign-s3')
+            .set('Host', EDO_HOST)
             .set('Origin', 'http://app.test.example.com');
         expect(res.status).toBe(204);
         expect(res.headers['access-control-allow-credentials']).toBe('true');
