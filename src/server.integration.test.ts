@@ -1,12 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
+import { mockClient } from 'aws-sdk-client-mock';
+import { S3Client, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { createTestApp } from './test-utils/http.js';
 import { makeBrand, makeBrandWithoutAuth } from './test-utils/fixtures.js';
 import { makeValidEnv } from './test-utils/env-fixtures.js';
 
+// Readiness (Task 1.3) checks Redis via `getRedis().ping()` — swap in
+// ioredis-mock so those requests never touch the network.
+vi.mock('ioredis', async () => {
+    const { default: RedisMock } = await import('ioredis-mock');
+    return { default: RedisMock, Redis: RedisMock };
+});
+
+const s3Mock = mockClient(S3Client);
+
 describe('server integration', () => {
     beforeEach(() => {
         vi.stubGlobal('fetch', vi.fn());
+        s3Mock.reset();
+        s3Mock.on(HeadBucketCommand).resolves({});
     });
     afterEach(() => {
         vi.unstubAllGlobals();
@@ -166,5 +179,48 @@ describe('server integration', () => {
         const res = await request(app).get('/test/uppy');
         expect(res.status).toBe(403);
         expect(res.text).toContain('Authentication Required');
+    });
+
+    describe('GET /api/readyz', () => {
+        it('→ 200 when Redis PING and S3 HeadBucket both succeed', async () => {
+            const { app } = await createTestApp({ brands: [makeBrand({ id: 'test' })] });
+            const res = await request(app).get('/api/readyz');
+            expect(res.status).toBe(200);
+            expect(res.body.status).toBe('ok');
+        });
+
+        it('→ 503 when the S3 HeadBucket check fails', async () => {
+            s3Mock.on(HeadBucketCommand).rejects(new Error('bucket unreachable'));
+            const { app } = await createTestApp({ brands: [makeBrand({ id: 'test' })] });
+            const res = await request(app).get('/api/readyz');
+            expect(res.status).toBe(503);
+            expect(res.body.s3).toBe(false);
+        });
+
+        it('→ 503 when the S3 HeadBucket check times out', async () => {
+            s3Mock.on(HeadBucketCommand).callsFake(() => new Promise(() => {
+                // Never resolves — exercises the readyz S3 check's own short timeout.
+            }));
+            const { app } = await createTestApp({ brands: [makeBrand({ id: 'test' })] });
+            const res = await request(app).get('/api/readyz');
+            expect(res.status).toBe(503);
+            expect(res.body.s3).toBe(false);
+        }, 10_000);
+
+        it('→ 503 when the app is marked as shutting down', async () => {
+            const { app, setShuttingDown } = await createTestApp({ brands: [makeBrand({ id: 'test' })] });
+            setShuttingDown(true);
+            const res = await request(app).get('/api/readyz');
+            expect(res.status).toBe(503);
+        });
+    });
+
+    describe('GET /api/healthz during shutdown', () => {
+        it('→ 503 once the app is marked as shutting down', async () => {
+            const { app, setShuttingDown } = await createTestApp({ brands: [makeBrand({ id: 'test' })] });
+            setShuttingDown(true);
+            const res = await request(app).get('/api/healthz');
+            expect(res.status).toBe(503);
+        });
     });
 });

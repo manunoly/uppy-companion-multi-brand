@@ -21,7 +21,7 @@ export interface CreateTestAppOptions {
  */
 export const createTestApp = async (
     opts: CreateTestAppOptions = {},
-): Promise<{ app: Express; brandRegistry: BrandRegistry }> => {
+): Promise<{ app: Express; brandRegistry: BrandRegistry; setShuttingDown: (value: boolean) => void }> => {
     const brands = opts.brands ?? [makeBrand()];
     const env = opts.env ?? makeValidEnv();
     const brandRegistry = makeBrandRegistry(brands);
@@ -67,9 +67,9 @@ export const createTestApp = async (
         const companionInstances: CompanionInstance[] = brands.map(brand => createCompanionForBrand(brand));
 
         const { assembleApp } = await import('../server.js');
-        const app = assembleApp({ env, brandRegistry, companionInstances });
+        const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });
 
-        return { app, brandRegistry };
+        return { app, brandRegistry, setShuttingDown };
     } finally {
         logSpy.mockRestore();
     }

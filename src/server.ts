@@ -2,12 +2,14 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import { timingSafeEqual } from 'node:crypto';
+import { HeadBucketCommand } from '@aws-sdk/client-s3';
 
 import { env, type EnvConfig } from './config/index.js';
 import type { AppRequest } from './core/types/express.js';
 import {
     createBrandRegistry,
     getAllBrands,
+    type Brand,
     type BrandRegistry
 } from './modules/brand/index.js';
 import { attachUser, requireAuth } from './modules/auth/index.js';
@@ -20,6 +22,8 @@ import {
     apiRouter,
     type CompanionInstance
 } from './modules/companion/index.js';
+import { getRedis } from './lib/redis.js';
+import { logger } from './lib/logger.js';
 
 export interface AssembleAppParams {
     env: EnvConfig;
@@ -27,10 +31,17 @@ export interface AssembleAppParams {
     companionInstances: CompanionInstance[];
 }
 
+export interface AssembledApp {
+    app: express.Express;
+    /** Flips liveness/readiness to 503 (SIGTERM drain) — see src/index.ts. */
+    setShuttingDown: (value: boolean) => void;
+}
+
 interface ServerResult {
     app: express.Express;
     brandRegistry: BrandRegistry;
     companionInstances: CompanionInstance[];
+    setShuttingDown: (value: boolean) => void;
 }
 
 // Constant-time comparison to avoid timing attacks on HEALTH_CHECK_KEY.
@@ -41,12 +52,75 @@ const safeEqual = (a: string, b: string): boolean => {
     return timingSafeEqual(bufA, bufB);
 };
 
+const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms);
+    });
+    try {
+        return await Promise.race([promise, timeout]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+};
+
+/** Readiness: Redis must answer PING within 1s. */
+const checkRedis = async (): Promise<boolean> => {
+    try {
+        const reply = await withTimeout(getRedis().ping(), 1000);
+        return reply === 'PONG';
+    } catch (error) {
+        logger.warn({ err: error }, '[readyz] Redis check failed');
+        return false;
+    }
+};
+
+/**
+ * Readiness: S3 must be reachable. Only one servable brand needs checking —
+ * all brands in a given deployment share the same AWS account/network path,
+ * so this is a proxy for "can we reach S3 at all", not a per-brand check.
+ * If no brand has S3 configured (e.g. a minimal dev setup), there is nothing
+ * to check and we don't fail readiness for it.
+ */
+const checkS3 = async (brandRegistry: BrandRegistry): Promise<boolean> => {
+    const brand: Brand | undefined = getAllBrands(brandRegistry).find(b => b.s3.client && b.s3.bucket);
+    if (!brand?.s3.client) return true;
+
+    // Also pass an AbortSignal so the underlying HTTP request is actually
+    // cancelled (not just abandoned) when it's too slow; `withTimeout` is
+    // what guarantees this function itself settles in ~1.5s regardless of
+    // whether the client honors the signal (e.g. under test mocks).
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 1500);
+    try {
+        await withTimeout(
+            brand.s3.client.send(new HeadBucketCommand({ Bucket: brand.s3.bucket }), {
+                abortSignal: controller.signal,
+            }),
+            1500,
+        );
+        return true;
+    } catch (error) {
+        logger.warn({ err: error, brand: brand.id }, '[readyz] S3 check failed');
+        return false;
+    } finally {
+        clearTimeout(abortTimer);
+    }
+};
+
 export const assembleApp = ({
     env: envParam,
     brandRegistry,
     companionInstances,
-}: AssembleAppParams): express.Express => {
+}: AssembleAppParams): AssembledApp => {
     const app = express();
+
+    // Flipped by index.ts on SIGTERM so liveness/readiness start failing
+    // immediately, ahead of the orchestrator draining traffic away from us.
+    let shuttingDown = false;
+    const setShuttingDown = (value: boolean): void => {
+        shuttingDown = value;
+    };
 
     // Trust proxy for proper IP detection (Standard for Railway/AWS/Heroku)
     app.set('trust proxy', 1);
@@ -76,8 +150,32 @@ export const assembleApp = ({
         },
     });
 
+    // Liveness: is the process itself still able to serve traffic at all?
+    // Stays 200 until a SIGTERM drain starts (see index.ts), independent of
+    // downstream dependencies (Redis/S3) — those are readyz's job.
     app.get('/api/healthz', (_req, res) => {
+        if (shuttingDown) {
+            res.status(503).json({ status: 'shutting-down', timestamp: Date.now() });
+            return;
+        }
         res.json({ status: 'ok', timestamp: Date.now() });
+    });
+
+    // Readiness: can this instance actually handle a request right now?
+    // Checked by the orchestrator before routing traffic here / to decide
+    // whether to keep it in the load-balancing pool.
+    app.get('/api/readyz', async (_req, res) => {
+        if (shuttingDown) {
+            res.status(503).json({ status: 'shutting-down', redis: false, s3: false, timestamp: Date.now() });
+            return;
+        }
+
+        const [redisOk, s3Ok] = await Promise.all([checkRedis(), checkS3(brandRegistry)]);
+        if (redisOk && s3Ok) {
+            res.json({ status: 'ok', redis: true, s3: true, timestamp: Date.now() });
+        } else {
+            res.status(503).json({ status: 'unavailable', redis: redisOk, s3: s3Ok, timestamp: Date.now() });
+        }
     });
 
     app.get('/api/brands', (req, res) => {
@@ -241,7 +339,7 @@ export const assembleApp = ({
         res.status(500).json({ error: 'Internal server error' });
     });
 
-    return app;
+    return { app, setShuttingDown };
 };
 
 /**
@@ -271,9 +369,9 @@ export const createServer = (): ServerResult => {
         companionInstances.push(instance);
     }
 
-    const app = assembleApp({ env, brandRegistry, companionInstances });
+    const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });
 
-    return { app, brandRegistry, companionInstances };
+    return { app, brandRegistry, companionInstances, setShuttingDown };
 };
 
 export { attachCompanionSocket };
