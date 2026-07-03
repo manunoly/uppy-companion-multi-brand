@@ -1,207 +1,130 @@
+/**
+ * Verifies the Companion's brand configuration WITHOUT booting the server.
+ *
+ * Post-cutover (docs/superpowers/plans/2026-07-02-companion-multibrand-
+ * alineacion-abeduls3.md, Task 7.1) a brand's effective config is no longer a
+ * `COMPANION_BRANDS` CSV + one big `<SLUG_UPPER_SNAKE>` JSON blob — it's:
+ *
+ *   1. the code-only base registry (`src/modules/brand/registry.ts`)
+ *   2. merged with `<SLUG>_BRAND_OVERRIDE` (auth fields only, allowlisted +
+ *      SSRF-gated by `src/modules/brand/identity.ts`)
+ *   3. plus per-brand S3/OAuth secrets (`src/lib/secrets.ts#loadBrandSecrets`,
+ *      `SECRETS_SOURCE=env` for Railway by default, `aws` for Secrets Manager)
+ *
+ * This script walks every KNOWN slug (not just servable ones) and prints the
+ * resulting effective config, masking/omitting every secret (S3 keys, OAuth
+ * client secrets). It deliberately does NOT import `src/config/env.ts` (and
+ * so does NOT require `COMPANION_SECRET`/`REDIS_URL` to be set) — the brand
+ * registry/identity/secrets modules it exercises have no dependency on the
+ * global env schema, so this script can run standalone in any dev shell with
+ * just `.env` (or nothing at all) loaded.
+ *
+ * A brand whose `SECRETS_SOURCE=env` credentials aren't set (the common case
+ * for a brand you aren't actively developing against, e.g. running this
+ * against a checkout with no `EDO_S3_*` set) is NOT treated as a failure —
+ * `loadBrandSecrets` throwing is caught and printed as a clear, per-brand
+ * warning. The script only sets a non-zero exit code for issues that would
+ * actually be a deploy-blocking bug in a SERVABLE brand: an invalid
+ * `BRAND_FORCE`, or a whoami target that fails its own SSRF allowlist check
+ * (`whoamiAllowedHosts`) for a brand that IS servable (non-empty
+ * `companionHosts`) — the two things that would make edo (or any future
+ * servable brand) silently fail at request time with no obvious cause.
+ *
+ * Usage:
+ *   npx tsx scripts/verify-brand-config.ts
+ *
+ * Run this after editing `<SLUG>_BRAND_OVERRIDE` or any per-brand secret env
+ * var (see `.env.example`), and before deploying.
+ */
 
 import 'dotenv/config';
-import { brandConfigSchema } from '../src/modules/brand/brand.schema.js';
-import { normalizeBrandSlug } from '../src/modules/brand/brand.utils.js';
-import { createBrandRegistry, getAllBrands } from '../src/modules/brand/index.js';
-import type { BrandConfigJSON, BrandProviderInputConfig } from '../src/modules/brand/brand.types.js';
+import { getAllBrandSlugs, getServableSlugs, getBaseBrandConfig } from '../src/modules/brand/registry.js';
+import { resolveEffectiveAuth, resolveValidatedWhoamiTarget } from '../src/modules/brand/identity.js';
+import { assertBrandForceIsServable } from '../src/modules/brand/detect.js';
+import { loadBrandSecrets, resolveSecretsSource } from '../src/lib/secrets.js';
+import type { BrandAuthConfig } from '../src/modules/brand/brand.contract.js';
 
-const parseCsv = (value: string | undefined): string[] => {
-    if (!value) return [];
-    return value.split(',').map(s => s.trim()).filter(Boolean);
+const maskSecret = (value: string | undefined | null): string => {
+    if (!value) return '(not set)';
+    if (value.length <= 4) return '****';
+    return `****...${value.slice(-4)}`;
 };
 
-const parseProtocol = (value: string | undefined): 'http' | 'https' => {
-    return value?.toLowerCase() === 'https' ? 'https' : 'http';
-};
+let hasBlockingIssue = false;
 
-const toBrandEnvKey = (slug: string): string => {
-    return normalizeBrandSlug(slug).replace(/-/g, '_').toUpperCase();
-};
+console.log('Verifying Companion brand configuration (base registry + <SLUG>_BRAND_OVERRIDE + secrets)...\n');
 
-const parseBrandConfigsForVerifier = (
-    brands: string
-): { brandConfigs: Record<string, BrandConfigJSON>; issuesByBrand: Record<string, string[]> } => {
-    const slugs = [...new Set(
-        brands.split(',').map(normalizeBrandSlug).filter(Boolean)
-    )];
-
-    const brandConfigs: Record<string, BrandConfigJSON> = {};
-    const issuesByBrand: Record<string, string[]> = {};
-
-    for (const slug of slugs) {
-        const envKey = toBrandEnvKey(slug);
-        const rawJson = process.env[envKey];
-
-        if (!rawJson) continue;
-
-        let jsonConfig: unknown;
-        try {
-            jsonConfig = JSON.parse(rawJson);
-        } catch (error) {
-            issuesByBrand[slug] = [`Invalid JSON in env var ${envKey}`];
-            continue;
-        }
-
-        const parsed = brandConfigSchema.safeParse(jsonConfig);
-        if (!parsed.success) {
-            issuesByBrand[slug] = parsed.error.issues.map(issue => issue.message);
-            continue;
-        }
-
-        brandConfigs[slug] = parsed.data;
-    }
-
-    return { brandConfigs, issuesByBrand };
-};
-
-console.log('🔍 Verifying Brand Configuration from Environment...');
+// --- Global, brand-independent checks ---
 
 try {
-    const brands = process.env.COMPANION_BRANDS ?? 'default';
-    const protocol = parseProtocol(process.env.COMPANION_PROTOCOL);
-    const host = process.env.COMPANION_HOST ?? 'localhost:3020';
-    const { brandConfigs, issuesByBrand } = parseBrandConfigsForVerifier(brands);
+    assertBrandForceIsServable();
+    if (process.env.BRAND_FORCE) {
+        console.log(`BRAND_FORCE=${process.env.BRAND_FORCE} (every request will be routed to this brand regardless of Host)\n`);
+    }
+} catch (error) {
+    console.error(`BLOCKING: ${(error as Error).message}\n`);
+    hasBlockingIssue = true;
+}
 
-    // 1. Initialize Registry from verifier-local parsing (does not require full env validation)
-    const registry = createBrandRegistry({
-        corsOrigins: parseCsv(process.env.CORS_ALLOWED_ORIGINS),
-        secret: process.env.COMPANION_SECRET ?? 'verify-script-secret-123456',
-        filePath: process.env.COMPANION_FILE_PATH ?? '/tmp/',
-        host,
-        protocol,
-        brands,
-        brandConfigs,
-        publicDefaults: {
-            backendUrl: process.env.PUBLIC_BACKEND_URL,
-            uploadUrl: process.env.PUBLIC_UPLOAD_URL,
-            foldersUrl: process.env.PUBLIC_FOLDERS_URL,
-        },
-        s3Defaults: {
-            bucket: process.env.AWS_BUCKET_NAME,
-            region: process.env.AWS_REGION,
-            accessKey: process.env.AWS_ACCESS_KEY_ID,
-            secretKey: process.env.AWS_SECRET_ACCESS_KEY,
-            useAccelerateEndpoint: process.env.COMPANION_AWS_ACCELERATE_ENDPOINT === 'true',
-        },
-        providerDefaults: {
-            google: {
-                clientId: process.env.COMPANION_GOOGLE_CLIENT_ID,
-                clientSecret: process.env.COMPANION_GOOGLE_CLIENT_SECRET,
-                driveApiKey: process.env.COMPANION_GOOGLE_DRIVE_API_KEY,
-                photosApiKey: process.env.COMPANION_GOOGLE_PHOTOS_API_KEY,
-                appId: process.env.COMPANION_GOOGLE_APP_ID,
-            },
-            dropbox: { key: process.env.COMPANION_DROPBOX_KEY, secret: process.env.COMPANION_DROPBOX_SECRET },
-            facebook: { key: process.env.COMPANION_FACEBOOK_KEY, secret: process.env.COMPANION_FACEBOOK_SECRET },
-            instagram: { key: process.env.COMPANION_INSTAGRAM_KEY, secret: process.env.COMPANION_INSTAGRAM_SECRET },
-            onedrive: { key: process.env.COMPANION_ONEDRIVE_KEY, secret: process.env.COMPANION_ONEDRIVE_SECRET },
-            box: { key: process.env.COMPANION_BOX_KEY, secret: process.env.COMPANION_BOX_SECRET },
-            unsplash: { key: process.env.COMPANION_UNSPLASH_KEY, secret: process.env.COMPANION_UNSPLASH_SECRET },
-            zoom: { key: process.env.COMPANION_ZOOM_KEY, secret: process.env.COMPANION_ZOOM_SECRET },
-        },
-    });
+const secretsSource = resolveSecretsSource(process.env);
+console.log(`SECRETS_SOURCE=${secretsSource}`);
+console.log(`COMPANION_SECRET: ${process.env.COMPANION_SECRET ? maskSecret(process.env.COMPANION_SECRET) : '(not set — required to actually boot the server; not required by this script)'}\n`);
 
-    const allBrands = getAllBrands(registry);
+const servableSlugs = new Set(getServableSlugs());
 
-    if (allBrands.length === 0) {
-        console.warn('⚠️ No brands found. Please check COMPANION_BRANDS in your .env file.');
+// --- Per-brand effective config ---
+
+for (const slug of getAllBrandSlugs()) {
+    const base = getBaseBrandConfig(slug);
+    const isServable = servableSlugs.has(slug);
+
+    console.log(`[Brand: ${slug}] ${base.name}`);
+    console.log(`  servable:        ${isServable ? 'yes' : 'no (companionHosts is empty in the registry)'}`);
+    console.log(`  companionHosts:  ${base.companionHosts.join(', ') || '(none)'}`);
+    console.log(`  domains:         ${base.domains.join(', ') || '(none)'}`);
+    console.log(`  companionUrl:    ${base.companionUrl || '(not set)'}`);
+    console.log(`  assets.s3Prefix: ${JSON.stringify(base.assets.s3Prefix)}`);
+    console.log(`  upload.plugins:  ${base.upload.plugins.join(', ') || '(none)'}`);
+
+    const effectiveAuth: BrandAuthConfig = resolveEffectiveAuth(base);
+    const overridden = effectiveAuth !== base.auth;
+    const overrideEnvVar = `${slug.toUpperCase().replace(/-/g, '_')}_BRAND_OVERRIDE`;
+    console.log(`  auth.kind:              ${effectiveAuth.kind}`);
+    console.log(`  auth.signInUrl:         ${effectiveAuth.signInUrl || '(not set)'}`);
+    console.log(`  auth.signOutUrl:        ${effectiveAuth.signOutUrl ?? '(not set)'}`);
+    console.log(`  auth.sessionCookieName: ${effectiveAuth.sessionCookieName}`);
+    console.log(`  ${overrideEnvVar}: ${overridden ? 'applied (one or more auth fields overridden)' : '(not set / no effect)'}`);
+
+    const whoamiTarget = resolveValidatedWhoamiTarget(base);
+    if (whoamiTarget.ok) {
+        console.log(`  auth.whoamiUrl:  ${whoamiTarget.whoamiUrl.toString()} (passes the whoamiAllowedHosts SSRF gate)`);
+    } else if (isServable) {
+        console.error(`  auth.whoamiUrl:  BLOCKING — invalid (${whoamiTarget.reason}). This brand is servable — every request would 503 as "misconfigured".`);
+        hasBlockingIssue = true;
     } else {
-        console.log(`✅ Found ${allBrands.length} brand(s) configured:\n`);
-
-        for (const brand of allBrands) {
-            console.log(`[Brand: ${brand.id}]`);
-            console.log(`  - Name: ${brand.displayName}`);
-            console.log(`  - Auth URL: ${brand.auth.url || '(Not configured) ⚠️'}`);
-            console.log(`  - Public Backend: ${brand.public.backendUrl}`);
-            console.log(`  - Root domain: ${brand.rootDomain ?? '(not set)'}`);
-            console.log(`  - Login URL: ${brand.public.loginUrl ?? '(not set)'}`);
-
-            // rootDomain is only required when auth.url is set. Mirror the
-            // brandConfigSchema superRefine invariant so deploy fails early.
-            if (brand.auth.url && !brand.rootDomain) {
-                console.error(`  ❌ Brand "${brand.id}" has auth.url but no rootDomain — uploads will be rejected at startup.`);
-                process.exitCode = 1;
-            }
-
-            // loginUrl is optional but strongly recommended; without it,
-            // unauthenticated /uppy hits get a static error page rather than
-            // a redirect to the dashboard.
-            if (brand.auth.url && !brand.public.loginUrl) {
-                console.warn(`  ⚠️  Brand "${brand.id}" has no public.loginUrl — unauthenticated /uppy will show a static 401 page instead of redirecting to login.`);
-            }
-
-            // 1. Analyze Active Providers (from Registry)
-            const activeProviders: string[] = [];
-            for (const [name, config] of Object.entries(brand.providers)) {
-                if (config) {
-                    activeProviders.push(name);
-                }
-            }
-
-            if (activeProviders.length > 0) {
-                console.log(`  - Active Providers: ${activeProviders.join(', ')}`);
-            } else {
-                console.log(`  - Active Providers: (None)`);
-            }
-
-            console.log(`  - S3 Bucket: ${brand.s3.bucket || '(Global Default/None) ⚠️'}`);
-
-            const schemaIssues = issuesByBrand[brand.id];
-            if (schemaIssues?.length) {
-                // Schema rejection is a deploy-blocker. Without this exit
-                // code, the rootDomain-missing case still slips through:
-                // parseBrandConfigsForVerifier omits the failed config, so
-                // the brand gets registered with default empty values, the
-                // `brand.auth.url && !brand.rootDomain` check above never
-                // sees a populated auth.url, and the downstream warning
-                // alone leaves process.exitCode at 0.
-                console.error(`  ❌ Invalid config schema: ${schemaIssues.join('; ')}`);
-                process.exitCode = 1;
-            }
-
-            const config = brandConfigs[brand.id];
-            if (config?.providers) {
-                const providerIssues: string[] = [];
-
-                for (const [providerName, provider] of Object.entries(config.providers)) {
-                    if (!provider) continue;
-
-                    if (providerName === 'google') {
-                        if (!provider.clientId || provider.clientId.trim() === '') {
-                            providerIssues.push('google (missing clientId)');
-                        }
-                        continue;
-                    }
-
-                    const oauthProvider = provider as BrandProviderInputConfig;
-                    const issues: string[] = [];
-                    if (!oauthProvider.key || oauthProvider.key.trim() === '') issues.push('missing key');
-                    if (!oauthProvider.secret || oauthProvider.secret.trim() === '') issues.push('missing secret');
-
-                    if (issues.length > 0) {
-                        providerIssues.push(`${providerName} (${issues.join(', ')})`);
-                    }
-                }
-
-                if (providerIssues.length > 0) {
-                    console.warn(`  ⚠️  Config Issues in JSON: ${providerIssues.join('; ')}`);
-                }
-            }
-
-            if (config?.s3) {
-                const s3Warnings: string[] = [];
-                if (!config.s3.bucket) s3Warnings.push('bucket missing');
-                if (!config.s3.region) s3Warnings.push('region missing');
-                if (s3Warnings.length > 0) {
-                    console.warn(`  ⚠️  S3 Config Issues in JSON: ${s3Warnings.join(', ')}`);
-                }
-            }
-
-            console.log('');
-        }
+        console.log(`  auth.whoamiUrl:  not configured (${whoamiTarget.reason}) — OK, this brand is not servable yet.`);
     }
 
-} catch (error) {
-    console.error('❌ Configuration Verification Failed:', error);
-    process.exit(1);
+    try {
+        const secrets = loadBrandSecrets(slug);
+        console.log(`  s3.bucket:      ${secrets.s3.bucket}`);
+        console.log(`  s3.region:      ${secrets.s3.region}`);
+        console.log(`  s3.accessKey:   ${maskSecret(secrets.s3.accessKey)}`);
+        console.log(`  s3.secretKey:   ${maskSecret(secrets.s3.secretKey)}`);
+        const providerNames = Object.keys(secrets.providers);
+        console.log(`  providers:      ${providerNames.length > 0 ? providerNames.join(', ') : '(none configured)'}`);
+    } catch (error) {
+        const label = isServable ? 'secrets not loaded' : 'secrets not loaded (expected — brand not servable)';
+        console.warn(`  ${label}: ${(error as Error).message}`);
+    }
+
+    console.log('');
+}
+
+if (hasBlockingIssue) {
+    console.error('FAILED — one or more servable brands have a blocking configuration issue (see BLOCKING lines above).');
+    process.exitCode = 1;
+} else {
+    console.log('OK — no blocking configuration issues found for servable brands.');
+    console.log('(Per-brand secret warnings above, if any, are informational for brands you are not currently configuring.)');
 }
