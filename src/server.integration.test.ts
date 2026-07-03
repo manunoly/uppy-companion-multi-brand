@@ -98,14 +98,20 @@ describe('server integration', () => {
         expect(res.text).toContain('Session Expired');
     });
 
-    // NOTE: the "valid cookie -> 200 HTML" happy path cannot be exercised
-    // right now — `attachUser` is an interim fail-closed no-op (Task 2.7 →
-    // Fase 3, see modules/auth/auth.middleware.ts) that never populates
-    // req.user, so /uppy always falls through to the redirect/401 branch
-    // above regardless of the cookie sent. Restored once Fase 3 wires up the
-    // real session-resolver.
-    it.skip('GET /edo/uppy with a valid session → 200 HTML with no-store cache', async () => {
-        // TODO(Fase 3): restaurar con session-resolver
+    it('GET /edo/uppy with a valid session → 200 HTML with no-store cache', async () => {
+        (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+            new Response(
+                JSON.stringify({ id: 'u123', email: 'test@example.com', name: 'Test User', imageUrl: null }),
+                { status: 200 },
+            ),
+        );
+        const { app } = await createTestApp({
+            brands: [makeBrand({ slug: 'edo' })],
+        });
+        const res = await request(app).get('/edo/uppy').set('Cookie', 'session=valid-session-token');
+        expect(res.status).toBe(200);
+        expect(res.headers['cache-control']).toBe('no-store');
+        expect(res.text.toLowerCase()).toContain('<!doctype html>');
     });
 
     it('OPTIONS /edo/api/uppy/sign-s3 with valid origin → 204 with CORS headers', async () => {
