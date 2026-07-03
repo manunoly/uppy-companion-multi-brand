@@ -48,8 +48,8 @@ const sendIfKeyNotOwned = (req: AppRequest, key: string, res: Response): boolean
     // Note: no `..` check here. S3 keys are flat strings to S3 (no path
     // resolution), and `sanitizeFilename` allows dots so legitimate filenames
     // like `weird..file.jpg` produce keys containing `..`. The authoritative
-    // gate is the user/brand prefix below.
-    const prefix = buildUserKeyPrefix(req.brand.slug, req.user.id);
+    // gate is the per-user prefix below.
+    const prefix = buildUserKeyPrefix(req.brand, req.user);
     if (!key.startsWith(prefix)) {
         res.status(403).json({ error: 's3: key does not belong to authenticated user' });
         return true;

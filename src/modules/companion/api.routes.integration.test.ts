@@ -117,7 +117,7 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         const res = await request(app)
             .get('/edo/api/uppy/s3/multipart/u/0')
             .set('Cookie', 'session=tok')
-            .query({ key: 'edo/original/u123/x.jpg' });
+            .query({ key: 'original/u123/x.jpg' });
         expect(res.status).toBe(400);
         expect(res.body.error).toMatch(/part number/);
     });
@@ -128,7 +128,7 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         const res = await request(app)
             .get('/edo/api/uppy/s3/multipart/up1/1')
             .set('Cookie', 'session=tok')
-            .query({ key: 'edo/original/EVIL/x.jpg' });
+            .query({ key: 'original/EVIL/x.jpg' });
         expect(res.status).toBe(403);
     });
 
@@ -142,7 +142,7 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         const res = await request(app)
             .get('/edo/api/uppy/s3/multipart/up1')
             .set('Cookie', 'session=tok')
-            .query({ key: 'edo/original/u123/x.jpg' });
+            .query({ key: 'original/u123/x.jpg' });
         expect(res.status).toBe(200);
         expect(res.body).toEqual([{ PartNumber: 1, ETag: '"abc"' }]);
     });
@@ -154,7 +154,7 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         const res = await request(app)
             .post('/edo/api/uppy/s3/multipart/up1/complete')
             .set('Cookie', 'session=tok')
-            .query({ key: 'edo/original/u123/x.jpg' })
+            .query({ key: 'original/u123/x.jpg' })
             .send({ parts: [{ PartNumber: 1, ETag: '"abc"' }] });
         expect(res.status).toBe(200);
         expect(res.body.location).toBe('https://s3/ok');
@@ -168,7 +168,7 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         const res = await request(app)
             .delete('/edo/api/uppy/s3/multipart/up1')
             .set('Cookie', 'session=tok')
-            .query({ key: 'edo/original/u123/x.jpg' });
+            .query({ key: 'original/u123/x.jpg' });
         expect(res.status).toBe(200);
         expect(s3Mock.commandCalls(AbortMultipartUploadCommand)).toHaveLength(1);
     });
@@ -198,7 +198,8 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         const cmdInput = (command as PutObjectCommand).input;
         expect(cmdInput.Bucket).toBe('my-brand-bucket');
         expect(cmdInput.ContentType).toBe('image/png');
-        expect(cmdInput.Key).toMatch(/^edo\/original\/u123\/\d{4}\/\d{1,2}\/\d{1,2}\/\d+\/photo\.jpg$/);
+        // No `{brand}/` segment (D6/SA1) — isolation is by bucket, not prefix.
+        expect(cmdInput.Key).toMatch(/^original\/u123\/\d{4}\/\d{1,2}\/\d{1,2}\/\d+\/photo\.jpg$/);
     });
 
     it('signPart happy path returns a signed URL and builds an UploadPartCommand with the brand bucket', async () => {
@@ -211,7 +212,7 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         const res = await request(app)
             .get('/edo/api/uppy/s3/multipart/up1/3')
             .set('Cookie', 'session=tok')
-            .query({ key: 'edo/original/u123/file.bin' });
+            .query({ key: 'original/u123/file.bin' });
         expect(res.status).toBe(200);
         expect(res.body.url).toBe('https://signed.example.com/url');
         expect(res.body.expires).toBe(300);
@@ -222,7 +223,7 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         expect(cmdInput.Bucket).toBe('my-brand-bucket');
         expect(cmdInput.UploadId).toBe('up1');
         expect(cmdInput.PartNumber).toBe(3);
-        expect(cmdInput.Key).toBe('edo/original/u123/file.bin');
+        expect(cmdInput.Key).toBe('original/u123/file.bin');
     });
 
     it('createMultipartUpload returns 500 with generic error when S3 throws', async () => {
