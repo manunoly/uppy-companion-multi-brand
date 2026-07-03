@@ -64,7 +64,7 @@ export const createTestApp = async (
     // console spy needed here anymore.
     // Build companion instances with the mocked module.
     const { createCompanionForBrand } = await import('../modules/companion/companion.factory.js');
-    const companionInstances: CompanionInstance[] = brands.map(brand => createCompanionForBrand(brand));
+    const companionInstances: CompanionInstance[] = brands.map(brand => createCompanionForBrand(brand, env));
 
     const { assembleApp } = await import('../server.js');
     const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });

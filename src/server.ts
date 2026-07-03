@@ -332,7 +332,7 @@ export const createServer = (): ServerResult => {
     const brandRegistry: ResolvedBrandRegistry = createBrandRegistry({ secret: env.secret });
 
     const companionInstances: CompanionInstance[] = getAllBrands(brandRegistry).map(
-        (brand) => createCompanionForBrand(brand, env.filePath),
+        (brand) => createCompanionForBrand(brand, env),
     );
 
     const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });
