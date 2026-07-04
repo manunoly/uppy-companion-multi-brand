@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildConnectSrc, buildFrameAncestors, buildFrameSrc, buildImgSrc } from './csp.js';
+import { buildConnectSrc, buildFrameAncestors, buildFrameSrc, buildImgSrc, buildScriptSrc } from './csp.js';
 import { makeBrand } from '../test-utils/fixtures.js';
 
 // Security review MEDIO-3: helmet's un-derived defaults (connect-src/
@@ -81,5 +81,28 @@ describe('buildImgSrc', () => {
     it('adds Google thumbnail origins when the picker is enabled', () => {
         const brand = makeBrand({ upload: { plugins: ['GoogleDrivePicker'], system: 's', systemDetails: 'd' } });
         expect(buildImgSrc(brand)).toContain('https://lh3.googleusercontent.com');
+    });
+});
+
+describe('buildScriptSrc', () => {
+    it("incluye 'self', el nonce por-request y los CDNs base, sin Google por defecto", () => {
+        const brand = makeBrand({ upload: { plugins: ['Url'], system: 's', systemDetails: 'd' } });
+        const src = buildScriptSrc(brand, 'abc123');
+        expect(src).toContain("'self'");
+        expect(src).toContain("'nonce-abc123'");
+        expect(src).toContain('https://releases.transloadit.com');
+        expect(src).toContain('https://cdnjs.cloudflare.com');
+        expect(src).not.toContain('apis.google.com');
+    });
+
+    it('añade https://apis.google.com solo cuando el picker de Google está habilitado', () => {
+        const withPicker = makeBrand({ upload: { plugins: ['GoogleDrivePicker'], system: 's', systemDetails: 'd' } });
+        expect(buildScriptSrc(withPicker, 'n')).toContain('https://apis.google.com');
+    });
+
+    it("usa la base segura sin Google cuando no hay marca resuelta (rutas globales)", () => {
+        const src = buildScriptSrc(undefined, 'n');
+        expect(src).toContain("'self'");
+        expect(src).not.toContain('apis.google.com');
     });
 });
