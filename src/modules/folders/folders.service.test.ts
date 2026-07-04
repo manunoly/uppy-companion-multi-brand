@@ -118,9 +118,18 @@ describe('fetchFolders', () => {
             json: async () => ({ success: true, data: [] }),
         });
         await fetchFolders('t', makeBrand({
-            public: { foldersUrl: 'https://x.example.com/api/folders' },
+            public: { foldersUrl: 'https://x.test.example.com/api/folders' },
         }));
         const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-        expect(call[0]).toBe('https://x.example.com/api/folders');
+        expect(String(call[0])).toBe('https://x.test.example.com/api/folders');
+    });
+
+    it('returns [] y nunca llama fetch cuando foldersUrl está fuera del allowlist SSRF', async () => {
+        const brand = makeBrand({
+            public: { foldersUrl: 'https://folders.evil.com/api/folders' }, // no está bajo test.example.com
+        });
+        const folders = await fetchFolders('tok', brand);
+        expect(folders).toEqual([]);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 });
