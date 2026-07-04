@@ -124,7 +124,7 @@ En el import de csp (buscar `buildConnectSrc` en `server.ts`), añadir `buildScr
 - [ ] **Step 6: typecheck + build + test de integración de CSP**
 
 Run: `pnpm typecheck && pnpm build && pnpm test src/server.integration.test.ts src/core/csp.test.ts`
-Expected: PASS (el árbol de integración carga `/uppy` con la CSP; verificar que no rompe el header). Si algún test de integración asevera el `script-src` textual, actualizarlo para reflejar que ahora se construye por marca.
+Expected: PASS. Para no-brand y para edo (sin picker), `buildScriptSrc` produce **exactamente los mismos tokens en el mismo orden** que el array estático de hoy (`'self' 'nonce-…' transloadit cdnjs`), así que el test de integración de CSP existente pasa **sin cambios** (verificado en auditoría). No se espera tocar ningún test de integración.
 
 - [ ] **Step 7: Commit**
 
@@ -168,7 +168,7 @@ Expected: FAIL — hoy `fetch` SÍ se llama contra `folders.evil.com` (no hay ga
 
 - [ ] **Step 3: Añadir el gate en `folders.service.ts`**
 
-Añadir el import:
+**Extender el import existente** de `identity.js` (`folders.service.ts:2` ya importa `buildCookieHeader` — NO añadir una segunda línea de import o dará `Duplicate identifier`) para añadir también `validateWhoamiUrl`:
 
 ```ts
 import { buildCookieHeader, validateWhoamiUrl } from '../brand/identity.js';
@@ -240,6 +240,8 @@ git commit -m "fix(folders): validar foldersUrl por el gate SSRF antes de reenvi
 **Problema:** El código no fuerza `ServerSideEncryption` (H24/N9). En el flujo multipart, la creación se ejecuta **server-side** (`brand.s3.client.send(CreateMultipartUploadCommand)`), así que añadir `ServerSideEncryption: 'AES256'` ahí es limpio (todas las partes heredan el cifrado de la creación) y no acopla al cliente.
 
 **Alcance explícito (por qué NO se toca el PUT simple ni las partes):** `signS3` (PutObject) y `signPart` (UploadPart) devuelven **URLs presignadas** que el navegador ejecuta; añadir `ServerSideEncryption` ahí exigiría que `uppyModal.ts` (browser, H21) enviara el header `x-amz-server-side-encryption` coincidente o la firma no cuadraría — eso pertenece a la migración a presigned POST (M1). El control autoritativo del PUT simple es el **cifrado por defecto del bucket** (infra, Q6/N9). Este task es defensa en profundidad para la ruta multipart (archivos grandes), sin regresión posible.
+
+> **Valor real acotado (no sobrevender):** S3 aplica **SSE-S3 (AES256) por defecto a todo objeto desde enero 2023**, así que el cifrado en reposo ya existe salvo que el bucket lo deshabilite explícitamente. Este cambio hace el intent **explícito** en la ruta multipart, pero **NO cierra H24** — H24 solo se cierra confirmando/forzando el cifrado por defecto del bucket (infra, Q6/N9). El commit y el PR deben dejarlo claro para no dar H24 por resuelto.
 
 **Files:**
 - Modify: `src/modules/companion/s3/s3.controller.ts:198-203` (`CreateMultipartUploadCommand`)
@@ -321,12 +323,12 @@ git commit -m "feat(s3): forzar SSE-S3 (AES256) en el multipart create (Q6/H24, 
 
 ### Task 4: Arreglar el build de imagen Docker + job de CI que lo valide (C1)
 
-**Problema:** El `Dockerfile` hace `corepack enable pnpm && pnpm install` sin una versión de pnpm pineada; sin el campo `packageManager` en `package.json`, corepack resuelve una versión de pnpm distinta a la del lockfile (`lockfileVersion: '9.0'`, generado por pnpm 10.32.1) y el build de imagen falla en el `postinstall` de esbuild. Además CI usa `pnpm/action-setup@v4` con `version: 9` (desalineado con el 10.32.1 local) y **no** hay ningún job que construya la imagen, así que el fallo solo aparece en el deploy a Railway.
+**Problema:** El `Dockerfile` hace `corepack enable pnpm && pnpm install` **sin una versión de pnpm pineada** y `package.json` no tiene campo `packageManager`, así que corepack resuelve una versión de pnpm no determinista dentro de la imagen (skew respecto al `pnpm@10.32.1` local que generó el lockfile `lockfileVersion: '9.0'`). Es un **riesgo latente de build no determinista** — se observó un `docker build` fallando en un intento manual previo, pero **no está cubierto por CI** ni reproducido en el repo, así que no se afirma una causa raíz concreta aquí. Nota de reconciliación con **H3**: H3 (`.dockerignore` excluía `scripts/`) fue una causa DISTINTA de build roto y ya está resuelta; esto es una segunda fuente de fragilidad (versión de pnpm) independiente. Además CI usa `pnpm/action-setup@v4` con `version: 9` (desalineado con el 10.32.1 local) y **no** hay ningún job que construya la imagen, así que cualquier fallo de build solo aparecería en el deploy a Railway. El fix (pinear `packageManager` + job `docker build` en CI) elimina el skew y lo blinda con un gate — con o sin repro previa.
 
 **Files:**
 - Modify: `package.json` (añadir `packageManager`)
 - Modify: `.github/workflows/ci.yml` (alinear pnpm + nuevo job `docker`)
-- Modify (si hace falta): `Dockerfile` (sin cambios si el pin basta; ver Step 4)
+- Modify: `Dockerfile` (env `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` + `corepack prepare pnpm@10.32.1 --activate` en los 3 stages; ver Step 4)
 
 **Interfaces:** ninguna (cambios de tooling/CI).
 
@@ -353,20 +355,35 @@ En `.github/workflows/ci.yml`, en el job `test`, quitar el pin `version: 9` para
 
 (borrar las líneas `with:` / `version: 9` de ese step; el resto del step de setup-node con `cache: pnpm` no cambia).
 
-- [ ] **Step 4: Verificar el build de imagen localmente**
+- [ ] **Step 4: Endurecer el `Dockerfile` (determinista, NO opcional)**
 
-Run: `docker build -t companion:ci .`
-Expected: la imagen construye; el stage `builder` completa `pnpm run build` y emite `dist/`. Si `corepack enable pnpm` aún no fija 10.32.1 en el contenedor, añadir en los tres `RUN corepack enable pnpm` del `Dockerfile` una activación explícita:
+Al fijar `packageManager` a una versión que la imagen `node:22-alpine` no trae cacheada, `corepack enable pnpm && pnpm install` intentará **descargarla**; en un contexto no-TTY (Docker/CI) corepack puede abortar pidiendo confirmación. Para que el build sea determinista, hacer DOS cambios en `Dockerfile`:
+
+1. En el stage `base` (tras `WORKDIR /app`), añadir la env que desactiva el prompt de descarga de corepack:
 
 ```dockerfile
-RUN corepack enable pnpm && corepack prepare pnpm@10.32.1 --activate && pnpm install --frozen-lockfile
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ```
 
-(aplicar el mismo patrón a los stages `deps`, `prod-deps` y `builder`). Solo hacerlo si el pin del `packageManager` por sí solo no basta en tu entorno Docker.
+2. En los **tres** `RUN corepack enable pnpm ...` (stages `deps` línea ~7, `prod-deps` línea ~12, `builder` línea ~18), activar explícitamente la versión pineada. P.ej.:
 
-> Si Docker no está disponible en el entorno de trabajo, dejar este step verificado por inspección y confiar en el nuevo job de CI (Step 5) para validarlo.
+```dockerfile
+# deps / prod-deps:
+RUN corepack enable pnpm && corepack prepare pnpm@10.32.1 --activate && pnpm install --frozen-lockfile
+# (prod-deps añade --prod; builder usa `pnpm run build` en vez de install)
+RUN corepack enable pnpm && corepack prepare pnpm@10.32.1 --activate && pnpm run build
+```
 
-- [ ] **Step 5: Añadir el job `docker` en CI**
+> `corepack prepare … --activate` predescarga y fija la versión exacta, independizando el build de qué pnpm traiga corepack por defecto. Es belt-and-suspenders con el `packageManager` de package.json, pero elimina la ambigüedad en no-TTY.
+
+- [ ] **Step 5: Verificar el build de imagen localmente**
+
+Run: `docker build -t companion:ci .`
+Expected: la imagen construye; el stage `builder` completa `pnpm run build` y emite `dist/`.
+
+> Si Docker no está disponible en el entorno de trabajo, dejar este step verificado por inspección y confiar en el nuevo job de CI (Step 6) para validarlo.
+
+- [ ] **Step 6: Añadir el job `docker` en CI**
 
 En `.github/workflows/ci.yml`, añadir un job nuevo (hermano de `test`) que construya la imagen. Es un gate de entrega: valida que la imagen de Railway construye de verdad.
 
@@ -381,7 +398,7 @@ En `.github/workflows/ci.yml`, añadir un job nuevo (hermano de `test`) que cons
 
 > Alcance: SOLO `docker build` (valida que la imagen y el `pnpm run build` in-image funcionan). Un `docker run` + curl a `/api/healthz` NO se incluye: el arranque real requiere `COMPANION_SECRET` + secretos S3 de un brand servable (el boot hace fail-fast sin ellos), así que un smoke-run necesitaría env/Redis y queda fuera de este task.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add package.json .github/workflows/ci.yml Dockerfile
@@ -428,3 +445,12 @@ git commit -m "ci(delivery): pinear pnpm@10.32.1 (corepack) y validar docker bui
 - **Placeholders:** ninguno — cada step lleva código o comando concreto.
 - **Consistencia de tipos:** `buildScriptSrc(brand, nonce)` se define en Task 1 y se consume en `server.ts` con la misma firma; `validateWhoamiUrl` se consume con la firma real exportada en `identity.ts`; `ServerSideEncryption: 'AES256'` es literal válido del SDK.
 - **Riesgo de regresión identificado:** el gate SSRF de folders (Task 2) rompe un test existente con host off-allowlist → Step 4 lo ajusta explícitamente.
+
+## Trazabilidad de auditoría
+
+Este plan fue auditado (solo lectura) por un consultor externo (Fable 5) tras su primera versión. Veredicto: **listo-con-ajustes-menores**; las 4 tareas verificadas como técnicamente correctas, compilan con las firmas reales, respetan SA1–SA4/Railway y sin regresiones no anticipadas (salvo la de folders, ya identificada). Ajustes aplicados a partir de esa auditoría:
+1. **Task 4** — el diagnóstico ya no afirma una causa raíz no reproducida en el repo (se enmarca como skew de versión latente + observación manual previa) y se reconcilia explícitamente con H3.
+2. **Task 4** — el endurecimiento de corepack en el `Dockerfile` pasa a ser NO opcional (+ `COREPACK_ENABLE_DOWNLOAD_PROMPT=0`) para un build determinista.
+3. **Task 2** — la instrucción del import se corrigió a "extender el import existente" (evita `Duplicate identifier`).
+4. **Task 3** — se explicita que el cambio es defensa en profundidad y que **NO** cierra H24 (solo la config de bucket lo hace).
+5. **Task 1** — se eliminó el hedge sobre el test de integración de CSP (verificado: no requiere cambios).

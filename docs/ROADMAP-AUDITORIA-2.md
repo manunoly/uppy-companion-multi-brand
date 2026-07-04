@@ -41,6 +41,8 @@ El rediseño está **muy por encima de la madurez de la auditoría original**. D
 
 ## Hallazgos nuevos (introducidos/expuestos por el rediseño o no cubiertos por la auditoría vieja)
 
+> Nota de numeración: la lista salta de **N7 a N9** — **no existe N8** (hueco de etiqueta heredado del triage). Son **9 hallazgos nuevos**. Los IDs `N9`/`N10` se conservan estables porque ya se referencian en este roadmap y en el plan de implementación.
+
 | ID | Sev | Cat | Hallazgo (verificado) | Evidencia | Nota |
 |----|-----|-----|------------------------|-----------|------|
 | **N1** | 🟡 | SEC | **CSP `script-src` no incluye `https://apis.google.com`**, que necesita el loader del Google Drive/Photos Picker. `csp.ts` sí añade orígenes Google a `connect-src`/`frame-src`/`img-src` cuando el picker está activo, pero `script-src` es fijo (`self`,nonce,transloadit,cdnjs). | `server.ts:310-315` vs `csp.ts:40-45,63-102` | **Latente**: edo (único servable) usa solo `Facebook`/`Url`. Rompería el picker si abe/picaboo/edo lo habilitan. Añadir `apis.google.com` a `script-src` (y confirmar en el smoke del picker). |
