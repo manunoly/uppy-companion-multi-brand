@@ -7,27 +7,38 @@ const escapeRegex = (s: string): string => s.replace(REGEX_METACHARS, '\\$&');
 /**
  * Per-brand CORS middleware for /api/uppy/* routes.
  *
- * Echoes the request `Origin` when it matches `*.<rootDomain>` with the brand's
- * scheme constraints. In production (envProtocol === 'https') the regex
- * accepts only HTTPS origins — never echo Allow-Credentials to a plain-HTTP
- * page under the brand root, otherwise an attacker on http://anywhere.<root>
- * could read credentialed responses (the Secure cookie still travels because
- * the request URL is HTTPS).
+ * Echoes the request `Origin` when it matches `*.<apex>` with the brand's
+ * scheme constraints. The apex is `brand.auth.whoamiAllowedHosts[0]` — the
+ * abeduls3 contract (brand.contract.ts, D2) has no standalone `rootDomain`
+ * field anymore, but `whoamiAllowedHosts` is exactly the bare registrable
+ * domain the brand's cookie/whoami trust boundary is scoped to (e.g.
+ * `entourageyearbooks.com` for edo), which is what `rootDomain` used to hold.
+ * `domains` (the designer/app hostnames) is NOT used here because it holds
+ * full specific hostnames (e.g. `linkdesigner.entourageyearbooks.com`), not
+ * the bare apex a wildcard-subdomain regex needs.
+ *
+ * In production (envProtocol === 'https') the regex accepts only HTTPS
+ * origins — never echo Allow-Credentials to a plain-HTTP page under the brand
+ * root, otherwise an attacker on http://anywhere.<apex> could read
+ * credentialed responses (the Secure cookie still travels because the
+ * request URL is HTTPS).
  *
  * In dev (envProtocol === 'http') HTTP is also allowed plus a literal exemption
  * for http://localhost(:port) so the local toolchain works without TLS setup.
  *
- * Returns a no-op middleware when brand.rootDomain is null (auth disabled).
+ * Returns a no-op middleware when the brand has no configured apex (e.g. the
+ * non-servable placeholder registry entries, whose `whoamiAllowedHosts` is `[]`).
  */
 export const corsForBrand = (
     brand: Brand,
     envProtocol: 'http' | 'https',
 ): RequestHandler => {
-    if (!brand.rootDomain) {
+    const apex = brand.auth.whoamiAllowedHosts[0];
+    if (!apex) {
         return (_req, _res, next) => next();
     }
 
-    const escaped = escapeRegex(brand.rootDomain);
+    const escaped = escapeRegex(apex);
     const scheme = envProtocol === 'https' ? 'https' : 'https?';
     const rootRegex = new RegExp(
         `^${scheme}://([a-z0-9-]+\\.)+${escaped}(:\\d+)?$`,

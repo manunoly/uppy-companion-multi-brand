@@ -1,7 +1,8 @@
 import { vi } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
-import type { Brand, BrandRegistry } from '../modules/brand/brand.types.js';
+import type { Brand } from '../modules/brand/brand.types.js';
+import type { ResolvedBrandRegistry } from '../modules/brand/brand.service.js';
 import type { CompanionInstance } from '../modules/companion/companion.factory.js';
 import type { EnvConfig } from '../config/env.schema.js';
 import { makeBrand, makeBrandRegistry } from './fixtures.js';
@@ -21,16 +22,15 @@ export interface CreateTestAppOptions {
  */
 export const createTestApp = async (
     opts: CreateTestAppOptions = {},
-): Promise<{ app: Express; brandRegistry: BrandRegistry }> => {
+): Promise<{ app: Express; brandRegistry: ResolvedBrandRegistry; setShuttingDown: (value: boolean) => void }> => {
     const brands = opts.brands ?? [makeBrand()];
     const env = opts.env ?? makeValidEnv();
     const brandRegistry = makeBrandRegistry(brands);
 
     // The mock companion router echoes the URL it receives back as JSON so
-    // tests can assert on what reached companion (e.g. that the `/default/`
-    // strip middleware actually stripped). Real apiRouter handlers are mounted
-    // BEFORE companion, so they take precedence; companion only sees requests
-    // that fall through to its mount path.
+    // tests can assert on what reached companion. Real apiRouter handlers are
+    // mounted BEFORE companion, so they take precedence; companion only sees
+    // requests that fall through to its mount path.
     const makeMockCompanionRouter = () => {
         const router = express.Router();
         router.use((req, res) => {
@@ -59,18 +59,15 @@ export const createTestApp = async (
         env,
     }));
 
-    // Silence console.log during assembleApp to suppress mount messages.
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    try {
-        // Build companion instances with the mocked module.
-        const { createCompanionForBrand } = await import('../modules/companion/companion.factory.js');
-        const companionInstances: CompanionInstance[] = brands.map(brand => createCompanionForBrand(brand));
+    // assembleApp/createCompanionForBrand log via `lib/logger.js` (Pino), which
+    // is already silenced under Vitest (see logger.ts's `defaultLevel`) — no
+    // console spy needed here anymore.
+    // Build companion instances with the mocked module.
+    const { createCompanionForBrand } = await import('../modules/companion/companion.factory.js');
+    const companionInstances: CompanionInstance[] = brands.map(brand => createCompanionForBrand(brand, env));
 
-        const { assembleApp } = await import('../server.js');
-        const app = assembleApp({ env, brandRegistry, companionInstances });
+    const { assembleApp } = await import('../server.js');
+    const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });
 
-        return { app, brandRegistry };
-    } finally {
-        logSpy.mockRestore();
-    }
+    return { app, brandRegistry, setShuttingDown };
 };

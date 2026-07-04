@@ -1,17 +1,28 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
-import { timingSafeEqual } from 'node:crypto';
+import type { SessionOptions } from 'express-session';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
+import { RedisStore as SessionRedisStore } from 'connect-redis';
+import { RedisStore as RateLimitRedisStore, type RedisReply } from 'rate-limit-redis';
+import { timingSafeEqual, randomBytes } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { HeadBucketCommand } from '@aws-sdk/client-s3';
 
 import { env, type EnvConfig } from './config/index.js';
 import type { AppRequest } from './core/types/express.js';
 import {
     createBrandRegistry,
     getAllBrands,
-    type BrandRegistry
+    resolveBrandByHost,
+    assertBrandForceIsServable,
+    type Brand,
+    type ResolvedBrandRegistry
 } from './modules/brand/index.js';
 import { attachUser, requireAuth } from './modules/auth/index.js';
 import { corsForBrand } from './core/cors.js';
+import { buildConnectSrc, buildFrameAncestors, buildFrameSrc, buildImgSrc } from './core/csp.js';
 import {
     createCompanionForBrand,
     attachCompanionSocket,
@@ -20,17 +31,26 @@ import {
     apiRouter,
     type CompanionInstance
 } from './modules/companion/index.js';
+import { getRedis } from './lib/redis.js';
+import { logger, httpLogger, runWithContext } from './lib/logger.js';
 
 export interface AssembleAppParams {
     env: EnvConfig;
-    brandRegistry: BrandRegistry;
+    brandRegistry: ResolvedBrandRegistry;
     companionInstances: CompanionInstance[];
+}
+
+export interface AssembledApp {
+    app: express.Express;
+    /** Flips liveness/readiness to 503 (SIGTERM drain) — see src/index.ts. */
+    setShuttingDown: (value: boolean) => void;
 }
 
 interface ServerResult {
     app: express.Express;
-    brandRegistry: BrandRegistry;
+    brandRegistry: ResolvedBrandRegistry;
     companionInstances: CompanionInstance[];
+    setShuttingDown: (value: boolean) => void;
 }
 
 // Constant-time comparison to avoid timing attacks on HEALTH_CHECK_KEY.
@@ -41,45 +61,324 @@ const safeEqual = (a: string, b: string): boolean => {
     return timingSafeEqual(bufA, bufB);
 };
 
+const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms);
+    });
+    try {
+        return await Promise.race([promise, timeout]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+};
+
+/** Readiness: Redis must answer PING within 1s. */
+const checkRedis = async (): Promise<boolean> => {
+    try {
+        const reply = await withTimeout(getRedis().ping(), 1000);
+        return reply === 'PONG';
+    } catch (error) {
+        logger.warn({ err: error }, '[readyz] Redis check failed');
+        return false;
+    }
+};
+
+/**
+ * Readiness: S3 must be reachable. Only one servable brand needs checking —
+ * all brands in a given deployment share the same AWS account/network path,
+ * so this is a proxy for "can we reach S3 at all", not a per-brand check.
+ * If no brand has S3 configured (e.g. a minimal dev setup), there is nothing
+ * to check and we don't fail readiness for it.
+ */
+const checkS3 = async (brandRegistry: ResolvedBrandRegistry): Promise<boolean> => {
+    const brand: Brand | undefined = getAllBrands(brandRegistry).find(b => b.s3.client && b.s3.bucket);
+    if (!brand?.s3.client) return true;
+
+    // Also pass an AbortSignal so the underlying HTTP request is actually
+    // cancelled (not just abandoned) when it's too slow; `withTimeout` is
+    // what guarantees this function itself settles in ~1.5s regardless of
+    // whether the client honors the signal (e.g. under test mocks).
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 1500);
+    try {
+        await withTimeout(
+            brand.s3.client.send(new HeadBucketCommand({ Bucket: brand.s3.bucket }), {
+                abortSignal: controller.signal,
+            }),
+            1500,
+        );
+        return true;
+    } catch (error) {
+        logger.warn({ err: error, brand: brand.slug }, '[readyz] S3 check failed');
+        return false;
+    } finally {
+        clearTimeout(abortTimer);
+    }
+};
+
+/**
+ * Builds the Redis-backed session store (Fase 5.2, D7) — extracted as its
+ * own function so it's directly unit-testable (`instanceof RedisStore`)
+ * without having to reach into Express's session middleware internals,
+ * which don't expose the configured store on the returned middleware
+ * function itself.
+ */
+export const buildSessionStore = (): SessionRedisStore =>
+    new SessionRedisStore({ client: getRedis(), prefix: 'companion:sess:' });
+
+/**
+ * Builds the express-session options (Fase 5.2, D7). Extracted (like
+ * `buildSessionStore` above) so the config itself — not just the store — is
+ * directly unit-testable without having to force a live request through the
+ * whole app just to inspect a Set-Cookie header.
+ *
+ * `saveUninitialized: false` (security review MEDIO-2): previously `true`,
+ * which made express-session persist a brand-new empty session into Redis on
+ * EVERY anonymous request, even ones that never touch `req.session` at all
+ * (e.g. a bare `GET /uppy`). That let an attacker fill Redis with garbage
+ * sessions 1:1 with request volume — pure request volume, no valid cookie or
+ * auth needed. `false` means a session is only ever written once something
+ * actually stores data in it — in practice, `@uppy/companion`'s own OAuth
+ * handshake (grant/state), which legitimately needs to persist across the
+ * redirect round-trip.
+ */
+export const buildSessionOptions = (envParam: EnvConfig): SessionOptions => ({
+    store: buildSessionStore(),
+    name: 'companion.sid',
+    secret: envParam.secret,
+    resave: false,
+    saveUninitialized: false,
+    proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
+    cookie: {
+        path: '/',
+        secure: envParam.protocol === 'https',
+        sameSite: envParam.protocol === 'https' ? 'none' : 'lax',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000, // 1 day
+    },
+});
+
+/**
+ * `rate-limit-redis`'s Store does its atomic increment via a Lua script
+ * (`SCRIPT LOAD` + `EVALSHA`). Dispatch by the lowercased command name to
+ * ioredis's own generated per-command methods (`.script(...)`, `.evalsha(...)`)
+ * instead of the generic `.call(...)` passthrough: `.call` has a tuple-rest
+ * overload a plain `string[]` spread can't satisfy at the type level
+ * (TS2556), AND ioredis-mock (used in tests) doesn't implement `.call` at
+ * all — but both real ioredis and ioredis-mock implement every named
+ * command, so this works identically against either. Shared by every
+ * Redis-backed rate limiter below (each gets its OWN store instance/prefix,
+ * so their counters never collide).
+ */
+const createRedisRateLimitStore = (prefix: string): RateLimitRedisStore =>
+    new RateLimitRedisStore({
+        prefix,
+        sendCommand: (...args: string[]): Promise<RedisReply> => {
+            const [command, ...rest] = args;
+            const client = getRedis() as unknown as Record<string, (...a: string[]) => Promise<RedisReply>>;
+            const method = client[command.toLowerCase()];
+            if (typeof method !== 'function') {
+                return Promise.reject(new Error(`[rate-limit] Redis client has no method for command "${command}"`));
+            }
+            return method.apply(client, rest);
+        },
+    });
+
+/**
+ * Builds the shared rate limiter (Fase 5.2, D13) mounted on `/uppy` and
+ * `/api/*`. Redis-backed (`rate-limit-redis`) so the counter is shared
+ * across replicas — a single in-memory counter would let an attacker reset
+ * their budget just by hitting a different instance behind the LB. Keyed by
+ * brand + authenticated user id, falling back to IP for anonymous callers
+ * (whoami itself is one of the endpoints being protected, so most callers
+ * hitting the limit will be pre-auth or auth-failing).
+ */
+export const buildRateLimiter = (envParam: EnvConfig): ReturnType<typeof rateLimit> =>
+    rateLimit({
+        windowMs: envParam.rateLimitWindowMs,
+        limit: envParam.rateLimitMax,
+        standardHeaders: true,
+        legacyHeaders: false,
+        store: createRedisRateLimitStore('companion:rl:'),
+        keyGenerator: (req) => {
+            const r = req as AppRequest;
+            return `${r.brand?.slug ?? 'unknown'}:${r.user?.id ?? req.ip ?? 'unknown'}`;
+        },
+    });
+
+/**
+ * Builds the GLOBAL per-IP rate limiter (security review MEDIO-1). Mounted
+ * before express-session/attachUser so it bounds every brand route (`/`,
+ * OAuth, `/s3`, ...) AND `/api/brands` (closes BAJO-1) — not just `/uppy`/
+ * `/api/*`, which `buildRateLimiter` above only starts protecting AFTER
+ * `attachUser` has already paid the whoami-fetch cost. `attachUser` calls
+ * `resolveSession` for every request with a `brand`, which — for a cookie
+ * value that never hits the whoami cache (e.g. random garbage) — fetches the
+ * partner's whoami endpoint 1:1 with request volume; a 401 response records
+ * a breaker SUCCESS (the partner answered), so the breaker never opens
+ * either. Without a limiter ahead of `attachUser`, an attacker can drive
+ * unbounded load against the partner's whoami with nothing but a stream of
+ * requests carrying arbitrary cookies.
+ *
+ * Keyed by IP alone (`req.brand`/`req.user` don't exist yet at this point in
+ * the chain — this limiter runs BEFORE brand resolution). Deliberately more
+ * generous than `buildRateLimiter`'s per-route budget (see
+ * `env.schema.ts`'s `rateLimitGlobalMax` default) since it's a coarse first
+ * line of defense shared across every path in the app, not a per-endpoint
+ * budget on top of it.
+ *
+ * `skip` exempts `/api/healthz`/`/api/readyz` — the orchestrator (Railway)
+ * polls these continuously and they do no meaningful work, so counting them
+ * against the global per-IP budget would risk starving real traffic from the
+ * same egress IP (e.g. a NAT/shared-proxy client) purely from health-check
+ * noise. `/api/brands` is NOT exempted (BAJO-1): it currently answers on any
+ * Host with no auth for the basic view, so it gets at least this rate limit.
+ */
+export const buildGlobalRateLimiter = (envParam: EnvConfig): ReturnType<typeof rateLimit> =>
+    rateLimit({
+        windowMs: envParam.rateLimitGlobalWindowMs,
+        limit: envParam.rateLimitGlobalMax,
+        standardHeaders: true,
+        legacyHeaders: false,
+        store: createRedisRateLimitStore('companion:rl:global:'),
+        keyGenerator: (req) => req.ip ?? 'unknown',
+        skip: (req) => req.path === '/api/healthz' || req.path === '/api/readyz',
+    });
+
 export const assembleApp = ({
     env: envParam,
     brandRegistry,
     companionInstances,
-}: AssembleAppParams): express.Express => {
+}: AssembleAppParams): AssembledApp => {
     const app = express();
+
+    // Flipped by index.ts on SIGTERM so liveness/readiness start failing
+    // immediately, ahead of the orchestrator draining traffic away from us.
+    let shuttingDown = false;
+    const setShuttingDown = (value: boolean): void => {
+        shuttingDown = value;
+    };
 
     // Trust proxy for proper IP detection (Standard for Railway/AWS/Heroku)
     app.set('trust proxy', 1);
+
+    // Request logging + context, first so every downstream middleware/handler
+    // (including error handling) can log with requestId attached. pino-http
+    // assigns `req.id` (from `x-request-id` or a fresh UUID, see lib/logger.ts)
+    // before we open the AsyncLocalStorage frame for the rest of the request's
+    // async chain.
+    app.use((req, res, next) => {
+        httpLogger(req, res, () => {
+            runWithContext({ requestId: String(req.id) }, next);
+        });
+    });
 
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
     app.use(cookieParser());
 
-    // Session middleware is mounted per-brand below (not globally) so health
-    // checks, /api/brands, and 404s don't create empty sessions or set cookies.
-    // Each brand gets its own middleware instance with a brand-scoped cookie name
-    // and path, so cookies cannot leak across brands and OAuth state from one
-    // brand cannot overwrite another's. `saveUninitialized: true` is intentional:
-    // Companion's OAuth flow requires a persisted session before the redirect.
-    const buildSessionMiddleware = (brandId: string) => session({
-        name: `companion.sid.${brandId}`,
-        secret: envParam.secret,
-        resave: false,
-        saveUninitialized: true,
-        proxy: true, // Crucial for secure cookies behind reverse proxies like Railway
-        cookie: {
-            path: `/${brandId}`,
-            secure: envParam.protocol === 'https',
-            sameSite: envParam.protocol === 'https' ? 'none' : 'lax',
-            httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000, // 1 day
-        },
-    });
+    // Host -> CompanionInstance lookup, built once at boot. Moved ahead of
+    // helmet/CSP (below) so the per-brand CSP directives (MEDIO-3) can
+    // resolve `req.brand`'s equivalent from the inbound Host header EVEN
+    // THOUGH the actual brand-attaching middleware (`req.brand = ...`) still
+    // runs later, right before express-session — see the comment there for
+    // why that ordering itself doesn't move. `resolveBrandByHost` is a pure,
+    // cheap (no I/O) function, so resolving it twice per request (once here
+    // for CSP, once there for enforcement) is not a meaningful cost.
+    const instancesBySlug = new Map<string, CompanionInstance>(
+        companionInstances.map((instance) => [instance.brand.slug, instance]),
+    );
+    const resolveInstanceForHost = (host: string | undefined | null): CompanionInstance | undefined => {
+        const slug = resolveBrandByHost(host);
+        return slug ? instancesBySlug.get(slug) : undefined;
+    };
+    const brandForCsp = (req: IncomingMessage): Brand | undefined => resolveInstanceForHost(req.headers.host)?.brand;
 
+    // Per-request CSP nonce (Fase 5.2). MUST run before helmet() below so
+    // res.locals.cspNonce already exists when helmet builds the CSP header.
+    // uppy.html's inline `<script type="module">` (Fase 5.4) is given this
+    // same nonce by serveUppyPage — `script-src 'self'` alone would not cover
+    // an inline script, and `'unsafe-inline'` would defeat the CSP entirely.
+    app.use((_req, res, next) => {
+        res.locals.cspNonce = randomBytes(16).toString('base64');
+        next();
+    });
+    app.use(helmet({
+        contentSecurityPolicy: {
+            directives: {
+                'script-src': [
+                    "'self'",
+                    (_req: IncomingMessage, res: ServerResponse) => `'nonce-${(res as unknown as express.Response).locals.cspNonce}'`,
+                    'https://releases.transloadit.com',
+                    'https://cdnjs.cloudflare.com',
+                ],
+                'style-src': ["'self'", 'https://cdnjs.cloudflare.com', "'unsafe-inline'"],
+                // Security review MEDIO-3: helmet 8's defaults leave these
+                // four directives either un-derived (falling back to
+                // `default-src 'self'`) or too narrow (`img-src 'self'
+                // data:`), which would silently BLOCK the direct-to-S3
+                // upload (cross-origin XHR/fetch PUT), the designer <iframe>
+                // embed of /uppy, and the Google Picker. Derived per-request
+                // from the resolved brand (core/csp.ts) — see that module
+                // for exactly what each directive needs and why.
+                'connect-src': [(req: IncomingMessage) => buildConnectSrc(brandForCsp(req))],
+                'frame-ancestors': [(req: IncomingMessage) => buildFrameAncestors(brandForCsp(req))],
+                'frame-src': [(req: IncomingMessage) => buildFrameSrc(brandForCsp(req))],
+                'img-src': [(req: IncomingMessage) => buildImgSrc(brandForCsp(req))],
+            },
+        },
+    }));
+
+    // GLOBAL per-IP rate limiter (security review MEDIO-1) — mounted before
+    // express-session/attachUser (further down) and before `/api/brands`
+    // (BAJO-1), so it covers every route in the app except the two exempted
+    // below. See `buildGlobalRateLimiter`'s own doc comment for the full
+    // rationale (whoami-fetch DoS via attachUser, which the per-route
+    // limiter on /uppy and /api/* alone does not protect).
+    app.use(buildGlobalRateLimiter(envParam));
+
+    // Liveness: is the process itself still able to serve traffic at all?
+    // Stays 200 until a SIGTERM drain starts (see index.ts), independent of
+    // downstream dependencies (Redis/S3) — those are readyz's job. Registered
+    // BEFORE Host-based brand resolution below so it answers regardless of
+    // which (or whether any) brand host the caller used. Exempted from the
+    // global rate limiter above (`skip`) — the orchestrator polls this
+    // continuously.
     app.get('/api/healthz', (_req, res) => {
+        if (shuttingDown) {
+            res.status(503).json({ status: 'shutting-down', timestamp: Date.now() });
+            return;
+        }
         res.json({ status: 'ok', timestamp: Date.now() });
     });
 
+    // Readiness: can this instance actually handle a request right now?
+    // Checked by the orchestrator before routing traffic here / to decide
+    // whether to keep it in the load-balancing pool. Exempted from the
+    // global rate limiter above (`skip`) for the same reason as healthz.
+    app.get('/api/readyz', async (_req, res) => {
+        if (shuttingDown) {
+            res.status(503).json({ status: 'shutting-down', redis: false, s3: false, timestamp: Date.now() });
+            return;
+        }
+
+        const [redisOk, s3Ok] = await Promise.all([checkRedis(), checkS3(brandRegistry)]);
+        if (redisOk && s3Ok) {
+            res.json({ status: 'ok', redis: true, s3: true, timestamp: Date.now() });
+        } else {
+            res.status(503).json({ status: 'unavailable', redis: redisOk, s3: s3Ok, timestamp: Date.now() });
+        }
+    });
+
+    // BAJO-1: previously answered on any Host, unauthenticated, with no rate
+    // limit at all — the basic view (id/displayName only) exposes every
+    // configured brand slug/name to anyone. It now at minimum sits behind the
+    // global rate limiter mounted above. TODO(security): consider ALSO
+    // requiring `HEALTH_CHECK_KEY` for the basic view (or restricting it to
+    // known operator hosts) — deferred because it's a public-contract change
+    // (some ops tooling may already poll the unauthenticated basic view) that
+    // deserves its own decision, not a rider on this security-fix batch.
     app.get('/api/brands', (req, res) => {
         const queryKey = typeof req.query.key === 'string' ? req.query.key : null;
         const healthCheckKey = envParam.healthCheckKey;
@@ -95,11 +394,14 @@ export const assembleApp = ({
             return `****...${value.slice(-4)}`;
         };
 
+        const maskedProvider = (provider: { key: string; secret: string } | undefined) =>
+            provider ? { key: maskSecret(provider.key), secret: maskSecret(provider.secret) } : null;
+
         const brands = getAllBrands(brandRegistry).map(brand => {
             // Basic info (always shown)
             const basicInfo = {
-                id: brand.id,
-                displayName: brand.displayName,
+                id: brand.slug,
+                displayName: brand.name,
             };
 
             // Return only basic info if key doesn't match
@@ -110,20 +412,17 @@ export const assembleApp = ({
             // Detailed info (only when key matches)
             return {
                 ...basicInfo,
-                // URLs (safe to show)
                 urls: {
-                    companion: brand.companionUrl ?? `${brand.server.protocol}://${brand.server.host}${brand.server.path}`,
-                    auth: brand.auth.url,
-                    backendPublic: brand.public.backendUrl,
-                    uploadPublic: brand.public.uploadUrl,
-                    foldersPublic: brand.public.foldersUrl ?? null,
+                    companion: brand.companionUrl,
+                    whoami: brand.auth.whoamiUrl,
+                    signIn: brand.auth.signInUrl,
+                    signOut: brand.auth.signOutUrl ?? null,
+                    foldersPublic: brand.public?.foldersUrl ?? null,
                 },
-                // Auth config
                 auth: {
-                    url: brand.auth.url,
-                    cookieName: brand.auth.cookieName,
+                    kind: brand.auth.kind,
+                    sessionCookieName: brand.auth.sessionCookieName,
                 },
-                // S3 config (masked secrets)
                 s3: {
                     bucket: brand.s3.bucket,
                     region: brand.s3.region,
@@ -132,7 +431,6 @@ export const assembleApp = ({
                     useAccelerateEndpoint: brand.s3.useAccelerateEndpoint ?? false,
                     clientConfigured: !!brand.s3.client,
                 },
-                // Providers (masked secrets)
                 providers: {
                     google: brand.providers.google ? {
                         clientId: brand.providers.google.clientId,
@@ -141,40 +439,18 @@ export const assembleApp = ({
                         photosApiKey: maskSecret(brand.providers.google.photosApiKey),
                         appId: brand.providers.google.appId ?? null,
                     } : null,
-                    dropbox: brand.providers.dropbox ? {
-                        key: maskSecret(brand.providers.dropbox.key),
-                        secret: maskSecret(brand.providers.dropbox.secret),
-                    } : null,
-                    facebook: brand.providers.facebook ? {
-                        key: maskSecret(brand.providers.facebook.key),
-                        secret: maskSecret(brand.providers.facebook.secret),
-                    } : null,
-                    instagram: brand.providers.instagram ? {
-                        key: maskSecret(brand.providers.instagram.key),
-                        secret: maskSecret(brand.providers.instagram.secret),
-                    } : null,
-                    onedrive: brand.providers.onedrive ? {
-                        key: maskSecret(brand.providers.onedrive.key),
-                        secret: maskSecret(brand.providers.onedrive.secret),
-                    } : null,
-                    box: brand.providers.box ? {
-                        key: maskSecret(brand.providers.box.key),
-                        secret: maskSecret(brand.providers.box.secret),
-                    } : null,
-                    unsplash: brand.providers.unsplash ? {
-                        key: maskSecret(brand.providers.unsplash.key),
-                        secret: maskSecret(brand.providers.unsplash.secret),
-                    } : null,
-                    zoom: brand.providers.zoom ? {
-                        key: maskSecret(brand.providers.zoom.key),
-                        secret: maskSecret(brand.providers.zoom.secret),
-                    } : null,
+                    dropbox: maskedProvider(brand.providers.dropbox),
+                    facebook: maskedProvider(brand.providers.facebook),
+                    instagram: maskedProvider(brand.providers.instagram),
+                    onedrive: maskedProvider(brand.providers.onedrive),
+                    box: maskedProvider(brand.providers.box),
+                    unsplash: maskedProvider(brand.providers.unsplash),
+                    zoom: maskedProvider(brand.providers.zoom),
                 },
-                // Enabled plugins
-                enabledPlugins: brand.enabledPlugins,
-                // CORS
-                corsOrigins: brand.corsOrigins.map(o => typeof o === 'string' ? o : o.toString()),
-                uploadUrls: brand.uploadUrls,
+                upload: brand.upload,
+                limits: brand.limits,
+                domains: brand.domains,
+                companionHosts: brand.companionHosts,
             };
         });
 
@@ -185,95 +461,131 @@ export const assembleApp = ({
         });
     });
 
-    // Mount companion for each brand
-    for (const instance of companionInstances) {
-        const brand = instance.brand;
-
-        // Session is scoped to brand routes only — see buildSessionMiddleware comment above.
-        app.use(`/${brand.id}`, buildSessionMiddleware(brand.id));
-
-        // Attach the concrete brand for routes under /{brandId}
-        // NOTE: Using createBrandMiddleware() here would fall back to defaultBrand because
-        // req.params.brand is not populated when mounting on a literal path like '/acme'.
-        app.use(`/${brand.id}`, (req, _res, next) => {
-            (req as AppRequest).brand = brand;
-            next();
-        });
-
-        // Fix unexpected /default segment in OAuth callbacks for non-default brands
-        if (brand.id !== brandRegistry.defaultBrand?.id) {
-            app.use(`/${brand.id}`, (req, _res, next) => {
-                if (req.url.startsWith('/default/')) {
-                    req.url = req.url.replace(/^\/default/, '');
-                }
-                next();
-            });
+    // --- Host-based brand resolution (Fase 5.1 / spec D4) ---
+    //
+    // Replaces the old per-brand path mount (`/{brandSlug}/...`). Every brand
+    // now lives on its own Companion host (`brand.companionHosts`, code-only)
+    // and is resolved once per request from the inbound `Host` header via
+    // `resolveBrandByHost` (exact-match against the registry, `BRAND_FORCE`
+    // always wins). This is also what retires the `/default/` OAuth-callback
+    // segment hack: `companionUrl` (already root-pathed for every brand) is
+    // the sole source of truth for `redirect_uri` generation.
+    //
+    // `instancesBySlug`/`resolveInstanceForHost` themselves are declared
+    // earlier (ahead of helmet) so the per-brand CSP directives can also use
+    // them — this middleware is what actually ENFORCES the 404 and attaches
+    // `req.brand`, and its position in the chain (after the global rate
+    // limiter + health/readyz/brands, before session/attachUser) is
+    // unchanged.
+    app.use((req, res, next) => {
+        const instance = resolveInstanceForHost(req.headers.host);
+        if (!instance) {
+            res.status(404).json({ error: 'Unknown host' });
+            return;
         }
+        (req as AppRequest).brand = instance.brand;
+        next();
+    });
 
-        // Optional user attachment
-        app.use(`/${brand.id}`, attachUser);
+    // Companion's own session (OAuth handshake state), independent of the
+    // brand's partner session cookie. Single static config (D7): the cookie
+    // name/path no longer vary per brand — isolation across brands is now
+    // provided by the Host itself (each brand has a distinct companionHost),
+    // not by the cookie path. Backed by Redis (connect-redis) so the OAuth
+    // handshake survives across replicas / a redeploy mid-flow (closes H4).
+    app.use(session(buildSessionOptions(envParam)));
 
-        // Uppy upload page - shows plugins based on brand providers
-        app.get(`/${brand.id}/uppy`, serveUppyPage);
-        app.get(`/${brand.id}/uppyModal.js`, serveUppyModalJs);
+    // Optional user attachment — populates req.user from the brand's partner
+    // session cookie (modules/auth/session-resolver.ts). Never rejects. Runs
+    // before the rate limiter below so its keyGenerator can key by user id
+    // once authenticated, not just IP.
+    app.use(attachUser);
 
-        // Mount custom API (S3 signing, etc.) behind per-brand CORS.
-        // The middleware accepts any *.<rootDomain> origin (HTTPS-only in prod)
-        // so dashboards on sibling subdomains can call /api/uppy/* with cookies.
-        app.use(`/${brand.id}/api`, corsForBrand(brand, envParam.protocol), apiRouter);
+    // Shared rate limiter (Fase 5.2, D13) — mounted on /uppy and /api/* only
+    // (not health/readiness, which the orchestrator polls continuously).
+    const rateLimiter = buildRateLimiter(envParam);
 
-        // Companion's own S3 multipart endpoints (/:brand/s3/...) invoke the
-        // s3.getKey callback which calls buildS3Key — that callback throws if
-        // req.user is not populated. Without requireAuth here, an unauthenticated
-        // request would surface as 500 instead of a clean 401.
-        app.use(`/${brand.id}/s3`, requireAuth);
+    // Uppy upload page - shows plugins based on brand providers
+    app.get('/uppy', rateLimiter, serveUppyPage);
+    app.get('/uppyModal.js', serveUppyModalJs);
 
-        // Mount companion at brand path
-        app.use(brand.server.path, instance.app);
+    // Per-brand CORS, resolved dynamically per request via req.brand (no
+    // longer baked in at a per-brand mount time). Precomputed once per brand
+    // at boot since the middleware itself is a pure function of `brand`.
+    const corsMiddlewareBySlug = new Map(
+        companionInstances.map((instance) => [instance.brand.slug, corsForBrand(instance.brand, envParam.protocol)] as const),
+    );
 
-        console.log(`[server] Mounted companion for "${brand.id}" at ${brand.server.path}`);
-        console.log(`[server] Uppy page at /${brand.id}/uppy`);
+    // Mount custom API (S3 signing, etc.) behind per-brand CORS. The
+    // middleware accepts any *.<apex> origin (HTTPS-only in prod) so
+    // dashboards on sibling subdomains can call /api/uppy/* with cookies.
+    // CORS runs before the rate limiter so a preflight OPTIONS (answered
+    // directly by corsForBrand, which never calls next() for OPTIONS) never
+    // counts against the budget.
+    app.use('/api', (req, res, next) => {
+        const brand = (req as AppRequest).brand;
+        const cors = brand && corsMiddlewareBySlug.get(brand.slug);
+        if (!cors) {
+            next();
+            return;
+        }
+        cors(req, res, next);
+    }, rateLimiter, apiRouter);
+
+    // Companion's own S3 multipart endpoints (/s3/...) invoke the s3.getKey
+    // callback which calls buildS3Key — that callback throws if req.user is
+    // not populated. Without requireAuth here, an unauthenticated request
+    // would surface as 500 instead of a clean 401.
+    app.use('/s3', requireAuth);
+
+    // Dispatch whatever falls through (OAuth connect/callback, Companion's
+    // built-in /s3 endpoints, etc.) to the resolved brand's isolated
+    // `@uppy/companion` instance. Each instance is still a fully separate
+    // Express app/router — Host-based routing changes how we PICK it per
+    // request, not the underlying per-brand isolation.
+    app.use((req, res, next) => {
+        const brand = (req as AppRequest).brand;
+        const instance = brand && instancesBySlug.get(brand.slug);
+        if (!instance) {
+            next();
+            return;
+        }
+        instance.app(req, res, next);
+    });
+
+    for (const instance of companionInstances) {
+        logger.info(
+            { brand: instance.brand.slug, companionHosts: instance.brand.companionHosts },
+            '[server] Brand ready (Host-based routing)',
+        );
     }
 
     // Error handler
     app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-        console.error('[server] Unhandled error:', err);
+        logger.error({ err }, '[server] Unhandled error');
         res.status(500).json({ error: 'Internal server error' });
     });
 
-    return app;
+    return { app, setShuttingDown };
 };
 
 /**
  * Creates and configures the Express application
  */
 export const createServer = (): ServerResult => {
-    const brandRegistry: BrandRegistry = createBrandRegistry({
-        corsOrigins: env.corsOrigins,
-        secret: env.secret,
-        filePath: env.filePath,
-        host: env.publicHost,
-        protocol: env.protocol,
-        brands: env.brands,
-        brandConfigs: env.brandConfigs,
-        publicDefaults: {
-            backendUrl: env.publicBackendUrl,
-            uploadUrl: env.publicUploadUrl,
-            foldersUrl: env.publicFoldersUrl,
-        },
-        s3Defaults: env.s3Defaults,
-        providerDefaults: env.providerDefaults,
-    });
+    // BAJO-4: fail fast if BRAND_FORCE names a brand that isn't servable —
+    // see detect.ts for why this can't just be left to resolveBrandByHost.
+    assertBrandForceIsServable();
 
-    const companionInstances: CompanionInstance[] = [];
-    for (const brand of brandRegistry.brands.values()) {
-        const instance = createCompanionForBrand(brand);
-        companionInstances.push(instance);
-    }
+    const brandRegistry: ResolvedBrandRegistry = createBrandRegistry({ secret: env.secret });
 
-    const app = assembleApp({ env, brandRegistry, companionInstances });
+    const companionInstances: CompanionInstance[] = getAllBrands(brandRegistry).map(
+        (brand) => createCompanionForBrand(brand, env),
+    );
 
-    return { app, brandRegistry, companionInstances };
+    const { app, setShuttingDown } = assembleApp({ env, brandRegistry, companionInstances });
+
+    return { app, brandRegistry, companionInstances, setShuttingDown };
 };
 
 export { attachCompanionSocket };

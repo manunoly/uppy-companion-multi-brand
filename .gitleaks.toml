@@ -1,0 +1,16 @@
+title = "gitleaks config"
+
+# Keep every built-in gitleaks rule; this file only ADDS an allowlist.
+[extend]
+useDefault = true
+
+# The unit tests stub COMPANION_SECRET with a single, obviously-fake fixture
+# value ("env-secret" + sequential digits) via vi.stubEnv (see
+# src/modules/brand/brand.service.test.ts). gitleaks' generic-api-key rule
+# flags it as a leak. We allowlist that EXACT literal only — not a path glob —
+# so a real secret accidentally committed to a test file would still be caught.
+[allowlist]
+description = "Known fake unit-test fixture value for COMPANION_SECRET — not a real credential"
+regexes = [
+    '''env-secret-1234567890''',
+]

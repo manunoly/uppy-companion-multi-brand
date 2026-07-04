@@ -1,17 +1,61 @@
 import express from 'express';
 import * as companion from '@uppy/companion';
-import type { Brand } from '../brand/brand.types.js';
+import type { Brand, CompanionProviders, EdoUploadPlugin } from '../brand/brand.types.js';
 import type { CompanionOptions, CompanionProviderOptions } from './companion.types.js';
 import type { AppRequest } from '../../core/types/express.js';
 import { buildS3Key } from './s3/s3.key-builder.js';
+import { logger } from '../../lib/logger.js';
+
+const DEFAULT_FILE_PATH = '/tmp/';
 
 /**
- * Builds provider options from brand configuration
+ * Environment inputs the factory needs but that don't belong on `Brand`
+ * itself (brand-independent, process-wide). Callers pass their `EnvConfig`
+ * (structurally compatible) — see `server.ts#createServer` and
+ * `test-utils/http.ts#createTestApp`.
+ */
+export interface CompanionFactoryEnv {
+    readonly filePath?: string;
+    readonly protocol: 'http' | 'https';
+}
+
+/**
+ * Maps each typed upload plugin (D2's `EdoUploadPlugin`) to the Companion
+ * provider key it activates. `Url` isn't an OAuth provider (it's Companion's
+ * built-in "import from a URL" endpoint), so it maps to `null`. Both Google
+ * picker variants share the same OAuth backend (Companion's `drive`
+ * provider handles both Drive files and Photos via `apiKeyDrive`/
+ * `apiKeyPhotos`).
+ *
+ * Task 4.3: providers are DERIVED from `brand.upload.plugins`, not merely
+ * from which credentials happen to be configured — a brand that never
+ * enabled a plugin never gets its OAuth callback wired, shrinking the
+ * per-brand attack surface. `CompanionProviders` also declares
+ * instagram/onedrive/box/unsplash/zoom for structural completeness, but no
+ * `EdoUploadPlugin` value maps to them today, so they are intentionally not
+ * wired here.
+ */
+const PLUGIN_PROVIDER_KEY: Record<EdoUploadPlugin, keyof CompanionProviders | null> = {
+    Facebook: 'facebook',
+    Dropbox: 'dropbox',
+    GoogleDrivePicker: 'google',
+    GooglePhotosPicker: 'google',
+    Url: null,
+};
+
+/**
+ * Builds provider options from brand configuration, restricted to the
+ * providers backing an enabled `brand.upload.plugins` entry (Task 4.3).
  */
 const buildProviderOptions = (brand: Brand): Record<string, CompanionProviderOptions> => {
     const providers: Record<string, CompanionProviderOptions> = {};
+    const enabledProviderKeys = new Set(
+        brand.upload.plugins
+            .map((plugin) => PLUGIN_PROVIDER_KEY[plugin])
+            .filter((key): key is keyof CompanionProviders => key !== null),
+    );
 
-    if (brand.providers.google) {
+    if (enabledProviderKeys.has('google') && brand.providers.google) {
         providers.drive = {
             key: brand.providers.google.clientId,
             secret: brand.providers.google.clientSecret ?? '',
@@ -21,109 +65,151 @@ const buildProviderOptions = (brand: Brand): Record<string, CompanionProviderOpt
         };
     }
 
-    if (brand.providers.dropbox) {
+    if (enabledProviderKeys.has('dropbox') && brand.providers.dropbox) {
         providers.dropbox = {
             key: brand.providers.dropbox.key,
             secret: brand.providers.dropbox.secret,
         };
     }
 
-    if (brand.providers.facebook) {
+    if (enabledProviderKeys.has('facebook') && brand.providers.facebook) {
         providers.facebook = {
             key: brand.providers.facebook.key,
             secret: brand.providers.facebook.secret,
         };
     }
 
-    if (brand.providers.instagram) {
-        providers.instagram = {
-            key: brand.providers.instagram.key,
-            secret: brand.providers.instagram.secret,
-        };
-    }
-
-    if (brand.providers.onedrive) {
-        providers.onedrive = {
-            key: brand.providers.onedrive.key,
-            secret: brand.providers.onedrive.secret,
-        };
-    }
-
-    if (brand.providers.box) {
-        providers.box = {
-            key: brand.providers.box.key,
-            secret: brand.providers.box.secret,
-        };
-    }
-
-    if (brand.providers.unsplash) {
-        providers.unsplash = {
-            key: brand.providers.unsplash.key,
-            secret: brand.providers.unsplash.secret,
-        };
-    }
-
-    if (brand.providers.zoom) {
-        providers.zoom = {
-            key: brand.providers.zoom.key,
-            secret: brand.providers.zoom.secret,
-        };
-    }
-
-    // [NEW] Use companionUrl to determine the public domain for OAuth redirects
-    // This fixes the issue where implicit path construction adds extra segments like /default/
-    const oauthDomain = brand.companionUrl
-        ? new URL(brand.companionUrl).host
-        : brand.server.host;
-    const oauthPath = brand.companionUrl
-        ? new URL(brand.companionUrl).pathname.replace(/\/$/, '') || '/'
-        : brand.server.path;
+    // `companionUrl` is mandatory on the abeduls3-aligned Brand contract (D2) —
+    // it is always the source of truth for the public domain used in OAuth
+    // redirect_uri generation. This is what eliminates the old `/default/`
+    // segment mis-derivation hack (spec D4).
+    const oauthUrl = parseCompanionUrl(brand);
 
     // We attach it to every provider so Companion uses it for redirect_uri generation
     Object.keys(providers).forEach((key) => {
-        providers[key].oauthDomain = oauthDomain;
-        providers[key].oauthProtocol = brand.companionUrl
-            ? (new URL(brand.companionUrl).protocol.replace(':', '') as 'http' | 'https')
-            : brand.server.protocol;
-        providers[key].oauthPath = oauthPath;
+        providers[key].oauthDomain = oauthUrl.host;
+        providers[key].oauthProtocol = oauthUrl.protocol;
+        providers[key].oauthPath = oauthUrl.path;
     });
 
     return providers;
 };
 
-/**
- * Builds companion options for a brand
- */
-export const buildCompanionOptions = (brand: Brand): CompanionOptions => {
-    let serverOptions = {
-        host: brand.server.host,
-        protocol: brand.server.protocol,
-        path: brand.server.path,
-    };
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // [NEW] Use companionUrl to override server settings for public URLs (e.g. Proxy)
-    if (brand.companionUrl) {
-        try {
-            const url = new URL(brand.companionUrl);
-            serverOptions = {
-                host: url.host, // includes port if present
-                protocol: url.protocol.replace(':', '') as 'http' | 'https',
-                path: url.pathname.replace(/\/$/, ''), // remove trailing slash
-            };
-        } catch (err) {
-            console.error(`[companion] Invalid companionUrl for brand ${brand.id}:`, brand.companionUrl);
-        }
+/**
+ * `validHosts` (options.server.validHosts) is Companion's allowlist for the
+ * OAuth `redirect_uri` handoff (`oauth-redirect.js`:
+ * `hasMatch(handlerHostName, options.server.validHosts)`) — closes H7.
+ * Derived from this Companion instance's own public host(s): the brand's
+ * `companionHosts` (code-only, never overridable) plus the host parsed out
+ * of `companionUrl` (the source of truth for the public origin, D4/D9), so a
+ * forged `state` param can never redirect the OAuth callback to an
+ * arbitrary attacker-controlled host.
+ *
+ * Security review BAJO-2: Companion's own `hasMatch` (server/helpers/
+ * utils.js) does `value === i || new RegExp(i).test(value)` — UNANCHORED,
+ * and with no escaping of its own. Handing it a plain hostname like
+ * `companion.example.com` lets the unescaped `.` match ANY character, and
+ * being unanchored, lets the pattern match as a mere SUBSTRING of a longer,
+ * attacker-influenced `handlerHostName` (e.g.
+ * `evil-companion.example.com.attacker.test` would satisfy an unanchored
+ * `new RegExp('companion.example.com').test(...)`). Every entry is anchored
+ * (`^...$`) and regex-escaped here so `hasMatch` can only ever match the
+ * EXACT host — same allowlist, strictly narrower matching.
+ */
+const buildValidHosts = (brand: Brand): string[] => {
+    const hosts = new Set<string>(brand.companionHosts);
+    try {
+        hosts.add(new URL(brand.companionUrl).host);
+    } catch {
+        // Malformed companionUrl is already logged by parseCompanionUrl.
     }
+    return Array.from(hosts, (host) => `^${escapeRegExp(host)}$`);
+};
+
+/**
+ * `uploadUrls` restricts which destination URLs Companion's non-S3 upload
+ * protocols may target (`Uploader.js#validateUrl` — S3 uploads are exempt,
+ * their destination comes from `brand.s3`, not client input). It must never
+ * be `['*']` (D9, closes H1/H2): that would let an authenticated client
+ * point Companion's upload machinery at an arbitrary origin. Derived from
+ * this Companion instance's own public origin(s) (`companionUrl` +
+ * `companionHosts`) and the brand's own S3 bucket (virtual-hosted-style
+ * endpoint), so only well-known, brand-owned destinations are allowed.
+ * Companion matches each entry via `new RegExp(entry).test(url)` (or exact
+ * string equality) — see `server/helpers/utils.js#hasMatch` — hence the
+ * regex-escaped, start-anchored patterns below.
+ */
+const buildUploadUrls = (brand: Brand): string[] => {
+    const origins = new Set<string>();
+    try {
+        origins.add(new URL(brand.companionUrl).origin);
+    } catch {
+        // Malformed companionUrl is already logged by parseCompanionUrl.
+    }
+    for (const host of brand.companionHosts) {
+        origins.add(`https://${host}`);
+    }
+
+    const patterns = Array.from(origins, (origin) => `^${escapeRegExp(origin)}/`);
+
+    if (brand.s3.bucket && brand.s3.region) {
+        const s3Origin = `https://${brand.s3.bucket}.s3.${brand.s3.region}.amazonaws.com/`;
+        patterns.push(`^${escapeRegExp(s3Origin)}`);
+    }
+
+    return patterns;
+};
+
+interface ParsedCompanionUrl {
+    host: string;
+    protocol: 'http' | 'https';
+    path: string;
+}
+
+/**
+ * Parses `brand.companionUrl` into Companion's server-options shape. Falls
+ * back to a safe default when the URL is empty/malformed — in practice this
+ * only happens for the non-servable placeholder registry entries (abe,
+ * picaboo today), which never actually get a companion instance created
+ * (`createBrandRegistry` only resolves servable slugs).
+ */
+const parseCompanionUrl = (brand: Brand): ParsedCompanionUrl => {
+    try {
+        const url = new URL(brand.companionUrl);
+        return {
+            host: url.host,
+            protocol: url.protocol.replace(':', '') as 'http' | 'https',
+            path: url.pathname.replace(/\/$/, '') || '/',
+        };
+    } catch (err) {
+        logger.error({ err, brand: brand.slug, companionUrl: brand.companionUrl }, '[companion] Invalid or missing companionUrl for brand');
+        return { host: 'localhost', protocol: 'http', path: `/${brand.slug}` };
+    }
+};
+
+/**
+ * Builds companion options for a brand.
+ *
+ * `env` supplies the process-wide, brand-independent inputs `allowLocalUrls`
+ * needs (Task 4.3, D9): `allowLocalUrls: env.protocol === 'http'` so local/
+ * private-network URLs are only ever accepted in dev, never in a `https`
+ * (prod) deployment — this used to be hardcoded `true` regardless of
+ * environment (closes H1/H2 together with `uploadUrls`/`validHosts` below).
+ */
+export const buildCompanionOptions = (brand: Brand, env: CompanionFactoryEnv): CompanionOptions => {
+    const serverOptions = parseCompanionUrl(brand);
 
     const options: CompanionOptions = {
         providerOptions: buildProviderOptions(brand),
-        server: serverOptions,
-        filePath: brand.filePath,
+        server: { ...serverOptions, validHosts: buildValidHosts(brand) },
+        filePath: env.filePath ?? DEFAULT_FILE_PATH,
         secret: brand.secret,
-        uploadUrls: brand.uploadUrls,
-        corsOrigins: brand.corsOrigins,
+        uploadUrls: buildUploadUrls(brand),
+        corsOrigins: brand.domains.map((domain) => `https://${domain}`),
         metrics: false,
-        allowLocalUrls: true, // Allow uploads to localhost
+        allowLocalUrls: env.protocol === 'http',
         enableGooglePickerEndpoint: true,
     };
 
@@ -151,8 +237,8 @@ export interface CompanionInstance {
 /**
  * Creates a Companion instance for a brand
  */
-export const createCompanionForBrand = (brand: Brand): CompanionInstance => {
-    const options = buildCompanionOptions(brand);
+export const createCompanionForBrand = (brand: Brand, env: CompanionFactoryEnv): CompanionInstance => {
+    const options = buildCompanionOptions(brand, env);
 
     const { app: companionApp } = companion.app(options as Parameters<typeof companion.app>[0]);
 
@@ -166,7 +252,7 @@ export const createCompanionForBrand = (brand: Brand): CompanionInstance => {
 
     router.use(companionApp);
 
-    console.log(`[companion] Created instance for brand "${brand.id}"`);
+    logger.info({ brand: brand.slug }, '[companion] Created instance for brand');
 
     return {
         brand,

@@ -11,9 +11,64 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Response, NextFunction } from 'express';
 import type { AppRequest } from '../../../core/types/express.js';
+import type { Brand } from '../../brand/brand.types.js';
 import { buildS3Key, buildUserKeyPrefix } from './s3.key-builder.js';
+import { logger } from '../../../lib/logger.js';
 
 // --- Helpers ---
+
+/**
+ * Parses a client-declared size (e.g. `?contentLength=123`) into a POSITIVE
+ * INTEGER number of bytes, or `undefined` when absent/unparseable/invalid.
+ * Browsers forbid scripts from setting the real `Content-Length` header, so
+ * the client declares the size of the file it INTENDS to upload as an
+ * ordinary field instead. Negative, fractional or zero values are malformed
+ * as a byte count and are treated as "not declared" (undefined) so the
+ * limit check stays consistent — a `-1` must never sneak past `> maxUploadBytes`.
+ */
+export const parseDeclaredLength = (raw: unknown): number | undefined => {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+};
+
+/**
+ * D14 (H13, partial closure): rejects a signing request whose CLIENT-DECLARED
+ * size/type falls outside the brand's configured limits.
+ *
+ * This is declarative only: signS3/signPart sign a PUT by query string
+ * (SigV4), not a presigned POST, so S3 itself never enforces
+ * `content-length-range` — a dishonest client can still send a different
+ * real size/type to the signed URL. Real server-side enforcement requires
+ * migrating to presigned POST (Fase 8, spec D14/8.5). Absence of a declared
+ * value is not itself an error (older/undeclaring clients still work) — it
+ * simply means this check has nothing to validate.
+ */
+const rejectIfOutsideLimits = (
+    brand: Brand,
+    declared: { contentLength?: number; contentType?: string },
+    res: Response,
+): boolean => {
+    const { maxUploadBytes, allowedContentTypes } = brand.limits;
+
+    if (declared.contentLength !== undefined && declared.contentLength > maxUploadBytes) {
+        res.status(400).json({
+            error: `s3: declared Content-Length exceeds the ${maxUploadBytes}-byte limit for this brand`,
+        });
+        return true;
+    }
+
+    if (
+        allowedContentTypes &&
+        declared.contentType !== undefined &&
+        !allowedContentTypes.includes(declared.contentType)
+    ) {
+        res.status(400).json({ error: 's3: Content-Type not allowed for this brand' });
+        return true;
+    }
+
+    return false;
+};
 
 // S3 multipart contract: PartNumber must be an integer in [1, 10000].
 const isPartNumberInRange = (n: number): boolean =>
@@ -47,8 +102,8 @@ const sendIfKeyNotOwned = (req: AppRequest, key: string, res: Response): boolean
     // Note: no `..` check here. S3 keys are flat strings to S3 (no path
     // resolution), and `sanitizeFilename` allows dots so legitimate filenames
     // like `weird..file.jpg` produce keys containing `..`. The authoritative
-    // gate is the user/brand prefix below.
-    const prefix = buildUserKeyPrefix(req.brand.id, req.user.id);
+    // gate is the per-user prefix below.
+    const prefix = buildUserKeyPrefix(req.brand, req.user);
     if (!key.startsWith(prefix)) {
         res.status(403).json({ error: 's3: key does not belong to authenticated user' });
         return true;
@@ -66,7 +121,7 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
     try {
         const brand = req.brand;
         if (!brand || !brand.s3.client || !brand.s3.bucket) {
-            console.error('[s3] Missing brand S3 config');
+            logger.error({ brand: brand?.slug }, '[s3] Missing brand S3 config');
             res.status(400).json({ error: 'S3 configuration incomplete for this brand' });
             return;
         }
@@ -81,6 +136,9 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
             res.status(400).json({ error: 'Missing filename or contentType' });
             return;
         }
+
+        const declaredLength = parseDeclaredLength(params.contentLength ?? params.size);
+        if (rejectIfOutsideLimits(brand, { contentLength: declaredLength, contentType }, res)) return;
 
         const key = buildS3Key({ req, filename, metadata: req.body?.metadata });
 
@@ -100,7 +158,7 @@ export const signS3 = async (req: AppRequest, res: Response, _next: NextFunction
             fields: {},
         });
     } catch (error) {
-        console.error('[s3] Error signing URL:', error);
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error signing URL');
         res.status(500).json({ error: 'Error signing upload' });
     }
 };
@@ -122,6 +180,19 @@ export const createMultipartUpload = async (req: AppRequest, res: Response, _nex
             return;
         }
 
+        // MEDIO-2 (security audit): validate the client-declared Content-Type
+        // against the brand's allowlist, same helper/behavior as signS3.
+        // KNOWN LIMITATION (deferred to Fase 8, spec D14/8.5): byte-size
+        // limits are intentionally NOT enforced here. Unlike signS3, the
+        // client never declares a size anywhere in the multipart flow
+        // (createMultipartUpload/signPart both omit it), and signPart signs a
+        // plain SigV4 PUT-by-query-string per part — there is no
+        // `content-length-range` mechanism for that, unlike a presigned POST.
+        // Real server-side byte enforcement for multipart requires migrating
+        // to presigned POST, which is out of scope here (uppyModal.ts is
+        // browser-only, H21).
+        if (rejectIfOutsideLimits(brand, { contentType: type }, res)) return;
+
         const key = buildS3Key({ req, filename, metadata });
 
         const command = new CreateMultipartUploadCommand({
@@ -138,7 +209,7 @@ export const createMultipartUpload = async (req: AppRequest, res: Response, _nex
             uploadId: s3Data.UploadId,
         });
     } catch (error) {
-        console.error('[s3] Error adding multipart:', error);
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error adding multipart');
         res.status(500).json({ error: 'Error initiating multipart upload' });
     }
 };
@@ -167,6 +238,9 @@ export const signPart = async (req: AppRequest, res: Response, _next: NextFuncti
         }
         if (sendIfKeyNotOwned(req, key, res)) return;
 
+        const declaredLength = parseDeclaredLength(req.query.contentLength ?? req.query.size);
+        if (rejectIfOutsideLimits(brand, { contentLength: declaredLength }, res)) return;
+
         const command = new UploadPartCommand({
             Bucket: brand.s3.bucket,
             Key: key,
@@ -180,7 +254,7 @@ export const signPart = async (req: AppRequest, res: Response, _next: NextFuncti
 
         res.json({ url, expires: expiresIn });
     } catch (error) {
-        console.error('[s3] Error signing part:', error);
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error signing part');
         res.status(500).json({ error: 'Error signing part' });
     }
 };
@@ -230,7 +304,7 @@ export const listParts = async (req: AppRequest, res: Response, _next: NextFunct
 
         res.json(parts);
     } catch (error) {
-        console.error('[s3] Error listing parts:', error);
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error listing parts');
         res.status(500).json({ error: 'Error listing parts' });
     }
 };
@@ -273,7 +347,7 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
             location: data.Location,
         });
     } catch (error) {
-        console.error('[s3] Error completing multipart:', error);
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error completing multipart');
         res.status(500).json({ error: 'Error completing multipart' });
     }
 };
@@ -308,7 +382,7 @@ export const abortMultipartUpload = async (req: AppRequest, res: Response, _next
 
         res.status(200).json({});
     } catch (error) {
-        console.error('[s3] Error aborting multipart:', error);
+        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error aborting multipart');
         res.status(500).json({ error: 'Error aborting multipart' });
     }
 };
