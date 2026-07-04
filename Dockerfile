@@ -1,21 +1,22 @@
 FROM node:22-alpine AS base
 WORKDIR /app
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # 1. Install dependencies only when needed
 FROM base AS deps
 COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable pnpm && pnpm install --frozen-lockfile
+RUN corepack enable pnpm && corepack prepare pnpm@10.32.1 --activate && pnpm install --frozen-lockfile
 
 # 2. Production dependencies only
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable pnpm && pnpm install --frozen-lockfile --prod
+RUN corepack enable pnpm && corepack prepare pnpm@10.32.1 --activate && pnpm install --frozen-lockfile --prod
 
 # 3. Rebuild the source code only when needed
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN corepack enable pnpm && pnpm run build
+RUN corepack enable pnpm && corepack prepare pnpm@10.32.1 --activate && pnpm run build
 
 # 4. Production image, copy all the files and run next
 FROM base AS runner
