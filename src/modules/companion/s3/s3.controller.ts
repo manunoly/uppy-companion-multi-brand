@@ -199,6 +199,7 @@ export const createMultipartUpload = async (req: AppRequest, res: Response, _nex
             Bucket: brand.s3.bucket,
             Key: key,
             ContentType: type,
+            ServerSideEncryption: 'AES256', // Q6/H24: cifrado en reposo forzado (defensa en profundidad); heredado por todas las partes
             // ACL removed to respect bucket policies
         });
 

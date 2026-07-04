@@ -1,5 +1,5 @@
 import type { Brand } from '../brand/brand.types.js';
-import { buildCookieHeader } from '../brand/identity.js';
+import { buildCookieHeader, validateWhoamiUrl } from '../brand/identity.js';
 import type { Folder, FoldersResponse } from './folders.types.js';
 import { logger } from '../../lib/logger.js';
 
@@ -29,6 +29,16 @@ export const fetchFolders = async (
         return [];
     }
 
+    // N5: validar foldersUrl por el mismo gate SSRF que whoami (https, sin
+    // credenciales/puerto no-default, host bajo el apex de confianza de la
+    // marca) ANTES de reenviar la cookie de sesión — foldersUrl es code-only
+    // hoy, pero esto impide reintroducir un fetch sin allowlist.
+    const target = validateWhoamiUrl(foldersUrl, brand.auth.whoamiAllowedHosts);
+    if (!target.ok) {
+        logger.warn({ brand: brand.slug, reason: target.reason }, '[folders] foldersUrl rejected by SSRF gate');
+        return [];
+    }
+
     // Hallazgo BAJO-1: build the outgoing Cookie header through
     // buildCookieHeader (identity.ts) — the single auditable point where a
     // brand cookie is forwarded — instead of raw template-string
@@ -47,11 +57,17 @@ export const fetchFolders = async (
     }
 
     try {
-        const response = await fetch(foldersUrl, {
+        const response = await fetch(target.url, {
             method: 'GET',
             headers: {
                 'Cookie': cookie,
             },
+            // N5 (mismo patrón que session-resolver whoami): NO seguir redirects.
+            // El gate SSRF solo valida la URL inicial; un 3xx desde el host
+            // permitido podría inducir una request server-side fuera del
+            // allowlist. Con 'manual', cualquier 3xx cae en `!response.ok` y
+            // degrada a [] (SA3), sin reenviar la cookie a un destino no validado.
+            redirect: 'manual',
             signal: AbortSignal.timeout(5000),
         });
 

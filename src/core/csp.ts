@@ -43,6 +43,7 @@ const usesGooglePicker = (brand: Brand): boolean =>
 const GOOGLE_API_CONNECT_ORIGINS = ['https://www.googleapis.com', 'https://content.googleapis.com'];
 const GOOGLE_PICKER_FRAME_ORIGINS = ['https://docs.google.com', 'https://accounts.google.com'];
 const GOOGLE_THUMBNAIL_IMG_ORIGINS = ['https://lh3.googleusercontent.com', 'https://drive.google.com'];
+const GOOGLE_SCRIPT_ORIGINS = ['https://apis.google.com'];
 
 const s3OriginFor = (brand: Brand): string | null => {
     if (!brand.s3.bucket || !brand.s3.region) return null;
@@ -100,4 +101,24 @@ export const buildImgSrc = (brand: Brand | undefined): string => {
         for (const origin of GOOGLE_THUMBNAIL_IMG_ORIGINS) origins.add(origin);
     }
     return Array.from(origins).join(' ');
+};
+
+/**
+ * `script-src`: same-origin + el nonce por-request de la página /uppy + los
+ * CDNs de Uppy (transloadit) y SweetAlert2 (cdnjs) + el loader de Google APIs
+ * (`apis.google.com`) cuando la marca habilita el Drive/Photos Picker. El
+ * nonce se pasa desde `res.locals.cspNonce` (server.ts) porque helmet resuelve
+ * esta directiva por-request.
+ */
+export const buildScriptSrc = (brand: Brand | undefined, nonce: string): string => {
+    const origins = [
+        "'self'",
+        `'nonce-${nonce}'`,
+        'https://releases.transloadit.com',
+        'https://cdnjs.cloudflare.com',
+    ];
+    if (brand && usesGooglePicker(brand)) {
+        origins.push(...GOOGLE_SCRIPT_ORIGINS);
+    }
+    return origins.join(' ');
 };
