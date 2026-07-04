@@ -132,4 +132,18 @@ describe('fetchFolders', () => {
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
     });
+
+    // N5 (hallazgo codex): el gate SSRF solo valida la URL inicial; seguir un
+    // redirect 3xx del host permitido saldría del allowlist. El fetch debe usar
+    // redirect: 'manual' (mismo patrón que whoami) para que un 3xx caiga en
+    // !response.ok y degrade a [].
+    it("usa redirect: 'manual' para que un 3xx no salga del allowlist SSRF", async () => {
+        (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ success: true, data: [] }),
+        });
+        await fetchFolders('t', makeBrand());
+        const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+        expect(call[1]?.redirect).toBe('manual');
+    });
 });

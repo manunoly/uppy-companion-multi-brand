@@ -62,6 +62,12 @@ export const fetchFolders = async (
             headers: {
                 'Cookie': cookie,
             },
+            // N5 (mismo patrón que session-resolver whoami): NO seguir redirects.
+            // El gate SSRF solo valida la URL inicial; un 3xx desde el host
+            // permitido podría inducir una request server-side fuera del
+            // allowlist. Con 'manual', cualquier 3xx cae en `!response.ok` y
+            // degrada a [] (SA3), sin reenviar la cookie a un destino no validado.
+            redirect: 'manual',
             signal: AbortSignal.timeout(5000),
         });
 
