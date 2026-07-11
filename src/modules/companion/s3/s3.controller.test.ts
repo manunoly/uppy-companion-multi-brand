@@ -78,6 +78,17 @@ const VALID_PARTS = [{ ETag: '"abc"', PartNumber: 1 }];
 
 const okIngestResult = (uploads: IngestUpload[]): IngestResult => ({ ok: true, uploads });
 
+// S3 raises this when a multipart uploadId is already consumed — the shape a
+// legitimate client retry after a lost complete response hits. Matches the real
+// SDK fingerprint (`name` + 404 `$metadata`) that isNoSuchUpload keys on,
+// without depending on the SDK's @internal NoSuchUpload constructor.
+const noSuchUploadError = (): Error => {
+    const err = new Error('The specified multipart upload does not exist.');
+    err.name = 'NoSuchUpload';
+    (err as Error & { $metadata?: { httpStatusCode: number } }).$metadata = { httpStatusCode: 404 };
+    return err;
+};
+
 // Copilot (PR #7) flagged that parseDeclaredLength accepted any finite number,
 // including negatives/fractions, which then slipped past the `> maxUploadBytes`
 // limit check. A client-declared Content-Length must be a positive integer;
@@ -537,6 +548,86 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         await completeMultipartUpload(req, res, (() => {}) as never);
 
         expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+    });
+
+    // Idempotency gap: a prior complete succeeded but its response was lost, so
+    // the client retries. S3 now returns NoSuchUpload (uploadId consumed). The
+    // endpoint must NOT 500-loop — it falls through to HeadObject, which
+    // confirms the object and lets ingest run idempotently. `location` is
+    // undefined on this path (never reconstructed).
+    it('NoSuchUpload retry + object still present -> NO 500, falls through, ingest called, 200 {ingested:true}', async () => {
+        const brand = makeIngestBrand();
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        await stashUploadMeta(brand.slug, 'upload-retry-ok', {
+            filename: 'f.jpg', mimetype: 'image/jpeg', declaredSize: 2048, folderId: null, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).rejects(noSuchUploadError());
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 2048, ContentType: 'image/jpeg' });
+        mockedPostIngest.mockResolvedValue(
+            okIngestResult([{ id: 9, url: 'https://cdn/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg' }]),
+        );
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-retry-ok' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json, status } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(status).not.toHaveBeenCalled();
+        expect(json).toHaveBeenCalledWith({
+            location: undefined,
+            ingested: true,
+            uploads: [{ id: 9, url: 'https://cdn/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg' }],
+        });
+        expect(mockedPostIngest).toHaveBeenCalledTimes(1);
+    });
+
+    it('NoSuchUpload retry + object absent (HeadObject throws) -> NO 500, 200 {ingested:false}, no ingest call', async () => {
+        const brand = makeIngestBrand();
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        await stashUploadMeta(brand.slug, 'upload-retry-gone', {
+            filename: 'f.jpg', mimetype: 'image/jpeg', declaredSize: 2048, folderId: null, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).rejects(noSuchUploadError());
+        s3mock.on(HeadObjectCommand).rejects(new Error('NotFound'));
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-retry-gone' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json, status } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(status).not.toHaveBeenCalled();
+        expect(json).toHaveBeenCalledWith({ location: undefined, ingested: false });
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+    });
+
+    it('a GENERIC complete failure (not NoSuchUpload) still 500s — retry is legitimate, unchanged', async () => {
+        const brand = makeIngestBrand();
+        s3mock.on(CompleteMultipartUploadCommand).rejects(new Error('transient network error'));
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-generic-fail' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json, status } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(status).toHaveBeenCalledWith(500);
+        expect(json).toHaveBeenCalledWith({ error: 'Error completing multipart' });
+        expect(s3mock.commandCalls(HeadObjectCommand).length).toBe(0);
         expect(mockedPostIngest).not.toHaveBeenCalled();
     });
 });

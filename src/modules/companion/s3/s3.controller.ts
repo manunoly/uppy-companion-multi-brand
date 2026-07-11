@@ -101,6 +101,22 @@ const recordIngestedFalse = (brandSlug: string, key: string, reason: string): vo
     );
 };
 
+/**
+ * S3 surfaces an already-consumed multipart `uploadId` as `NoSuchUpload`
+ * (a `S3ServiceException` subclass whose `name` is `"NoSuchUpload"`, 404 on the
+ * wire). This is the fingerprint of a legitimate client RETRY after a prior
+ * complete succeeded but its response was lost — the object very likely exists,
+ * so this must be treated as already-completed, never as a transient failure.
+ * We match by `name` (stable across SDK minors) and fall back to the 404 status
+ * so a shape without the parsed name is still recognized.
+ */
+const isNoSuchUpload = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null) return false;
+    const e = error as { name?: unknown; $metadata?: { httpStatusCode?: unknown } };
+    if (e.name === 'NoSuchUpload') return true;
+    return e.$metadata?.httpStatusCode === 404;
+};
+
 // S3 multipart contract: PartNumber must be an integer in [1, 10000].
 const isPartNumberInRange = (n: number): boolean =>
     Number.isInteger(n) && n >= 1 && n <= 10000;
@@ -364,7 +380,10 @@ export const listParts = async (req: AppRequest, res: Response, _next: NextFunct
  * exists and the multipart upload is consumed, so EVERY subsequent step
  * (HeadObject, ingest) must resolve to `200` — a non-2xx would make Uppy retry
  * CompleteMultipartUpload against an already-completed upload (S3 NoSuchUpload).
- * The inner try enforces that invariant.
+ * The inner try enforces that invariant. And should a complete response still
+ * be lost so the client retries anyway, the outer catch treats S3's
+ * `NoSuchUpload` as already-completed (not a 500): it falls through to the same
+ * post-complete path, so the re-ingest is idempotent and no retry loop forms.
  */
 export const completeMultipartUpload = async (req: AppRequest, res: Response, _next: NextFunction): Promise<void> => {
     const brand = req.brand;
@@ -405,10 +424,23 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
         }));
         location = data.Location;
     } catch (error) {
-        // The multipart upload was NOT consumed — a retry is legitimate.
-        logger.error({ err: error, brand: brand.slug }, '[s3] Error completing multipart');
-        res.status(500).json({ error: 'Error completing multipart' });
-        return;
+        if (!isNoSuchUpload(error)) {
+            // The multipart upload was NOT consumed — a retry is legitimate.
+            logger.error({ err: error, brand: brand.slug }, '[s3] Error completing multipart');
+            res.status(500).json({ error: 'Error completing multipart' });
+            return;
+        }
+        // Already consumed by a prior (lost-response) complete. Do NOT 500 —
+        // fall through to the post-complete HeadObject, which confirms reality:
+        // if the object exists, ingest runs idempotently (capsule's
+        // (user_id,url) unique index makes a re-ingest a no-op) → 200; if it is
+        // absent, HeadObject throws and the inner catch already returns
+        // 200 {ingested:false}. `location` stays undefined — the ingest and the
+        // parent's upload-complete refetch own the URL, we never reconstruct it.
+        logger.warn(
+            { err: error, brand: brand.slug },
+            '[s3] multipart already consumed — treating as already-completed, falling through to HeadObject',
+        );
     }
 
     // Post-complete: the object now exists. Never throw out of here — always 200.
