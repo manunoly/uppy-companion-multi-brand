@@ -58,18 +58,85 @@ describe('registry: edo (servable, MVP brand)', () => {
     });
 });
 
-describe('registry: abe/picaboo (not servable yet)', () => {
-    it('abe has an empty companionHosts (no confirmed capsule endpoint)', () => {
-        expect(getBaseBrandConfig('abe').companionHosts).toEqual([]);
+describe('registry: abe (servable, P1-C1)', () => {
+    const abe = getBaseBrandConfig('abe');
+
+    it('is a partner-whoami brand', () => {
+        expect(abe.auth.kind).toBe('partner-whoami');
     });
 
+    it('has the abeduls.com SSRF allowlist', () => {
+        expect(abe.auth.whoamiAllowedHosts).toEqual(['abeduls.com']);
+    });
+
+    it('uses the abes_session cookie and the capsule /api/user responseMapping', () => {
+        expect(abe.auth.sessionCookieName).toBe('abes_session');
+        expect(abe.auth.responseMapping).toEqual({
+            idField: 'id',
+            emailField: 'email',
+            nameField: 'displayName',
+            imageField: 'imageUrl',
+        });
+    });
+
+    it('has no S3 key prefix (SA1: shares capsule bucket 1:1 via original/{id}/...)', () => {
+        expect(abe.assets.s3Prefix).toBe('');
+    });
+
+    it('has an empty registry-literal bucket, resolved at deploy via ABE_S3_BUCKET (P1-G1)', () => {
+        expect(abe.s3.bucket).toBe('');
+        expect(abe.s3.region).toBe('us-east-1');
+    });
+
+    it('declares prod AND local companionHosts (code-only, not overridable)', () => {
+        expect(abe.companionHosts).toContain('companion.abeduls.com');
+        expect(abe.companionHosts).toContain('companion.abeduls.local');
+    });
+
+    it("declares the designer + apex domains that embed /uppy (frame-ancestors/CORS)", () => {
+        expect(abe.domains).toEqual(
+            expect.arrayContaining(['abeduls.com', 'designer.abeduls.com', 'designer.abeduls.local', 'abeduls.local']),
+        );
+    });
+
+    it('has the ABEDULS upload system with no plugins (phase-1 local-only)', () => {
+        expect(abe.upload.system).toBe('ABEDULS');
+        expect(abe.upload.systemDetails).toBe('DESIGNER');
+        expect(abe.upload.plugins).toEqual([]);
+    });
+
+    it('declares a maxUploadBytes limit and the allowed image content types', () => {
+        expect(abe.limits.maxUploadBytes).toBeGreaterThan(0);
+        expect(abe.limits.allowedContentTypes).toEqual(
+            expect.arrayContaining(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif']),
+        );
+    });
+
+    it('declares companionUrl and the capsule public folders endpoint', () => {
+        expect(abe.companionUrl).toBe('https://companion.abeduls.com');
+        expect(abe.public?.foldersUrl).toBe('https://abeduls.com/api/folders');
+    });
+
+    it('is deep-frozen', () => {
+        expect(Object.isFrozen(abe)).toBe(true);
+        expect(Object.isFrozen(abe.auth)).toBe(true);
+        expect(Object.isFrozen(abe.s3)).toBe(true);
+        expect(Object.isFrozen(abe.companionHosts)).toBe(true);
+    });
+});
+
+describe('registry: picaboo (not servable yet)', () => {
     it('picaboo has an empty companionHosts (no confirmed endpoint)', () => {
         expect(getBaseBrandConfig('picaboo').companionHosts).toEqual([]);
     });
 });
 
 describe('getServableSlugs', () => {
-    it('returns only brands with a non-empty companionHosts', () => {
-        expect(getServableSlugs()).toEqual(['edo']);
+    it('returns every brand with a non-empty companionHosts (edo, abe)', () => {
+        expect(getServableSlugs()).toEqual(['edo', 'abe']);
+    });
+
+    it('excludes picaboo (still not servable)', () => {
+        expect(getServableSlugs()).not.toContain('picaboo');
     });
 });

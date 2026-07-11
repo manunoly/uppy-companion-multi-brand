@@ -66,6 +66,24 @@ describe('resolveBrandByHost: exact-match against companionHosts', () => {
     });
 });
 
+describe('resolveBrandByHost: abe (servable, P1-C1)', () => {
+    it("matches abe's prod companion host", () => {
+        expect(resolveBrandByHost('companion.abeduls.com')).toBe('abe');
+    });
+
+    it("matches abe's local companion host", () => {
+        expect(resolveBrandByHost('companion.abeduls.local')).toBe('abe');
+    });
+
+    it('is case- and port-insensitive', () => {
+        expect(resolveBrandByHost('Companion.Abeduls.COM:443')).toBe('abe');
+    });
+
+    it('does NOT suffix-match designer.abeduls.com (a domains entry, not a companionHost)', () => {
+        expect(resolveBrandByHost('designer.abeduls.com')).toBeNull();
+    });
+});
+
 describe('resolveBrandByHost: unknown host in production', () => {
     it('rejects (null), never defaults to a brand', () => {
         vi.stubEnv('NODE_ENV', 'production');
@@ -102,7 +120,7 @@ describe('resolveBrandByHost: dev default is configurable per caller', () => {
 
 // BAJO-4: BRAND_FORCE always wins in resolveBrandByHost, but createBrandRegistry()
 // only ever builds Companion instances for SERVABLE slugs. Without this guard, an
-// operator setting BRAND_FORCE=abe (registered but not servable — empty
+// operator setting BRAND_FORCE=picaboo (registered but not servable — empty
 // companionHosts) would boot successfully and then 404 on every single request,
 // with no indication of why. This must fail loudly at startup instead.
 describe('assertBrandForceIsServable (BAJO-4)', () => {
@@ -110,8 +128,13 @@ describe('assertBrandForceIsServable (BAJO-4)', () => {
         expect(() => assertBrandForceIsServable()).not.toThrow();
     });
 
-    it('does nothing when BRAND_FORCE names a servable brand', () => {
+    it('does nothing when BRAND_FORCE names a servable brand (edo)', () => {
         vi.stubEnv('BRAND_FORCE', 'edo');
+        expect(() => assertBrandForceIsServable()).not.toThrow();
+    });
+
+    it('does nothing when BRAND_FORCE names abe (servable as of P1-C1)', () => {
+        vi.stubEnv('BRAND_FORCE', 'abe');
         expect(() => assertBrandForceIsServable()).not.toThrow();
     });
 
@@ -126,9 +149,9 @@ describe('assertBrandForceIsServable (BAJO-4)', () => {
         expect(() => assertBrandForceIsServable()).toThrow(/not a recognized brand slug/);
     });
 
-    it('throws a clear error when BRAND_FORCE names a registered but non-servable brand', () => {
-        vi.stubEnv('BRAND_FORCE', 'abe');
-        expect(() => assertBrandForceIsServable()).toThrow(/abe/);
+    it('throws a clear error when BRAND_FORCE names a registered but non-servable brand (picaboo)', () => {
+        vi.stubEnv('BRAND_FORCE', 'picaboo');
+        expect(() => assertBrandForceIsServable()).toThrow(/picaboo/);
         expect(() => assertBrandForceIsServable()).toThrow(/not a servable brand/);
     });
 });

@@ -200,8 +200,8 @@ describe('warmSecretsAtBootIfNeeded', () => {
 
         await warmSecretsAtBootIfNeeded({ SECRETS_SOURCE: 'aws' });
 
-        // Only servable slugs (edo, today) get warmed at boot.
-        expect(smMock.commandCalls(GetSecretValueCommand)).toHaveLength(1);
+        // Every servable slug (edo, abe — as of P1-C1) gets warmed at boot.
+        expect(smMock.commandCalls(GetSecretValueCommand)).toHaveLength(2);
         expect(() => loadBrandSecrets('edo', { env: { SECRETS_SOURCE: 'aws' } })).not.toThrow();
     });
 });

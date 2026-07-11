@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildConnectSrc, buildFrameAncestors, buildFrameSrc, buildImgSrc, buildScriptSrc } from './csp.js';
 import { makeBrand } from '../test-utils/fixtures.js';
+import { getBaseBrandConfig } from '../modules/brand/registry.js';
 
 // Security review MEDIO-3: helmet's un-derived defaults (connect-src/
 // frame-ancestors/frame-src fall back to default-src 'self'; img-src is
@@ -54,6 +55,17 @@ describe('buildFrameAncestors', () => {
     it('does not include unrelated hosts', () => {
         const brand = makeBrand({ domains: ['designer.test.example.com'] });
         expect(buildFrameAncestors(brand)).not.toContain('evil.example.com');
+    });
+
+    it("abe (real registry entry, P1-C1): allows the abeduls.com + designer.abeduls.com origins to embed /uppy", () => {
+        // Reads the actual registry `domains` rather than hardcoding them, so this
+        // test tracks the real entry instead of a stale assumption about it.
+        const abeDomains = getBaseBrandConfig('abe').domains;
+        const brand = makeBrand({ slug: 'abe', domains: abeDomains });
+        const frameAncestors = buildFrameAncestors(brand);
+        expect(frameAncestors).toContain("'self'");
+        expect(frameAncestors).toContain('https://abeduls.com');
+        expect(frameAncestors).toContain('https://designer.abeduls.com');
     });
 });
 
