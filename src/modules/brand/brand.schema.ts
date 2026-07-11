@@ -32,6 +32,7 @@ const authSharedFields = {
     whoamiAllowedHosts: z.array(z.string()),
     sessionCookieName: z.string().min(1),
     responseMapping: brandResponseMappingSchema,
+    requireVerifiedEmail: z.boolean().optional(),
 };
 
 export const brandAuthConfigSchema = z.discriminatedUnion('kind', [

@@ -67,6 +67,8 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
             whoamiAllowedHosts: ['abeduls.com'],
             sessionCookieName: 'abes_session',
             responseMapping: { idField: 'id', emailField: 'email', nameField: 'displayName', imageField: 'imageUrl' },
+            // Parity with capsule's proxy gate: an unverified-email user resolves as unauthenticated.
+            requireVerifiedEmail: true,
         },
         // SA1: shares capsule's bucket 1:1 — keys land at 'original/{id}/...', no 'brands/abe/' prefix.
         assets: { s3Prefix: '' },

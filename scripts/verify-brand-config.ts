@@ -93,6 +93,7 @@ for (const slug of getAllBrandSlugs()) {
     console.log(`  auth.signInUrl:         ${effectiveAuth.signInUrl || '(not set)'}`);
     console.log(`  auth.signOutUrl:        ${effectiveAuth.signOutUrl ?? '(not set)'}`);
     console.log(`  auth.sessionCookieName: ${effectiveAuth.sessionCookieName}`);
+    console.log(`  auth.requireVerifiedEmail: ${effectiveAuth.requireVerifiedEmail === true ? 'yes (unverified-email users resolve as unauthenticated)' : 'no'}`);
     console.log(`  ${overrideEnvVar}: ${overridden ? 'applied (one or more auth fields overridden)' : '(not set / no effect)'}`);
 
     const whoamiTarget = resolveValidatedWhoamiTarget(base);

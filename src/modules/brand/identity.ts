@@ -66,9 +66,10 @@ export function buildCookieHeader(name: string, value: string): string | null {
 }
 
 // Code-only auth keys: NEVER overridable via `<SLUG>_BRAND_OVERRIDE`. `kind` is the
-// type discriminator; `whoamiAllowedHosts` is the SSRF gate itself. Any NEW
-// non-overridable field added to BrandAuthConfig MUST be listed here.
-const PROTECTED_AUTH_KEYS = new Set(['kind', 'whoamiAllowedHosts']);
+// type discriminator; `whoamiAllowedHosts` is the SSRF gate itself;
+// `requireVerifiedEmail` is a security policy. Any NEW non-overridable field
+// added to BrandAuthConfig MUST be listed here.
+const PROTECTED_AUTH_KEYS = new Set(['kind', 'whoamiAllowedHosts', 'requireVerifiedEmail']);
 const PROTO_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_COOKIE_NAME_LENGTH = 128;
 

@@ -25,8 +25,8 @@ export interface BrandResponseMapping {
  * carries `whoamiUrl`/`whoamiAllowedHosts`), BOTH variants carry them here:
  * the Companion is a standalone service, so even `capsule` brands (abe) need
  * an EXTERNAL whoami endpoint + SSRF allowlist to validate a forwarded cookie
- * (spec D5.b). `whoamiAllowedHosts` and `kind` are NEVER overridable via
- * `<SLUG>_BRAND_OVERRIDE` (see identity.ts PROTECTED_AUTH_KEYS).
+ * (spec D5.b). `whoamiAllowedHosts`, `kind` and `requireVerifiedEmail` are
+ * NEVER overridable via `<SLUG>_BRAND_OVERRIDE` (see identity.ts PROTECTED_AUTH_KEYS).
  */
 export type BrandAuthConfig =
     | {
@@ -37,6 +37,8 @@ export type BrandAuthConfig =
           readonly whoamiAllowedHosts: readonly string[];
           readonly sessionCookieName: string;
           readonly responseMapping: BrandResponseMapping;
+          // When true, a whoami response whose raw `emailVerified` claim is not `true` resolves as unauthenticated.
+          readonly requireVerifiedEmail?: boolean;
       }
     | {
           readonly kind: 'partner-whoami';
@@ -46,6 +48,8 @@ export type BrandAuthConfig =
           readonly whoamiAllowedHosts: readonly string[];
           readonly sessionCookieName: string;
           readonly responseMapping: BrandResponseMapping;
+          // When true, a whoami response whose raw `emailVerified` claim is not `true` resolves as unauthenticated.
+          readonly requireVerifiedEmail?: boolean;
       };
 
 // Safe Uppy Dashboard plugins for the edo UppyModal.js (mirrors abeduls3's EdoUploadPlugin).
