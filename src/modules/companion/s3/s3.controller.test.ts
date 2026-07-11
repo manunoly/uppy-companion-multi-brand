@@ -1,8 +1,82 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { S3Client, CreateMultipartUploadCommand } from '@aws-sdk/client-s3';
-import { parseDeclaredLength, createMultipartUpload } from './s3.controller.js';
+import {
+    S3Client,
+    CreateMultipartUploadCommand,
+    CompleteMultipartUploadCommand,
+    HeadObjectCommand,
+    DeleteObjectCommand,
+} from '@aws-sdk/client-s3';
+import type { Response } from 'express';
+import {
+    parseDeclaredLength,
+    parseFolderId,
+    createMultipartUpload,
+    completeMultipartUpload,
+} from './s3.controller.js';
+import { postIngest, type IngestResult, type IngestUpload } from '../ingest/ingest.client.js';
+import { stashUploadMeta, readUploadMeta } from '../ingest/upload-meta.store.js';
 import { makeAppRequest, makeBrand, makeUser } from '../../../test-utils/fixtures.js';
+
+// s3.controller -> upload-meta.store -> lib/redis.js eagerly reads `env` from
+// config/index.js at import time (deriveEnv() throws without a real
+// COMPANION_SECRET) — mirrors the same fix server.integration.test.ts/http.ts
+// apply, so the create/complete Redis round-trip below runs against a real
+// in-memory client instead of a genuine network connection or a boot-time throw.
+// The env object is inlined (not imported) because vi.mock factories are
+// hoisted above every import statement in the file.
+vi.mock('ioredis', async () => {
+    const { default: RedisMock } = await import('ioredis-mock');
+    return { default: RedisMock, Redis: RedisMock };
+});
+vi.mock('../../../config/index.js', () => ({
+    env: {
+        port: 3020,
+        host: '0.0.0.0',
+        protocol: 'http',
+        publicHost: 'localhost:3020',
+        secret: 'test-secret-value-1234567890',
+        healthCheckKey: undefined,
+        redisUrl: 'redis://localhost:6379',
+        filePath: '/tmp/',
+        rateLimitWindowMs: 60_000,
+        rateLimitMax: 300,
+        rateLimitGlobalWindowMs: 60_000,
+        rateLimitGlobalMax: 600,
+        secretsSource: 'env',
+    },
+}));
+
+// The ingest S2S call itself is unit-tested in ingest/ingest.client.test.ts —
+// here it's a pure boundary mock so completeMultipartUpload's own branching
+// (HeadObject enforcement, response shape, no-delete) is exercised in isolation.
+vi.mock('../ingest/ingest.client.js', () => ({
+    postIngest: vi.fn(),
+}));
+
+const mockedPostIngest = vi.mocked(postIngest);
+
+const makeRes = () => {
+    const json = vi.fn();
+    const status = vi.fn(() => ({ json }));
+    const res = { json, status } as unknown as Response;
+    return { res, json, status };
+};
+
+const INGEST_URL = 'https://api.test.example.com/api/internal/media/ingest';
+const TOKEN_ENV = 'TEST_INGEST_TOKEN';
+
+const makeIngestBrand: typeof makeBrand = (overrides = {}) =>
+    makeBrand({
+        slug: 'abe',
+        limits: { maxUploadBytes: 10_000_000, allowedContentTypes: ['image/jpeg', 'image/png'] },
+        ingest: { url: INGEST_URL, tokenEnv: TOKEN_ENV },
+        ...overrides,
+    });
+
+const VALID_PARTS = [{ ETag: '"abc"', PartNumber: 1 }];
+
+const okIngestResult = (uploads: IngestUpload[]): IngestResult => ({ ok: true, uploads });
 
 // Copilot (PR #7) flagged that parseDeclaredLength accepted any finite number,
 // including negatives/fractions, which then slipped past the `> maxUploadBytes`
@@ -50,5 +124,389 @@ describe('createMultipartUpload — cifrado en reposo (Q6)', () => {
         expect(calls.length).toBe(1);
         expect(calls[0].args[0].input.ServerSideEncryption).toBe('AES256');
         s3mock.restore();
+    });
+});
+
+describe('parseFolderId', () => {
+    it('parses a positive integer folder id', () => {
+        expect(parseFolderId('5')).toBe(5);
+        expect(parseFolderId(7)).toBe(7);
+    });
+
+    it('treats malformed folder ids as null (negative, fractional, zero, non-numeric)', () => {
+        for (const raw of ['-1', '1.5', '0', '-0', 'abc', 'NaN']) {
+            expect(parseFolderId(raw)).toBeNull();
+        }
+    });
+
+    it('treats absent values as null', () => {
+        expect(parseFolderId(undefined)).toBeNull();
+        expect(parseFolderId(null)).toBeNull();
+        expect(parseFolderId('')).toBeNull();
+    });
+});
+
+describe('createMultipartUpload — declared-size / MIME reject at create (P1-C-PROTOCOL Step 1)', () => {
+    let s3mock: ReturnType<typeof mockClient>;
+
+    beforeEach(() => {
+        s3mock = mockClient(S3Client);
+    });
+
+    afterEach(() => {
+        s3mock.restore();
+    });
+
+    it('rejects an over-declared size before ever calling S3 (client-declared, not yet authoritative)', async () => {
+        const brand = makeBrand({ limits: { maxUploadBytes: 1000 } });
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            method: 'POST',
+            body: { filename: 'f.jpg', type: 'image/jpeg', size: '5000' },
+        });
+        const { res, json, status } = makeRes();
+
+        await createMultipartUpload(req, res, (() => {}) as never);
+
+        expect(status).toHaveBeenCalledWith(400);
+        expect(json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('Content-Length') }));
+        expect(s3mock.commandCalls(CreateMultipartUploadCommand).length).toBe(0);
+    });
+
+    it('rejects a disallowed Content-Type before ever calling S3', async () => {
+        const brand = makeBrand({ limits: { maxUploadBytes: 1_000_000, allowedContentTypes: ['image/jpeg', 'image/png'] } });
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            method: 'POST',
+            body: { filename: 'f.exe', type: 'application/x-msdownload', size: '100' },
+        });
+        const { res, json, status } = makeRes();
+
+        await createMultipartUpload(req, res, (() => {}) as never);
+
+        expect(status).toHaveBeenCalledWith(400);
+        expect(json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('Content-Type') }));
+        expect(s3mock.commandCalls(CreateMultipartUploadCommand).length).toBe(0);
+    });
+
+    it('accepts a tiny in-limit file and stashes folder/size/thumbnail meta in Redis, keyed by uploadId', async () => {
+        const brand = makeBrand({ slug: 'abe', limits: { maxUploadBytes: 10_000_000 } });
+        s3mock.on(CreateMultipartUploadCommand).resolves({ Key: 'k1', UploadId: 'upload-stash-1' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            method: 'POST',
+            body: { filename: 'tiny.jpg', type: 'image/jpeg', size: '2048', folderId: '9' },
+        });
+        const { res, json } = makeRes();
+
+        await createMultipartUpload(req, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({ key: 'k1', uploadId: 'upload-stash-1' });
+        const meta = await readUploadMeta('abe', 'upload-stash-1');
+        expect(meta).toEqual({
+            filename: 'tiny.jpg',
+            mimetype: 'image/jpeg',
+            declaredSize: 2048,
+            folderId: 9,
+            userId: 'u1',
+            isThumbnail: false,
+        });
+    });
+
+    it('marks the stash isThumbnail:true only when the client declares isThumbnail:"true"', async () => {
+        const brand = makeBrand({ slug: 'abe', limits: { maxUploadBytes: 10_000_000 } });
+        s3mock.on(CreateMultipartUploadCommand).resolves({ Key: 'k2', UploadId: 'upload-stash-2' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            method: 'POST',
+            body: { filename: 'thumb_tiny.jpg', type: 'image/jpeg', size: '512', isThumbnail: 'true' },
+        });
+        await createMultipartUpload(req, makeRes().res, (() => {}) as never);
+
+        const meta = await readUploadMeta('abe', 'upload-stash-2');
+        expect(meta?.isThumbnail).toBe(true);
+        expect(meta?.folderId).toBeNull();
+    });
+});
+
+describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1-C-PROTOCOL Steps 3-4)', () => {
+    let s3mock: ReturnType<typeof mockClient>;
+
+    beforeEach(() => {
+        s3mock = mockClient(S3Client);
+        mockedPostIngest.mockReset();
+    });
+
+    afterEach(() => {
+        s3mock.restore();
+        vi.unstubAllEnvs();
+    });
+
+    it('end-to-end create -> complete happy path: ingest called with the resolved slug + trimmed token; response carries uploads unchanged', async () => {
+        const brand = makeIngestBrand();
+        vi.stubEnv(TOKEN_ENV, '  secret-abc  ');
+        s3mock.on(CreateMultipartUploadCommand).resolves({ Key: 'original/u1/f.jpg', UploadId: 'upload-1' });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.jpg' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 2048, ContentType: 'image/jpeg' });
+        mockedPostIngest.mockResolvedValue(
+            okIngestResult([{ id: 1, url: 'https://cdn/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg' }]),
+        );
+
+        const createReq = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            method: 'POST',
+            body: { filename: 'f.jpg', type: 'image/jpeg', size: '2048' },
+        });
+        await createMultipartUpload(createReq, makeRes().res, (() => {}) as never);
+
+        const completeReq = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-1' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json } = makeRes();
+        await completeMultipartUpload(completeReq, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({
+            location: 'https://bucket/f.jpg',
+            ingested: true,
+            uploads: [{ id: 1, url: 'https://cdn/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg' }],
+        });
+        expect(mockedPostIngest).toHaveBeenCalledTimes(1);
+        const call = mockedPostIngest.mock.calls[0][0];
+        expect(call.token).toBe('secret-abc');
+        expect(call.brandSlug).toBe('abe');
+        expect(call.userId).toBe('u1');
+        expect(call.url.href).toBe(INGEST_URL);
+        expect(call.files).toEqual([
+            { key: 'original/u1/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg', fileSize: 2048, source: 'local' },
+        ]);
+    });
+
+    it('forwards folderId to ingest only when the stashed meta has one', async () => {
+        const brand = makeIngestBrand();
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        await stashUploadMeta(brand.slug, 'upload-folder', {
+            filename: 'f.jpg', mimetype: 'image/jpeg', declaredSize: 2048, folderId: 42, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.jpg' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 2048, ContentType: 'image/jpeg' });
+        mockedPostIngest.mockResolvedValue(
+            okIngestResult([{ id: 2, url: 'https://cdn/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg' }]),
+        );
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-folder' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        await completeMultipartUpload(req, makeRes().res, (() => {}) as never);
+
+        expect(mockedPostIngest.mock.calls[0][0].files).toEqual([
+            { key: 'original/u1/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg', fileSize: 2048, folderId: 42, source: 'local' },
+        ]);
+    });
+
+    it('HeadObject over-limit (authoritative, not client-declared) -> ingested:false, rejected:"over-limit", NO ingest call, NO delete', async () => {
+        const brand = makeIngestBrand({ limits: { maxUploadBytes: 1000, allowedContentTypes: ['image/jpeg'] } });
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        await stashUploadMeta(brand.slug, 'upload-2', {
+            filename: 'f.jpg', mimetype: 'image/jpeg', declaredSize: 500, folderId: null, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.jpg' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 999_999, ContentType: 'image/jpeg' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-2' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, rejected: 'over-limit' });
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+        expect(s3mock.commandCalls(DeleteObjectCommand).length).toBe(0);
+    });
+
+    it('HeadObject MIME not allowed -> ingested:false, rejected:"mime-not-allowed", NO ingest call, NO delete', async () => {
+        const brand = makeIngestBrand({ limits: { maxUploadBytes: 10_000_000, allowedContentTypes: ['image/jpeg'] } });
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        await stashUploadMeta(brand.slug, 'upload-mime', {
+            filename: 'f.bin', mimetype: 'image/jpeg', declaredSize: 500, folderId: null, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.bin' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 500, ContentType: 'application/x-msdownload' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-mime' },
+            query: { key: 'original/u1/f.bin' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.bin', ingested: false, rejected: 'mime-not-allowed' });
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+        expect(s3mock.commandCalls(DeleteObjectCommand).length).toBe(0);
+    });
+
+    it('direct-API abuse: a falsified small declared size at create does not bypass the authoritative HeadObject check at complete', async () => {
+        const brand = makeIngestBrand({ limits: { maxUploadBytes: 1_000_000, allowedContentTypes: ['image/jpeg'] } });
+        s3mock.on(CreateMultipartUploadCommand).resolves({ Key: 'k', UploadId: 'upload-abuse' });
+        const createReq = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            method: 'POST',
+            body: { filename: 'f.jpg', type: 'image/jpeg', size: '100' },
+        });
+        await createMultipartUpload(createReq, makeRes().res, (() => {}) as never);
+
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.jpg' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 50_000_000, ContentType: 'image/jpeg' });
+
+        const completeReq = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-abuse' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json } = makeRes();
+        await completeMultipartUpload(completeReq, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, rejected: 'over-limit' });
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+        expect(s3mock.commandCalls(DeleteObjectCommand).length).toBe(0);
+    });
+
+    it('ingest 5xx -> still 200 {ingested:false}, object left intact (no delete), no rejected reason (accepted residual)', async () => {
+        const brand = makeIngestBrand();
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        await stashUploadMeta(brand.slug, 'upload-3', {
+            filename: 'f.jpg', mimetype: 'image/jpeg', declaredSize: 2048, folderId: null, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.jpg' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 2048, ContentType: 'image/jpeg' });
+        mockedPostIngest.mockResolvedValue({ ok: false, reason: 'status-500' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-3' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json, status } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(status).not.toHaveBeenCalled();
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(s3mock.commandCalls(DeleteObjectCommand).length).toBe(0);
+    });
+
+    it('thumbnail short-circuit: no HeadObject, no ingest call, ingested:false without a rejected reason', async () => {
+        const brand = makeIngestBrand();
+        await stashUploadMeta(brand.slug, 'upload-thumb', {
+            filename: 'thumb_f.jpg', mimetype: 'image/jpeg', declaredSize: 100, folderId: null, userId: 'u1', isThumbnail: true,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/thumb_f.jpg' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-thumb' },
+            query: { key: 'original/u1/thumb_f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/thumb_f.jpg', ingested: false });
+        expect(s3mock.commandCalls(HeadObjectCommand).length).toBe(0);
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+    });
+
+    it('a brand with no ingest config (e.g. edo) completes with ingested:false and no ingest call — not an orphan', async () => {
+        const brand = makeBrand({ slug: 'edo', limits: { maxUploadBytes: 10_000_000 } });
+        await stashUploadMeta(brand.slug, 'upload-noingest', {
+            filename: 'f.jpg', mimetype: 'image/jpeg', declaredSize: 2048, folderId: null, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.jpg' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 2048, ContentType: 'image/jpeg' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-noingest' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+    });
+
+    it('an ingest target failing the SSRF allowlist gate -> no ingest call, ingested:false', async () => {
+        const brand = makeIngestBrand({ ingest: { url: 'https://evil.example.com/ingest', tokenEnv: TOKEN_ENV } });
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        await stashUploadMeta(brand.slug, 'upload-target', {
+            filename: 'f.jpg', mimetype: 'image/jpeg', declaredSize: 2048, folderId: null, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.jpg' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 2048, ContentType: 'image/jpeg' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-target' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+    });
+
+    it('a misconfigured ingest token (env var unset) -> no ingest call, ingested:false', async () => {
+        const brand = makeIngestBrand();
+        vi.stubEnv(TOKEN_ENV, undefined);
+        await stashUploadMeta(brand.slug, 'upload-token', {
+            filename: 'f.jpg', mimetype: 'image/jpeg', declaredSize: 2048, folderId: null, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://bucket/f.jpg' });
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 2048, ContentType: 'image/jpeg' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-token' },
+            query: { key: 'original/u1/f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+        const { res, json } = makeRes();
+        await completeMultipartUpload(req, res, (() => {}) as never);
+
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(mockedPostIngest).not.toHaveBeenCalled();
     });
 });
