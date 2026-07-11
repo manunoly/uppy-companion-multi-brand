@@ -39,7 +39,7 @@
 
 import 'dotenv/config';
 import { getAllBrandSlugs, getServableSlugs, getBaseBrandConfig } from '../src/modules/brand/registry.js';
-import { resolveEffectiveAuth, resolveValidatedWhoamiTarget } from '../src/modules/brand/identity.js';
+import { resolveEffectiveAuth, resolveValidatedWhoamiTarget, resolveValidatedIngestTarget } from '../src/modules/brand/identity.js';
 import { assertBrandForceIsServable } from '../src/modules/brand/detect.js';
 import { loadBrandSecrets, resolveSecretsSource } from '../src/lib/secrets.js';
 import type { BrandAuthConfig } from '../src/modules/brand/brand.contract.js';
@@ -104,6 +104,18 @@ for (const slug of getAllBrandSlugs()) {
         hasBlockingIssue = true;
     } else {
         console.log(`  auth.whoamiUrl:  not configured (${whoamiTarget.reason}) — OK, this brand is not servable yet.`);
+    }
+
+    const ingestTarget = resolveValidatedIngestTarget(base);
+    if (ingestTarget.ok) {
+        const tokenSet = base.ingest ? maskSecret(process.env[base.ingest.tokenEnv]) : '(not set)';
+        console.log(`  ingest.url:      ${ingestTarget.url.toString()} (passes the whoamiAllowedHosts SSRF gate)`);
+        console.log(`  ingest.token:    ${base.ingest?.tokenEnv} = ${tokenSet}`);
+    } else if (base.ingest && isServable) {
+        console.error(`  ingest.url:      BLOCKING — invalid (${ingestTarget.reason}). ingest callbacks would be rejected.`);
+        hasBlockingIssue = true;
+    } else {
+        console.log(`  ingest:          not configured (${ingestTarget.reason}) — OK, no ingest callback for this brand.`);
     }
 
     try {

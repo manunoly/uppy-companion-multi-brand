@@ -99,6 +99,7 @@ export const companionBrandConfigSchema = z.object({
         })
         .strict(),
     public: z.object({ foldersUrl: z.string().optional() }).strict().optional(),
+    ingest: z.object({ url: z.string().min(1), tokenEnv: z.string().min(1) }).strict().optional(),
     companionUrl: z.string(),
     secret: z.string(),
     s3: companionS3ConfigSchema,

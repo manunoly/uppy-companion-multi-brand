@@ -116,6 +116,14 @@ export interface CompanionBrandConfig {
     };
     /** Conserved per SA3 — folders degrade to `[]` when absent. */
     readonly public?: { readonly foldersUrl?: string };
+    /**
+     * S2S ingest-callback target (registry data, not hardcoded). `url` is the
+     * partner's internal ingest endpoint, SSRF-gated at resolution against the
+     * brand's `whoamiAllowedHosts` (identity.ts#resolveValidatedIngestTarget);
+     * `tokenEnv` names the env var holding the Bearer token, read at CALL-TIME
+     * (identity.ts#readIngestToken, throws on empty). Absent = no callback.
+     */
+    readonly ingest?: { readonly url: string; readonly tokenEnv: string };
     /** Public origin of this Companion instance (source of truth for OAuth redirect_uri). */
     readonly companionUrl: string;
     /** COMPANION_SECRET — same value across brands. */

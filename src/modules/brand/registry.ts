@@ -78,6 +78,9 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
             allowedContentTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif'],
         },
         public: { foldersUrl: 'https://abeduls.com/api/folders' },
+        // S2S ingest-callback target: capsule's internal media-ingest endpoint. Host
+        // (abeduls.com) sits under whoamiAllowedHosts, so it passes the SSRF gate.
+        ingest: { url: 'https://abeduls.com/api/internal/media/ingest', tokenEnv: 'ABE_INGEST_TOKEN' },
         companionUrl: 'https://companion.abeduls.com',
         secret: '', // resolved from COMPANION_SECRET in brand.service.ts
         // bucket + creds arrive via env (ABE_S3_BUCKET/ABE_S3_REGION -> loadBrandSecrets);
