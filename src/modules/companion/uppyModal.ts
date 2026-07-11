@@ -19,6 +19,8 @@ import {
     GooglePhotosPicker,
     // Plugins
     ThumbnailGenerator,
+    Compressor,
+    ImageEditor,
     AwsS3,
 } from 'https://releases.transloadit.com/uppy/v5.1.8/uppy.min.mjs';
 
@@ -143,10 +145,14 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     const uppy = new Uppy({
         debug: true,
         autoProceed: false,
+        // Mirrors designer's UppyDashboardAws restrictions, reconciled with abe's
+        // server-side brand limits (registry): 50 MiB cap and image-only types so
+        // client validation matches what /api/uppy/sign-s3 will accept.
         restrictions: {
-            maxFileSize: 4 * 1024 * 1024 * 1024,
-            maxNumberOfFiles: 600,
+            maxFileSize: 50 * 1024 * 1024,
+            maxNumberOfFiles: 50,
             minNumberOfFiles: 1,
+            allowedFileTypes: ['image/*', '.heic', '.HEIC', '.heif', '.HEIF'],
         },
         onBeforeFileAdded: (file: any) => {
             if (file.meta.isThumbnail) {
@@ -179,11 +185,21 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         trigger: merged.trigger,
         inline: merged.inline,
         proudlyDisplayPoweredByUppy: false,
-        hideCancelButton: true,
-        hidePauseResumeCancelButtons: true,
-        hidePauseResumeButton: true,
-        plugins: merged.plugins,
+        height: 470,
+        width: '100%',
+        hideUploadButton: false,
+        hideRetryButton: false,
+        hidePauseResumeButton: false,
+        hideCancelButton: false,
+        showRemoveButtonAfterComplete: true,
+        plugins: ['ImageEditor', ...(merged.plugins ?? [])],
     });
+
+    // Visual parity with designer's UppyDashboardAws: pre-upload compression +
+    // in-Dashboard crop/rotate editor. ImageEditor targets the Dashboard, so it
+    // must be registered after it.
+    uppy.use(Compressor);
+    uppy.use(ImageEditor, { target: Dashboard });
 
     // --- Companion Plugins ---
     if (merged.plugins?.includes('Facebook')) {
