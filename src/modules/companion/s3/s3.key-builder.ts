@@ -80,7 +80,10 @@ export const buildS3Key = ({ req, filename, metadata }: BuildS3KeyParams): strin
         throw new Error('s3.key-builder: userId required (req.user not populated)');
     }
 
-    if (metadata) {
+    // Only mutate a real object: a client may send `metadata` as a stringified
+    // "[object Object]" (urlencoded), and assigning a property to a string
+    // primitive throws a TypeError in strict mode.
+    if (metadata && typeof metadata === 'object') {
         metadata.name = sanitizedFilename;
     }
 

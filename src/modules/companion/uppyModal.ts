@@ -315,20 +315,13 @@ const uppyModal = (options: UppyModalOptions = {}) => {
                 throw err;
             }
 
-            const metadata: Record<string, string> = {};
-            Object.keys(file.meta || {}).forEach((key) => {
-                if (file.meta[key] != null) {
-                    metadata[key] = file.meta[key].toString().replace(/[^a-zA-Z0-9.]/g, '');
-                }
-            });
-
-            // Declared post-compression size (server rejects over-limit up
-            // front) + folder + thumbnail flag travel as clean top-level fields
-            // (NOT through the sanitizing `metadata` copy above).
+            // Every value travels as a clean top-level field: filename/type/
+            // declared size + optional folder/thumbnail flag. No `metadata`
+            // object — serialize() stringifies it to the literal "[object
+            // Object]", which the server can't build an S3 key from.
             const createBody: Record<string, any> = {
                 filename: sanitizeName(file.name),
                 type: file.type,
-                metadata,
                 size: file.size,
             };
             if (file.meta?.folderId != null && file.meta.folderId !== '') {

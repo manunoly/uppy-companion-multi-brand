@@ -233,6 +233,36 @@ describe('createMultipartUpload — declared-size / MIME reject at create (P1-C-
         expect(meta?.isThumbnail).toBe(true);
         expect(meta?.folderId).toBeNull();
     });
+
+    // Regression: the create body is form-urlencoded on the wire, so a legacy
+    // client that sent a `metadata` object serialized it via String(value) to
+    // the literal "[object Object]". The server then received `metadata` as
+    // that STRING, and buildS3Key's `metadata.name = ...` mutation threw a
+    // TypeError on the string primitive -> caught -> 500 on every real create.
+    // Prior create tests OMIT `metadata`, so they never exercised this path.
+    it('does not 500 on the real client create body (stringified metadata) and builds the key from filename', async () => {
+        const brand = makeBrand({ slug: 'edo', assets: { s3Prefix: '' }, limits: { maxUploadBytes: 10_000_000 } });
+        s3mock.on(CreateMultipartUploadCommand).resolves({ Key: 'k-real', UploadId: 'upload-real-1' });
+
+        const req = makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            method: 'POST',
+            body: { filename: 'photo.jpg', type: 'image/jpeg', size: '2048', metadata: '[object Object]' },
+        });
+        const { res, json, status } = makeRes();
+
+        await createMultipartUpload(req, res, (() => {}) as never);
+
+        expect(status).not.toHaveBeenCalled(); // no 500 / no error status
+        expect(json).toHaveBeenCalledWith({ key: 'k-real', uploadId: 'upload-real-1' });
+
+        const calls = s3mock.commandCalls(CreateMultipartUploadCommand);
+        expect(calls.length).toBe(1);
+        const s3Key = calls[0].args[0].input.Key as string;
+        expect(s3Key.startsWith('original/u1/')).toBe(true);
+        expect(s3Key.endsWith('/photo.jpg')).toBe(true);
+    });
 });
 
 describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1-C-PROTOCOL Steps 3-4)', () => {
