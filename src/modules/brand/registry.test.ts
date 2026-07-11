@@ -31,6 +31,10 @@ describe('registry: edo (servable, MVP brand)', () => {
         expect(edo.auth.requireVerifiedEmail).toBeUndefined();
     });
 
+    it('has no ingest seam configured (P1-C3, unaffected)', () => {
+        expect(edo.ingest).toBeUndefined();
+    });
+
     it('is backed by the entourage-uploads bucket in us-east-1', () => {
         expect(edo.s3.bucket).toBe('entourage-uploads');
         expect(edo.s3.region).toBe('us-east-1');
@@ -125,6 +129,11 @@ describe('registry: abe (servable, P1-C1)', () => {
     it('declares companionUrl and the capsule public folders endpoint', () => {
         expect(abe.companionUrl).toBe('https://companion.abeduls.com');
         expect(abe.public?.foldersUrl).toBe('https://abeduls.com/api/folders');
+    });
+
+    it('declares the S2S ingest-callback seam (P1-C3)', () => {
+        expect(abe.ingest).toEqual({ url: 'https://abeduls.com/api/internal/media/ingest', tokenEnv: 'ABE_INGEST_TOKEN' });
+        expect(() => companionBrandConfigSchema.parse(abe)).not.toThrow();
     });
 
     it('is deep-frozen', () => {
