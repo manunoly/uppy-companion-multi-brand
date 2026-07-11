@@ -16,7 +16,7 @@ import type { Brand } from '../../brand/brand.types.js';
 import { buildS3Key, buildUserKeyPrefix } from './s3.key-builder.js';
 import { resolveValidatedIngestTarget, readIngestToken } from '../../brand/identity.js';
 import { postIngest } from '../ingest/ingest.client.js';
-import { stashUploadMeta, readUploadMeta, deleteUploadMeta, type UploadMeta } from '../ingest/upload-meta.store.js';
+import { stashUploadMeta, readUploadMeta, type UploadMeta } from '../ingest/upload-meta.store.js';
 import { logger } from '../../../lib/logger.js';
 
 // --- Helpers ---
@@ -445,8 +445,8 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
 
     // Post-complete: the object now exists. Never throw out of here — always 200.
     try {
+        // Don't delete the stash: a lost-response retry re-enters here and needs it idempotent; the 24h TTL reclaims it.
         const meta = await readUploadMeta(brand.slug, uploadId);
-        await deleteUploadMeta(brand.slug, uploadId);
 
         // Thumbnails (Uppy ThumbnailGenerator previews) land in S3 but are never
         // a library asset — parity with the removed client-side upload-success skip.

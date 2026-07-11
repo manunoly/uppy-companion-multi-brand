@@ -630,4 +630,81 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         expect(s3mock.commandCalls(HeadObjectCommand).length).toBe(0);
         expect(mockedPostIngest).not.toHaveBeenCalled();
     });
+
+    // C2 regression: the post-complete block used to delete the stash on read,
+    // so a lost-response retry (NoSuchUpload fall-through) re-entered with a
+    // null stash — the thumbnail-skip was bypassed and the preview JPEG was
+    // ingested as a real library asset (and folder/filename attribution was
+    // lost for real files). The stash now survives, bounded by its TTL.
+    it('thumbnail double-complete (lost first response) never ingests and keeps the stash readable', async () => {
+        const brand = makeIngestBrand();
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        await stashUploadMeta(brand.slug, 'upload-thumb-retry', {
+            filename: 'thumb_f.jpg', mimetype: 'image/jpeg', declaredSize: 100, folderId: null, userId: 'u1', isThumbnail: true,
+        });
+        s3mock.on(CompleteMultipartUploadCommand)
+            .resolvesOnce({ Location: 'https://bucket/thumb_f.jpg' })
+            .rejects(noSuchUploadError());
+
+        const makeReq = () => makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-thumb-retry' },
+            query: { key: 'original/u1/thumb_f.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+
+        const first = makeRes();
+        await completeMultipartUpload(makeReq(), first.res, (() => {}) as never);
+        expect(first.json).toHaveBeenCalledWith({ location: 'https://bucket/thumb_f.jpg', ingested: false });
+
+        // Stash must still be readable after the first complete — not deleted.
+        expect(await readUploadMeta(brand.slug, 'upload-thumb-retry')).not.toBeNull();
+
+        const second = makeRes();
+        await completeMultipartUpload(makeReq(), second.res, (() => {}) as never);
+        expect(second.json).toHaveBeenCalledWith({ location: undefined, ingested: false });
+
+        expect(mockedPostIngest).not.toHaveBeenCalled();
+        expect(s3mock.commandCalls(HeadObjectCommand).length).toBe(0);
+    });
+
+    it('real-file NoSuchUpload retry re-sends the SAME folderId/filename to ingest (meta not lost)', async () => {
+        const brand = makeIngestBrand();
+        vi.stubEnv(TOKEN_ENV, 'secret-abc');
+        // filename intentionally differs from the key basename: with the old
+        // delete-on-read bug, the retry would fall back to the key basename
+        // and drop folderId, so this catches both losses.
+        await stashUploadMeta(brand.slug, 'upload-real-retry', {
+            filename: 'my-photo.jpg', mimetype: 'image/jpeg', declaredSize: 2048, folderId: 77, userId: 'u1', isThumbnail: false,
+        });
+        s3mock.on(CompleteMultipartUploadCommand)
+            .resolvesOnce({ Location: 'https://bucket/abc123.jpg' })
+            .rejects(noSuchUploadError());
+        s3mock.on(HeadObjectCommand).resolves({ ContentLength: 2048, ContentType: 'image/jpeg' });
+        mockedPostIngest.mockResolvedValue(
+            okIngestResult([{ id: 5, url: 'https://cdn/abc123.jpg', filename: 'my-photo.jpg', mimetype: 'image/jpeg' }]),
+        );
+
+        const makeReq = () => makeAppRequest({
+            brand,
+            user: makeUser({ id: 'u1' }),
+            params: { uploadId: 'upload-real-retry' },
+            query: { key: 'original/u1/abc123.jpg' },
+            body: { parts: VALID_PARTS },
+        });
+
+        const first = makeRes();
+        await completeMultipartUpload(makeReq(), first.res, (() => {}) as never);
+
+        const second = makeRes();
+        await completeMultipartUpload(makeReq(), second.res, (() => {}) as never);
+
+        const expectedFiles = [
+            { key: 'original/u1/abc123.jpg', filename: 'my-photo.jpg', mimetype: 'image/jpeg', fileSize: 2048, folderId: 77, source: 'local' },
+        ];
+        expect(mockedPostIngest).toHaveBeenCalledTimes(2);
+        expect(mockedPostIngest.mock.calls[0][0].files).toEqual(expectedFiles);
+        expect(mockedPostIngest.mock.calls[1][0].files).toEqual(expectedFiles);
+    });
 });
