@@ -305,6 +305,9 @@ export const assembleApp = ({
         next();
     });
     app.use(helmet({
+        // Off so the per-brand `frame-ancestors` CSP is the sole framing control;
+        // helmet's default `X-Frame-Options: SAMEORIGIN` would block the /uppy iframe embed.
+        xFrameOptions: false,
         contentSecurityPolicy: {
             directives: {
                 'script-src': [
