@@ -281,8 +281,14 @@ export const serveUppyPage = async (
 
         const enabledPlugins = getEnabledPlugins(brand);
 
+        // Host-handed theme (query-param, no cookie): stamp the class on <html>
+        // server-side so first paint matches before the deferred module runs.
+        // `theme` comes from a closed set ('light'|'dark'), so no escaping needed.
+        const theme: 'light' | 'dark' = req.query.theme === 'dark' ? 'dark' : 'light';
+
         // Replace placeholders. The bearer-token placeholder is intentionally
         // absent — the page no longer carries the token in any form.
+        html = html.replace(/THEME_CLASS_VALUE/g, theme);
         html = html.replace(/BRAND_SLUG_VALUE/g, toJsStringLiteral(brand.slug));
         html = html.replace(/BRAND_NAME_VALUE/g, toJsStringLiteral(brand.name));
         html = html.replace(/BRAND_LOGO_URL_VALUE/g, toJsStringLiteral(''));

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="THEME_CLASS_VALUE">
 
 <head>
     <title>Upload Images</title>
@@ -108,6 +108,42 @@
 
         .uppy-Dashboard-innerWrap {
             border-radius: 0 !important;
+        }
+
+        /* Dark mode: Uppy theming its own Dashboard via the `theme` option, this
+           covers the surrounding page chrome so there is no light frame around a
+           dark Dashboard. Keyed off the host-handed class on <html>. */
+        html.dark body {
+            background: #18181b;
+            color: #e4e4e7;
+        }
+
+        html.dark .upload-wrapper {
+            background: #27272a;
+        }
+
+        html.dark .folder-selector {
+            background: #1f1f23;
+        }
+
+        html.dark .folder-selector label,
+        html.dark .folder-selector label svg {
+            color: #a1a1aa;
+        }
+
+        html.dark .folder-select {
+            background-color: #27272a;
+            border-color: #3f3f46;
+            color: #e4e4e7;
+        }
+
+        html.dark .folder-select:hover {
+            border-color: #52525b;
+        }
+
+        html.dark .folder-select option {
+            background: #27272a;
+            color: #e4e4e7;
         }
     </style>
 </head>

@@ -90,6 +90,26 @@ const readOption = (options: HelperOptions, key: string, fallback: any): any => 
 // upload, tiny images included.
 const shouldUseMultipart = () => true;
 
+type UppyTheme = 'light' | 'dark';
+
+// Host hands the theme with NO cookie (localStorage['theme'] is origin-scoped,
+// unreadable cross-subdomain). Anything but the literal 'dark' — absent or
+// invalid included — resolves to 'light'.
+export const resolveTheme = (raw: string | null | undefined): UppyTheme =>
+    raw === 'dark' ? 'dark' : 'light';
+
+const applyThemeClass = (theme: UppyTheme): void => {
+    const root = document.documentElement;
+    root.classList.remove('light', 'dark');
+    root.classList.add(theme);
+};
+
+const isSetThemeMessage = (data: unknown): data is { type: 'set-theme'; theme: string } =>
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { type?: unknown }).type === 'set-theme' &&
+    typeof (data as { theme?: unknown }).theme === 'string';
+
 // --- Main Function ---
 
 const uppyModal = (options: UppyModalOptions = {}) => {
@@ -142,6 +162,15 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         }
     };
 
+    // Host-handed theme: `?theme=` drives first paint. The server also stamps
+    // the matching class on <html> (no flash before this deferred module runs);
+    // this re-application keeps JS the single source for the live set-theme path.
+    // typeof guards keep the factory node-safe (invoked headless in unit tests).
+    const initialTheme = resolveTheme(
+        typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('theme'),
+    );
+    if (typeof document !== 'undefined') applyThemeClass(initialTheme);
+
     const uppy = new Uppy({
         debug: true,
         autoProceed: false,
@@ -184,6 +213,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     uppy.use(Dashboard, {
         trigger: merged.trigger,
         inline: merged.inline,
+        theme: initialTheme,
         proudlyDisplayPoweredByUppy: false,
         height: 470,
         width: '100%',
@@ -461,6 +491,20 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         if (uploads.length > 0) payload.uploads = uploads;
         window.parent.postMessage(payload, targetOrigin);
     });
+
+    // Live theme handoff. Accept `set-theme` ONLY from an allow-listed ancestor:
+    // reuse resolveAllowedTargetOrigin (the browser mirror of origin-guard.ts) —
+    // null means the sender origin is not allow-listed, so ignore the message.
+    if (typeof window !== 'undefined') {
+        window.addEventListener('message', (event: MessageEvent) => {
+            if (resolveAllowedTargetOrigin(event.origin, ALLOWED_ANCESTORS) === null) return;
+            if (!isSetThemeMessage(event.data)) return;
+            const theme = resolveTheme(event.data.theme);
+            applyThemeClass(theme);
+            const dashboard = uppy.getPlugin('Dashboard');
+            if (dashboard) dashboard.setOptions({ theme });
+        });
+    }
 
     return uppy;
 };
