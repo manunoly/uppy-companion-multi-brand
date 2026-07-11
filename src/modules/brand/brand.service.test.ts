@@ -77,20 +77,36 @@ describe('resolveBrand', () => {
 });
 
 describe('createBrandRegistry', () => {
-    it('produces a Brand for every servable slug (edo only, for now)', () => {
+    it('produces a Brand for every servable slug (edo + abe, as of P1-C1)', () => {
+        // abe's base registry entry has an empty s3.bucket literal (P1-G1 resolves
+        // it at deploy) — createBrandRegistry() resolves EVERY servable slug, so it
+        // needs the same ABE_S3_* env Railway would provide, same as edo above.
+        vi.stubEnv('ABE_S3_BUCKET', 'test-abe-bucket');
+        vi.stubEnv('ABE_S3_ACCESS_KEY', 'test-abe-access-key');
+        vi.stubEnv('ABE_S3_SECRET_KEY', 'test-abe-secret-key');
+
         const registry = createBrandRegistry({ secret: 's'.repeat(16) });
-        expect(Object.keys(registry)).toEqual(['edo']);
+        expect(Object.keys(registry)).toEqual(['edo', 'abe']);
         expect(registry.edo?.s3.client).toBeInstanceOf(S3Client);
-        expect(registry.abe).toBeUndefined();
+        expect(registry.abe?.s3.client).toBeInstanceOf(S3Client);
+        expect(registry.abe?.s3.bucket).toBe('test-abe-bucket');
+    });
+
+    it('still fails fast for abe when ABE_S3_BUCKET is unset (deploy gate, not a code bug)', () => {
+        expect(() => createBrandRegistry({ secret: 's'.repeat(16) })).toThrow(/Missing required S3 bucket\/region/);
     });
 });
 
 describe('getAllBrands', () => {
-    it('returns every resolved brand, skipping unresolved (non-servable) slugs', () => {
+    it('returns every resolved (servable) brand: edo and abe', () => {
+        vi.stubEnv('ABE_S3_BUCKET', 'test-abe-bucket');
+        vi.stubEnv('ABE_S3_ACCESS_KEY', 'test-abe-access-key');
+        vi.stubEnv('ABE_S3_SECRET_KEY', 'test-abe-secret-key');
+
         const registry = createBrandRegistry({ secret: 's'.repeat(16) });
         const brands = getAllBrands(registry);
-        expect(brands).toHaveLength(1);
-        expect(brands[0].slug).toBe('edo');
+        expect(brands).toHaveLength(2);
+        expect(brands.map((brand) => brand.slug)).toEqual(['edo', 'abe']);
     });
 
     it('returns [] for an empty registry', () => {

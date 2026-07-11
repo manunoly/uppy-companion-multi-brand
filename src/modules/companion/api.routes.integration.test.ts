@@ -183,7 +183,10 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
         expect(res.body).toEqual([{ PartNumber: 1, ETag: '"abc"' }]);
     });
 
-    it('POST /api/uppy/s3/multipart/:uploadId/complete sends CompleteMultipartUploadCommand', async () => {
+    // FIX 1: a JSON body carrying a real `parts` array is accepted and its parts
+    // reach CompleteMultipartUploadCommand (the client now sends JSON, not the old
+    // form-urlencoded `parts[]=[object Object]` that parsed to req.body.parts === undefined).
+    it('POST /api/uppy/s3/multipart/:uploadId/complete (JSON parts) reaches CompleteMultipartUploadCommand with the parts', async () => {
         setupAuthOk();
         s3Mock.on(CompleteMultipartUploadCommand).resolves({ Location: 'https://s3/ok' });
         const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
@@ -195,7 +198,27 @@ describe('api.routes integration (cookie auth + S3 mock)', () => {
             .send({ parts: [{ PartNumber: 1, ETag: '"abc"' }] });
         expect(res.status).toBe(200);
         expect(res.body.location).toBe('https://s3/ok');
-        expect(s3Mock.commandCalls(CompleteMultipartUploadCommand)).toHaveLength(1);
+        const calls = s3Mock.commandCalls(CompleteMultipartUploadCommand);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].args[0].input.MultipartUpload?.Parts).toEqual([{ PartNumber: 1, ETag: '"abc"' }]);
+    });
+
+    // FIX 1 regression: the OLD client wire (serialize) rendered the parts array as
+    // `parts[]=[object Object]`. express.urlencoded({extended:false}) parses that to
+    // `{ 'parts[]': '[object Object]' }` → req.body.parts undefined → 400 on every
+    // complete. This documents the bug the JSON migration fixes.
+    it('POST .../complete with the legacy urlencoded body (parts[]=[object Object]) → 400, never reaches S3', async () => {
+        setupAuthOk();
+        const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+        const res = await request(app)
+            .post('/api/uppy/s3/multipart/up1/complete')
+            .set('Host', EDO_HOST)
+            .set('Cookie', 'session=tok')
+            .type('form')
+            .query({ key: 'original/u123/x.jpg' })
+            .send({ 'parts[]': '[object Object]' });
+        expect(res.status).toBe(400);
+        expect(s3Mock.commandCalls(CompleteMultipartUploadCommand)).toHaveLength(0);
     });
 
     it('DELETE /api/uppy/s3/multipart/:uploadId sends AbortMultipartUploadCommand', async () => {

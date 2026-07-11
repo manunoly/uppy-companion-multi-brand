@@ -118,7 +118,9 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<str
  *      timeout).
  *   7. Interpret the response status (every redirect form is failure).
  *   8. Body cap (16 KB) via streaming — never trust `Content-Length` alone.
- *   9. Normalize, then (edo-only) enrich with `edoId`/parsed email.
+ *   9. Normalize, apply the registry email-verified gate (unverified ⇒
+ *      unauthenticated, never cached), then (edo-only) enrich with
+ *      `edoId`/parsed email.
  */
 export async function resolveSession(
     brand: Brand,
@@ -207,9 +209,9 @@ export async function resolveSession(
         return { status: 'unavailable', reason: 'whoami body parse' };
     }
 
-    // 9. Normalize, then (edo-only) enrich.
-    const responseMapping = resolveEffectiveAuth(brand).responseMapping;
-    const normalized = normalizeBrandUser(responseMapping, json);
+    // 9. Normalize, gate on verified email, then (edo-only) enrich.
+    const effectiveAuth = resolveEffectiveAuth(brand);
+    const normalized = normalizeBrandUser(effectiveAuth.responseMapping, json);
     if (!normalized) {
         logger.warn({ slug }, '[auth] normalizeBrandUser returned null — whoami response mapping mismatch');
         await breaker.recordFailure(slug);
@@ -217,6 +219,11 @@ export async function resolveSession(
     }
 
     await breaker.recordSuccess(slug);
+
+    // Registry email-verified gate: unverified resolves unauthenticated, never cached (breaker already healthy).
+    if (effectiveAuth.requireVerifiedEmail && (json as Record<string, unknown>).emailVerified !== true) {
+        return { status: 'unauthenticated' };
+    }
 
     const user: BrandUser = slug === 'edo' ? enrichEdoUser(normalized, json) : normalized;
 

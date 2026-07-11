@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildConnectSrc, buildFrameAncestors, buildFrameSrc, buildImgSrc, buildScriptSrc } from './csp.js';
+import { buildConnectSrc, buildFrameAncestors, buildFrameSrc, buildImgSrc, buildScriptSrc, buildStyleSrc } from './csp.js';
 import { makeBrand } from '../test-utils/fixtures.js';
+import { getBaseBrandConfig } from '../modules/brand/registry.js';
 
 // Security review MEDIO-3: helmet's un-derived defaults (connect-src/
 // frame-ancestors/frame-src fall back to default-src 'self'; img-src is
@@ -55,6 +56,17 @@ describe('buildFrameAncestors', () => {
         const brand = makeBrand({ domains: ['designer.test.example.com'] });
         expect(buildFrameAncestors(brand)).not.toContain('evil.example.com');
     });
+
+    it("abe (real registry entry, P1-C1): allows the abeduls.com + designer.abeduls.com origins to embed /uppy", () => {
+        // Reads the actual registry `domains` rather than hardcoding them, so this
+        // test tracks the real entry instead of a stale assumption about it.
+        const abeDomains = getBaseBrandConfig('abe').domains;
+        const brand = makeBrand({ slug: 'abe', domains: abeDomains });
+        const frameAncestors = buildFrameAncestors(brand);
+        expect(frameAncestors).toContain("'self'");
+        expect(frameAncestors).toContain('https://abeduls.com');
+        expect(frameAncestors).toContain('https://designer.abeduls.com');
+    });
 });
 
 describe('buildFrameSrc', () => {
@@ -104,5 +116,29 @@ describe('buildScriptSrc', () => {
         const src = buildScriptSrc(undefined, 'n');
         expect(src).toContain("'self'");
         expect(src).not.toContain('apis.google.com');
+    });
+});
+
+// X-13: the /uppy page loads uppy.min.css from releases.transloadit.com
+// (uppy.html:8); without it in style-src the Dashboard renders unstyled.
+describe('buildStyleSrc', () => {
+    it('is a static array (brand-independent — no argument to vary on)', () => {
+        expect(buildStyleSrc()).toEqual([
+            "'self'",
+            "'unsafe-inline'",
+            'https://cdnjs.cloudflare.com',
+            'https://releases.transloadit.com',
+        ]);
+    });
+
+    it('includes the Uppy Dashboard CSS origin (X-13)', () => {
+        expect(buildStyleSrc()).toContain('https://releases.transloadit.com');
+    });
+
+    it('keeps the pre-existing self/unsafe-inline/cdnjs entries (no regression)', () => {
+        const styleSrc = buildStyleSrc();
+        expect(styleSrc).toContain("'self'");
+        expect(styleSrc).toContain("'unsafe-inline'");
+        expect(styleSrc).toContain('https://cdnjs.cloudflare.com');
     });
 });

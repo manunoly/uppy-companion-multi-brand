@@ -32,6 +32,7 @@ const authSharedFields = {
     whoamiAllowedHosts: z.array(z.string()),
     sessionCookieName: z.string().min(1),
     responseMapping: brandResponseMappingSchema,
+    requireVerifiedEmail: z.boolean().optional(),
 };
 
 export const brandAuthConfigSchema = z.discriminatedUnion('kind', [
@@ -89,6 +90,7 @@ export const companionBrandConfigSchema = z.object({
             plugins: z.array(edoUploadPluginSchema),
             system: z.string().min(1),
             systemDetails: z.string().min(1),
+            uploadThumbnails: z.boolean().optional(),
         })
         .strict(),
     limits: z
@@ -98,6 +100,7 @@ export const companionBrandConfigSchema = z.object({
         })
         .strict(),
     public: z.object({ foldersUrl: z.string().optional() }).strict().optional(),
+    ingest: z.object({ url: z.string().min(1), tokenEnv: z.string().min(1) }).strict().optional(),
     companionUrl: z.string(),
     secret: z.string(),
     s3: companionS3ConfigSchema,

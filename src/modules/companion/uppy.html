@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="THEME_CLASS_VALUE">
 
 <head>
     <title>Upload Images</title>
@@ -109,6 +109,42 @@
         .uppy-Dashboard-innerWrap {
             border-radius: 0 !important;
         }
+
+        /* Dark mode: Uppy theming its own Dashboard via the `theme` option, this
+           covers the surrounding page chrome so there is no light frame around a
+           dark Dashboard. Keyed off the host-handed class on <html>. */
+        html.dark body {
+            background: #18181b;
+            color: #e4e4e7;
+        }
+
+        html.dark .upload-wrapper {
+            background: #27272a;
+        }
+
+        html.dark .folder-selector {
+            background: #1f1f23;
+        }
+
+        html.dark .folder-selector label,
+        html.dark .folder-selector label svg {
+            color: #a1a1aa;
+        }
+
+        html.dark .folder-select {
+            background-color: #27272a;
+            border-color: #3f3f46;
+            color: #e4e4e7;
+        }
+
+        html.dark .folder-select:hover {
+            border-color: #52525b;
+        }
+
+        html.dark .folder-select option {
+            background: #27272a;
+            color: #e4e4e7;
+        }
     </style>
 </head>
 
@@ -124,7 +160,6 @@
     <input id="googlePhotosApiKey" style="display: none;" value="GOOGLE_API_KEY_PHOTOS_VALUE" />
     <input id="googleClientId" style="display: none;" value="GOOGLE_CLIENT_ID_VALUE" />
     <input id="googleAppId" style="display: none;" value="GOOGLE_APP_ID_VALUE" />
-    <input id="publicUploadUrl" style="display: none;" value="PUBLIC_UPLOAD_URL_VALUE" />
 
     <!-- Upload wrapper: folder selector + uppy -->
     <div class="upload-wrapper">
@@ -157,8 +192,6 @@
         // Server-injected values (replaced at runtime)
         const serverUrl = SERVER_URL_VALUE || 'http://localhost:3000';
         const companionUrl = COMPANION_URL_VALUE || 'http://localhost:3020';
-        const publicBackendUrl = PUBLIC_BACKEND_URL_VALUE || 'http://localhost';
-        const publicUploadUrl = PUBLIC_UPLOAD_URL_VALUE || `${publicBackendUrl}/api/frame/contents/upload/public`;
         const googleDriveApiKey = GOOGLE_API_KEY_DRIVE_VALUE || '';
         const googlePhotosApiKey = GOOGLE_API_KEY_PHOTOS_VALUE || '';
         const googleClientId = GOOGLE_CLIENT_ID_VALUE || '';
@@ -171,13 +204,20 @@
         // Folders data (injected by server)
         const foldersData = FOLDERS_DATA_VALUE || [];
 
+        // postMessage target allow-list (origins allowed to embed this page)
+        const allowedAncestors = ALLOWED_ANCESTORS_VALUE || [];
+
+        // Per-brand: when false, previews still show in the dashboard but are not uploaded to S3.
+        const uploadThumbnails = UPLOAD_THUMBNAILS_VALUE;
+
         // Update page title
         if (brandName && brandName.toLowerCase() !== 'default') {
             document.title = `${brandName} Upload`;
         }
 
-        // Populate folder selector
+        // Populate folder selector (hidden entirely when the brand has no folders)
         const folderSelect = document.getElementById('folderSelect');
+        const folderSelector = document.querySelector('.folder-selector');
         if (foldersData && foldersData.length > 0) {
             folderSelect.innerHTML = '';
 
@@ -195,8 +235,8 @@
 
                 folderSelect.appendChild(option);
             });
-        } else {
-            folderSelect.innerHTML = '<option value="">No folders available</option>';
+        } else if (folderSelector) {
+            folderSelector.style.display = 'none';
         }
 
         // Get selected folder ID
@@ -211,8 +251,8 @@
             plugins: ENABLED_PLUGINS_VALUE,
             SERVER_URL: serverUrl,
             COMPANION_URL: companionUrl,
-            PUBLIC_BACKEND_URL: publicBackendUrl,
-            PUBLIC_UPLOAD_URL: publicUploadUrl,
+            allowedAncestors,
+            uploadThumbnails,
             GOOGLE_API_KEY_DRIVE: googleDriveApiKey,
             GOOGLE_API_KEY_PHOTOS: googlePhotosApiKey,
             GOOGLE_CLIENT_ID: googleClientId,

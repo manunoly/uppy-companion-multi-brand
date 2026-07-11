@@ -25,8 +25,8 @@ export interface BrandResponseMapping {
  * carries `whoamiUrl`/`whoamiAllowedHosts`), BOTH variants carry them here:
  * the Companion is a standalone service, so even `capsule` brands (abe) need
  * an EXTERNAL whoami endpoint + SSRF allowlist to validate a forwarded cookie
- * (spec D5.b). `whoamiAllowedHosts` and `kind` are NEVER overridable via
- * `<SLUG>_BRAND_OVERRIDE` (see identity.ts PROTECTED_AUTH_KEYS).
+ * (spec D5.b). `whoamiAllowedHosts`, `kind` and `requireVerifiedEmail` are
+ * NEVER overridable via `<SLUG>_BRAND_OVERRIDE` (see identity.ts PROTECTED_AUTH_KEYS).
  */
 export type BrandAuthConfig =
     | {
@@ -37,6 +37,8 @@ export type BrandAuthConfig =
           readonly whoamiAllowedHosts: readonly string[];
           readonly sessionCookieName: string;
           readonly responseMapping: BrandResponseMapping;
+          // When true, a whoami response whose raw `emailVerified` claim is not `true` resolves as unauthenticated.
+          readonly requireVerifiedEmail?: boolean;
       }
     | {
           readonly kind: 'partner-whoami';
@@ -46,6 +48,8 @@ export type BrandAuthConfig =
           readonly whoamiAllowedHosts: readonly string[];
           readonly sessionCookieName: string;
           readonly responseMapping: BrandResponseMapping;
+          // When true, a whoami response whose raw `emailVerified` claim is not `true` resolves as unauthenticated.
+          readonly requireVerifiedEmail?: boolean;
       };
 
 // Safe Uppy Dashboard plugins for the edo UppyModal.js (mirrors abeduls3's EdoUploadPlugin).
@@ -105,6 +109,8 @@ export interface CompanionBrandConfig {
         readonly plugins: readonly EdoUploadPlugin[];
         readonly system: string;
         readonly systemDetails: string;
+        /** When false, Uppy previews thumbnails but never uploads them to S3. Absent = true (backward-compat). */
+        readonly uploadThumbnails?: boolean;
     };
     readonly limits: {
         readonly maxUploadBytes: number;
@@ -112,6 +118,14 @@ export interface CompanionBrandConfig {
     };
     /** Conserved per SA3 — folders degrade to `[]` when absent. */
     readonly public?: { readonly foldersUrl?: string };
+    /**
+     * S2S ingest-callback target (registry data, not hardcoded). `url` is the
+     * partner's internal ingest endpoint, SSRF-gated at resolution against the
+     * brand's `whoamiAllowedHosts` (identity.ts#resolveValidatedIngestTarget);
+     * `tokenEnv` names the env var holding the Bearer token, read at CALL-TIME
+     * (identity.ts#readIngestToken, throws on empty). Absent = no callback.
+     */
+    readonly ingest?: { readonly url: string; readonly tokenEnv: string };
     /** Public origin of this Companion instance (source of truth for OAuth redirect_uri). */
     readonly companionUrl: string;
     /** COMPANION_SECRET — same value across brands. */

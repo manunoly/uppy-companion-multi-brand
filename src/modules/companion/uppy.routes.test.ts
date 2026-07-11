@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Response } from 'express';
 import { toJsStringLiteral, safeJsonForHtmlScript, safePath, getEnabledPlugins, serveUppyPage } from './uppy.routes.js';
+import { getBaseBrandConfig } from '../brand/registry.js';
 import { makeBrand, makeAppRequest, makeUser } from '../../test-utils/fixtures.js';
 
 describe('toJsStringLiteral', () => {
@@ -142,9 +143,17 @@ describe('getEnabledPlugins (BAJO-3: typed EdoUploadPlugin allowlist)', () => {
         }
     });
 
-    it('falls back to just Url when upload.plugins is empty and no providers are configured', () => {
+    // FIX 3: an empty plugins list AND no providers means local-only (abe). Returning
+    // ['Url'] would enable the remote-import surface, which bypasses the custom
+    // completeMultipartUpload (no ingest) — out of Phase-1 scope.
+    it('returns [] when upload.plugins is empty and no providers are configured (no remote Url surface)', () => {
         const brand = makeBrand({ upload: { plugins: [], system: 'x', systemDetails: 'y' }, providers: {} });
-        expect(getEnabledPlugins(brand)).toEqual(['Url']);
+        expect(getEnabledPlugins(brand)).toEqual([]);
+    });
+
+    it('the real abe registry entry (empty plugins, no providers) resolves to []', () => {
+        const abe = getBaseBrandConfig('abe');
+        expect(getEnabledPlugins(abe)).toEqual([]);
     });
 });
 

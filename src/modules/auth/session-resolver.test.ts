@@ -123,6 +123,58 @@ describe('resolveSession (src/modules/auth/session-resolver.ts)', () => {
         expect(result.user.edoId).toBeUndefined();
     });
 
+    it('abe (requireVerifiedEmail:true) + emailVerified:true -> authenticated and the user is cached', async () => {
+        const abe = makeBrand({ slug: 'abe', auth: { requireVerifiedEmail: true } });
+        const redis = getRedis();
+        const setSpy = vi.spyOn(redis, 'set');
+        globalThis.fetch = vi.fn(async () =>
+            new Response(
+                JSON.stringify({ id: 'cuid123', email: 'a@b.com', name: 'A', imageUrl: null, emailVerified: true }),
+                { status: 200 },
+            ),
+        );
+
+        const result = await resolveSession(abe, 'session=abc');
+        expect(result.status).toBe('authenticated');
+        expect(setSpy).toHaveBeenCalledTimes(1);
+        setSpy.mockRestore();
+
+        // Second call with the SAME cookie -> cache hit, no additional fetch (proves the write landed).
+        const result2 = await resolveSession(abe, 'session=abc');
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+        expect(result2.status).toBe('authenticated');
+    });
+
+    it('abe (requireVerifiedEmail:true) + emailVerified:false -> unauthenticated, no breaker failure, NOTHING cached', async () => {
+        const abe = makeBrand({ slug: 'abe', auth: { requireVerifiedEmail: true } });
+        const redis = getRedis();
+        const setSpy = vi.spyOn(redis, 'set');
+        globalThis.fetch = vi.fn(async () =>
+            new Response(
+                JSON.stringify({ id: 'cuid123', email: 'a@b.com', name: 'A', imageUrl: null, emailVerified: false }),
+                { status: 200 },
+            ),
+        );
+
+        const result = await resolveSession(abe, 'session=abc');
+        expect(result.status).toBe('unauthenticated');
+        // Partner answered fine (200 + valid whoami shape) -> the breaker stays healthy.
+        expect(breaker.recordSuccess).toHaveBeenCalledTimes(1);
+        expect(breaker.recordFailure).not.toHaveBeenCalled();
+        expect(setSpy).not.toHaveBeenCalled();
+        setSpy.mockRestore();
+    });
+
+    it('a brand WITHOUT requireVerifiedEmail (edo) + emailVerified:false -> still authenticated (ungated back-compat)', async () => {
+        const edoBrand = makeBrand({ slug: 'edo' });
+        globalThis.fetch = vi.fn(async () =>
+            new Response(JSON.stringify({ id: '1004', email: 'a@b.com', name: 'A', emailVerified: false }), { status: 200 }),
+        );
+
+        const result = await resolveSession(edoBrand, 'session=abc');
+        expect(result.status).toBe('authenticated');
+    });
+
     it('401 -> unauthenticated, and recordSuccess is called (partner answered — circuit is healthy)', async () => {
         globalThis.fetch = vi.fn(async () => new Response(null, { status: 401 }));
         const result = await resolveSession(edo, 'session=abc');

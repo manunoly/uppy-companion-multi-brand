@@ -66,9 +66,10 @@ export function buildCookieHeader(name: string, value: string): string | null {
 }
 
 // Code-only auth keys: NEVER overridable via `<SLUG>_BRAND_OVERRIDE`. `kind` is the
-// type discriminator; `whoamiAllowedHosts` is the SSRF gate itself. Any NEW
-// non-overridable field added to BrandAuthConfig MUST be listed here.
-const PROTECTED_AUTH_KEYS = new Set(['kind', 'whoamiAllowedHosts']);
+// type discriminator; `whoamiAllowedHosts` is the SSRF gate itself;
+// `requireVerifiedEmail` is a security policy. Any NEW non-overridable field
+// added to BrandAuthConfig MUST be listed here.
+const PROTECTED_AUTH_KEYS = new Set(['kind', 'whoamiAllowedHosts', 'requireVerifiedEmail']);
 const PROTO_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_COOKIE_NAME_LENGTH = 128;
 
@@ -181,6 +182,40 @@ export function resolveValidatedWhoamiTarget(config: CompanionBrandConfig): Vali
     const v = validateWhoamiUrl(eff.whoamiUrl, eff.whoamiAllowedHosts);
     if (!v.ok) return { ok: false, reason: `whoamiUrl: ${v.reason}` };
     return { ok: true, whoamiUrl: v.url, signInUrl: eff.signInUrl, signOutUrl: eff.signOutUrl, sessionCookieName: eff.sessionCookieName };
+}
+
+export type ValidatedIngestTarget = { ok: true; url: URL } | { ok: false; reason: string };
+
+/**
+ * The ONLY safe way to obtain a fetchable ingest-callback URL — reuses the
+ * whoami SSRF gate (`validateWhoamiUrl`) against the brand's `whoamiAllowedHosts`
+ * (protected, non-overridable) so the callback target can only ever be the
+ * partner's own apex, never an attacker-supplied host. Returns `{ ok: false }`
+ * when `ingest` is absent or the URL fails the gate; the token is resolved
+ * SEPARATELY (`readIngestToken`) so an off-allowlist URL is rejected without
+ * ever reading the secret.
+ */
+export function resolveValidatedIngestTarget(config: CompanionBrandConfig): ValidatedIngestTarget {
+    const { ingest } = config;
+    if (!ingest) return { ok: false, reason: 'not configured' };
+    const { whoamiAllowedHosts } = resolveEffectiveAuth(config);
+    const v = validateWhoamiUrl(ingest.url, whoamiAllowedHosts);
+    if (!v.ok) return { ok: false, reason: `ingest.url: ${v.reason}` };
+    return { ok: true, url: v.url };
+}
+
+/**
+ * Resolves the ingest Bearer token from `process.env[tokenEnv]` at CALL-TIME.
+ * Throws on empty/whitespace (mirrors `@package/internal-auth`'s
+ * `buildInternalAuthHeader`) so a misconfigured secret fails loud instead of
+ * silently sending an empty credential. Never captured in a module const.
+ */
+export function readIngestToken(tokenEnv: string): string {
+    const token = process.env[tokenEnv];
+    if (typeof token !== 'string' || token.trim().length === 0) {
+        throw new Error(`[brand] ingest token env "${tokenEnv}" is empty — S2S ingest auth misconfigured`);
+    }
+    return token;
 }
 
 /** Maps a brand's raw whoami JSON response into the canonical `BrandUser`. */

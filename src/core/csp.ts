@@ -45,6 +45,11 @@ const GOOGLE_PICKER_FRAME_ORIGINS = ['https://docs.google.com', 'https://account
 const GOOGLE_THUMBNAIL_IMG_ORIGINS = ['https://lh3.googleusercontent.com', 'https://drive.google.com'];
 const GOOGLE_SCRIPT_ORIGINS = ['https://apis.google.com'];
 
+// Uppy ships its JS bundle + Dashboard CSS from transloadit; sweetalert2 ships
+// its JS + CSS from cdnjs. Both feed script-src AND style-src (uppy.html).
+const TRANSLOADIT_ORIGIN = 'https://releases.transloadit.com';
+const CDNJS_ORIGIN = 'https://cdnjs.cloudflare.com';
+
 const s3OriginFor = (brand: Brand): string | null => {
     if (!brand.s3.bucket || !brand.s3.region) return null;
     return `https://${brand.s3.bucket}.s3.${brand.s3.region}.amazonaws.com`;
@@ -76,12 +81,19 @@ export const buildConnectSrc = (brand: Brand | undefined): string => {
     return Array.from(origins).join(' ');
 };
 
+/**
+ * The brand's designer domain(s) as concrete `https://<host>` origins. Single
+ * source of truth for BOTH the `frame-ancestors` CSP directive (who may embed
+ * /uppy) AND the postMessage target allow-list injected into the page
+ * (`ALLOWED_ANCESTORS_VALUE`, uppy.routes.ts) — the set of origins allowed to
+ * embed us is exactly the set we may postMessage back to.
+ */
+export const brandEmbedOrigins = (brand: Brand | undefined): string[] =>
+    brand ? brand.domains.map((domain) => `https://${domain}`) : [];
+
 /** `frame-ancestors`: same-origin + every one of the brand's designer domain(s), so the /uppy page can be embedded there. */
 export const buildFrameAncestors = (brand: Brand | undefined): string => {
-    const origins = new Set(["'self'"]);
-    if (brand) {
-        for (const domain of brand.domains) origins.add(`https://${domain}`);
-    }
+    const origins = new Set(["'self'", ...brandEmbedOrigins(brand)]);
     return Array.from(origins).join(' ');
 };
 
@@ -114,11 +126,21 @@ export const buildScriptSrc = (brand: Brand | undefined, nonce: string): string 
     const origins = [
         "'self'",
         `'nonce-${nonce}'`,
-        'https://releases.transloadit.com',
-        'https://cdnjs.cloudflare.com',
+        TRANSLOADIT_ORIGIN,
+        CDNJS_ORIGIN,
     ];
     if (brand && usesGooglePicker(brand)) {
         origins.push(...GOOGLE_SCRIPT_ORIGINS);
     }
     return origins.join(' ');
 };
+
+/**
+ * `style-src`: same-origin + `'unsafe-inline'` (Uppy's Dashboard injects
+ * runtime `<style>`/style attributes that can't be nonced) + the Uppy CDN
+ * (`uppy.min.css`, uppy.html:8) + cdnjs (sweetalert2 CSS). Brand-independent —
+ * every brand's /uppy loads the same CSS. Returns individual sources (matching
+ * the other directive arrays) rather than a joined string because this one is
+ * static, not resolved per-request.
+ */
+export const buildStyleSrc = (): string[] => ["'self'", "'unsafe-inline'", CDNJS_ORIGIN, TRANSLOADIT_ORIGIN];

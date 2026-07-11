@@ -22,7 +22,7 @@ import {
 } from './modules/brand/index.js';
 import { attachUser, requireAuth } from './modules/auth/index.js';
 import { corsForBrand } from './core/cors.js';
-import { buildConnectSrc, buildFrameAncestors, buildFrameSrc, buildImgSrc, buildScriptSrc } from './core/csp.js';
+import { buildConnectSrc, buildFrameAncestors, buildFrameSrc, buildImgSrc, buildScriptSrc, buildStyleSrc } from './core/csp.js';
 import {
     createCompanionForBrand,
     attachCompanionSocket,
@@ -305,13 +305,18 @@ export const assembleApp = ({
         next();
     });
     app.use(helmet({
+        // Off so the per-brand `frame-ancestors` CSP is the sole framing control;
+        // helmet's default `X-Frame-Options: SAMEORIGIN` would block the /uppy iframe embed.
+        xFrameOptions: false,
         contentSecurityPolicy: {
             directives: {
                 'script-src': [
                     (req: IncomingMessage, res: ServerResponse) =>
                         buildScriptSrc(brandForCsp(req), (res as unknown as express.Response).locals.cspNonce),
                 ],
-                'style-src': ["'self'", 'https://cdnjs.cloudflare.com', "'unsafe-inline'"],
+                // X-13: the Uppy Dashboard CSS loads from releases.transloadit.com
+                // (uppy.html:8) — without it the page renders unstyled under CSP.
+                'style-src': buildStyleSrc(),
                 // Security review MEDIO-3: helmet 8's defaults leave these
                 // four directives either un-derived (falling back to
                 // `default-src 'self'`) or too narrow (`img-src 'self'

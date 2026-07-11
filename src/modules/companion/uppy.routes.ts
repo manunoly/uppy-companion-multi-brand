@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { AppRequest } from '../../core/types/express.js';
 import type { Brand, EdoUploadPlugin } from '../brand/brand.types.js';
 import { resolveValidatedWhoamiTarget } from '../brand/identity.js';
+import { brandEmbedOrigins } from '../../core/csp.js';
 import { fetchFolders } from '../folders/folders.service.js';
 import { logger } from '../../lib/logger.js';
 const __dirname = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Z]:)/, '$1');
@@ -68,20 +69,29 @@ export const getEnabledPlugins = (brand: Brand): EdoUploadPlugin[] => {
         return [...brand.upload.plugins];
     }
 
+    const { google, dropbox, facebook } = brand.providers;
+
+    // No typed plugin list AND no configured provider (abe): local-only. Returning
+    // ['Url'] here would enable the remote-import surface, which bypasses the custom
+    // completeMultipartUpload (no ingest) — out of Phase-1 scope.
+    if (!google && !dropbox && !facebook) {
+        return [];
+    }
+
     // Fallback: detect plugins from configured providers, restricted to the
     // EdoUploadPlugin allowlist.
     const plugins: EdoUploadPlugin[] = ['Url'];
 
-    if (brand.providers.google) {
+    if (google) {
         plugins.push('GoogleDrivePicker');
         plugins.push('GooglePhotosPicker');
     }
 
-    if (brand.providers.dropbox) {
+    if (dropbox) {
         plugins.push('Dropbox');
     }
 
-    if (brand.providers.facebook) {
+    if (facebook) {
         plugins.push('Facebook');
     }
 
@@ -145,6 +155,46 @@ const generateErrorPage = (title: string, message: string): string => {
         <h1>${title}</h1>
         <p>${message}</p>
     </div>
+</body>
+</html>`;
+};
+
+/**
+ * Minimal in-frame page served when an EMBEDDED (`?embed=1`) request is
+ * unauthenticated. A 302 to sign-in would either load the login page inside
+ * the iframe or be blocked by `frame-ancestors`, so instead we hand the parent
+ * an `auth-required` postMessage and let it drive re-auth (top-level redirect /
+ * modal). The target origin is the parent's `document.referrer` origin,
+ * validated against the brand's embed allow-list (`brandEmbedOrigins`) — never
+ * `'*'`, never a foreign origin. The inline `<script>` carries the per-request
+ * CSP nonce and mirrors origin-guard.ts (the page is not part of the bundled
+ * asset, so it cannot import it).
+ */
+const generateAuthRequiredPage = (allowedOrigins: string[], nonce: string): string => {
+    const originsJson = safeJsonForHtmlScript(allowedOrigins);
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Session Expired</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body>
+    <p>Your session has expired. Please sign in again.</p>
+    <script nonce="${nonce}">
+        (function () {
+            var allowed = ${originsJson};
+            var target = null;
+            var referrer = document.referrer;
+            if (referrer) {
+                try {
+                    var origin = new URL(referrer).origin;
+                    if (allowed.indexOf(origin) !== -1) target = origin;
+                } catch (e) { target = null; }
+            }
+            if (target) window.parent.postMessage({ type: 'auth-required' }, target);
+        })();
+    </script>
 </body>
 </html>`;
 };
@@ -217,6 +267,13 @@ export const serveUppyPage = async (
     }
 
     if (!req.user) {
+        // Embedded frame: never 302 in-frame — signal the parent via postMessage.
+        if (req.query.embed === '1') {
+            res.set('Cache-Control', 'no-store');
+            res.setHeader('Content-Type', 'text/html');
+            res.status(401).send(generateAuthRequiredPage(brandEmbedOrigins(brand), res.locals.cspNonce ?? ''));
+            return;
+        }
         redirectToLoginOrShowError(req, res, brand);
         return;
     }
@@ -233,8 +290,14 @@ export const serveUppyPage = async (
 
         const enabledPlugins = getEnabledPlugins(brand);
 
+        // Host-handed theme (query-param, no cookie): stamp the class on <html>
+        // server-side so first paint matches before the deferred module runs.
+        // `theme` comes from a closed set ('light'|'dark'), so no escaping needed.
+        const theme: 'light' | 'dark' = req.query.theme === 'dark' ? 'dark' : 'light';
+
         // Replace placeholders. The bearer-token placeholder is intentionally
         // absent — the page no longer carries the token in any form.
+        html = html.replace(/THEME_CLASS_VALUE/g, theme);
         html = html.replace(/BRAND_SLUG_VALUE/g, toJsStringLiteral(brand.slug));
         html = html.replace(/BRAND_NAME_VALUE/g, toJsStringLiteral(brand.name));
         html = html.replace(/BRAND_LOGO_URL_VALUE/g, toJsStringLiteral(''));
@@ -266,13 +329,6 @@ export const serveUppyPage = async (
         // empty string is falsy in JS, which would silently resurrect that
         // unrelated dev fallback instead of the intended same-origin base.
         html = html.replace(/SERVER_URL_VALUE/g, toJsStringLiteral(brand.companionUrl));
-        // `public.backendUrl`/`public.uploadUrl` are retired legacy fields
-        // (D2) — there is no abeduls3-aligned replacement yet for "where to
-        // notify the brand backend of a completed upload". Stubbed empty; the
-        // client-side fallback in uppy.html/uppyModal.ts covers this until
-        // that flow is redesigned (Fase 5/8.7).
-        html = html.replace(/PUBLIC_BACKEND_URL_VALUE/g, toJsStringLiteral(''));
-        html = html.replace(/PUBLIC_UPLOAD_URL_VALUE/g, toJsStringLiteral(''));
         html = html.replace(/GOOGLE_API_KEY_DRIVE_VALUE/g, toJsStringLiteral(brand.providers.google?.driveApiKey ?? ''));
         html = html.replace(/GOOGLE_API_KEY_PHOTOS_VALUE/g, toJsStringLiteral(brand.providers.google?.photosApiKey ?? ''));
         html = html.replace(/GOOGLE_CLIENT_ID_VALUE/g, toJsStringLiteral(brand.providers.google?.clientId ?? ''));
@@ -283,6 +339,12 @@ export const serveUppyPage = async (
         // corrupted value would break out of the surrounding <script> tag.
         html = html.replace(/FOLDERS_DATA_VALUE/g, safeJsonForHtmlScript(folders));
         html = html.replace(/ENABLED_PLUGINS_VALUE/g, safeJsonForHtmlScript(enabledPlugins));
+        // Absent = true (backward-compat): only abe opts out, keeping the dashboard
+        // preview but never uploading the thumbnail to S3 (capsule discards it).
+        html = html.replace(/UPLOAD_THUMBNAILS_VALUE/g, safeJsonForHtmlScript(brand.upload.uploadThumbnails ?? true));
+        // postMessage target allow-list (upload-complete / auth-required) —
+        // same origins as the frame-ancestors CSP directive (core/csp.ts).
+        html = html.replace(/ALLOWED_ANCESTORS_VALUE/g, safeJsonForHtmlScript(brandEmbedOrigins(brand)));
 
         // Fase 5.4: the inline <script type="module"> needs the SAME nonce
         // helmet's CSP put in the script-src header for this request

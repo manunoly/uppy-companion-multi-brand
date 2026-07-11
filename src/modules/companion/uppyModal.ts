@@ -19,6 +19,8 @@ import {
     GooglePhotosPicker,
     // Plugins
     ThumbnailGenerator,
+    Compressor,
+    ImageEditor,
     AwsS3,
 } from 'https://releases.transloadit.com/uppy/v5.1.8/uppy.min.mjs';
 
@@ -36,8 +38,7 @@ export interface UppyModalOptions {
     SERVER_URL?: string;
     COMPANION_URL?: string;
     COMPANION_ALLOWED_HOSTS?: RegExp;
-    PUBLIC_BACKEND_URL?: string;
-    PUBLIC_UPLOAD_URL?: string;
+    allowedAncestors?: string[];
     GOOGLE_API_KEY_DRIVE?: string | null;
     GOOGLE_API_KEY_PHOTOS?: string | null;
     GOOGLE_CLIENT_ID?: string | null;
@@ -48,6 +49,7 @@ export interface UppyModalOptions {
     brandLogoUrl?: string | null;
     brandUserEndpoint?: string | null;
     enableThumbnails?: boolean;
+    uploadThumbnails?: boolean;
     [key: string]: any;
 }
 
@@ -63,26 +65,38 @@ const DEFAULT_PLUGINS = [
 
 const sanitizeName = (name: string): string => name.replace(/[^a-zA-Z0-9.]/g, '').slice(0, 999);
 
-const serialize = (data: Record<string, any>): URLSearchParams => {
-    const params = new URLSearchParams();
-    Object.entries(data || {}).forEach(([key, value]) => {
-        if (value == null) return;
-        if (Array.isArray(value)) {
-            value.forEach((item) => params.append(`${key}[]`, item));
-        } else {
-            params.append(key, String(value));
-        }
-    });
-    return params;
-};
-
 const readOption = (options: HelperOptions, key: string, fallback: any): any => {
     if (options[key] != null) return options[key];
     const element = document.getElementById(key) as HTMLInputElement;
     return element ? element.value : fallback;
 };
 
-const shouldUseMultipart = (file: any) => file.size > 100 * 1024 * 1024;
+// Multipart for EVERY file — deliberate deviation from Uppy's default (single
+// PUT under 100 MiB, multipart above). completeMultipartUpload is the only
+// universal server completion hook (single PUT has none), and the Phase-1 wire
+// contract needs it for HeadObject size enforcement + inline ingest on EVERY
+// upload, tiny images included.
+const shouldUseMultipart = () => true;
+
+type UppyTheme = 'light' | 'dark';
+
+// Host hands the theme with NO cookie (localStorage['theme'] is origin-scoped,
+// unreadable cross-subdomain). Anything but the literal 'dark' — absent or
+// invalid included — resolves to 'light'.
+export const resolveTheme = (raw: string | null | undefined): UppyTheme =>
+    raw === 'dark' ? 'dark' : 'light';
+
+const applyThemeClass = (theme: UppyTheme): void => {
+    const root = document.documentElement;
+    root.classList.remove('light', 'dark');
+    root.classList.add(theme);
+};
+
+const isSetThemeMessage = (data: unknown): data is { type: 'set-theme'; theme: string } =>
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { type?: unknown }).type === 'set-theme' &&
+    typeof (data as { theme?: unknown }).theme === 'string';
 
 // --- Main Function ---
 
@@ -94,8 +108,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         SERVER_URL: 'http://localhost:3000',
         COMPANION_URL: 'http://localhost:3020',
         COMPANION_ALLOWED_HOSTS: /.*/,
-        PUBLIC_BACKEND_URL: 'http://localhost',
-        PUBLIC_UPLOAD_URL: undefined,
+        allowedAncestors: [],
         GOOGLE_API_KEY_DRIVE: null,
         GOOGLE_API_KEY_PHOTOS: null,
         GOOGLE_CLIENT_ID: null,
@@ -106,33 +119,58 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         brandLogoUrl: null,
         brandUserEndpoint: null,
         enableThumbnails: true,
+        uploadThumbnails: true,
         ...options,
     };
 
     const SERVER_URL = readOption(merged, 'SERVER_URL', 'http://localhost:3000');
     const COMPANION_URL = readOption(merged, 'COMPANION_URL', 'http://localhost:3020');
     const COMPANION_ALLOWED_HOSTS = merged.COMPANION_ALLOWED_HOSTS ?? /.*/;
-    const PUBLIC_BACKEND_URL = readOption(merged, 'PUBLIC_BACKEND_URL', readOption(merged, 'PUBLIC_BACKEND_URL', 'http://localhost'));
-    const PUBLIC_UPLOAD_URL = readOption(merged, 'PUBLIC_UPLOAD_URL', `${PUBLIC_BACKEND_URL}/api/frame/contents/upload/public`);
+    const ALLOWED_ANCESTORS = Array.isArray(merged.allowedAncestors) ? merged.allowedAncestors : [];
 
     const GOOGLE_API_KEY_DRIVE = readOption(merged, 'GOOGLE_API_KEY_DRIVE', null);
     const GOOGLE_API_KEY_PHOTOS = readOption(merged, 'GOOGLE_API_KEY_PHOTOS', null);
     const GOOGLE_CLIENT_ID = readOption(merged, 'GOOGLE_CLIENT_ID', null);
     const GOOGLE_APP_ID = readOption(merged, 'GOOGLE_APP_ID', null);
     // Auth travels via the brand session cookie at Domain=.<rootDomain>.
-    // The browser sends it automatically with credentials: 'include' on
-    // both same-origin (/api/uppy/*) and cross-origin (publicUploadUrl)
-    // requests, since they all share the brand registrable domain.
+    // The browser sends it automatically with credentials: 'include' on the
+    // same-origin /api/uppy/* calls that sign/create/complete the S3 upload.
     const fetchWithAuth = (url: string, options: RequestInit = {}) =>
         fetch(url, { ...options, credentials: 'include' });
+
+    // Browser mirror of origin-guard.ts#resolveAllowedTargetOrigin — the asset
+    // build uses esbuild `transform` (not `bundle`), so this file cannot import
+    // it. Returns the validated parent origin, or null to abort (never '*').
+    const resolveAllowedTargetOrigin = (referrer: string, allowed: string[]): string | null => {
+        if (!referrer) return null;
+        try {
+            const origin = new URL(referrer).origin;
+            return allowed.includes(origin) ? origin : null;
+        } catch {
+            return null;
+        }
+    };
+
+    // Host-handed theme: `?theme=` drives first paint. The server also stamps
+    // the matching class on <html> (no flash before this deferred module runs);
+    // this re-application keeps JS the single source for the live set-theme path.
+    // typeof guards keep the factory node-safe (invoked headless in unit tests).
+    const initialTheme = resolveTheme(
+        typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('theme'),
+    );
+    if (typeof document !== 'undefined') applyThemeClass(initialTheme);
 
     const uppy = new Uppy({
         debug: true,
         autoProceed: false,
+        // Mirrors designer's UppyDashboardAws restrictions, reconciled with abe's
+        // server-side brand limits (registry): 50 MiB cap and image-only types so
+        // client validation matches what /api/uppy/sign-s3 will accept.
         restrictions: {
-            maxFileSize: 4 * 1024 * 1024 * 1024,
-            maxNumberOfFiles: 600,
+            maxFileSize: 50 * 1024 * 1024,
+            maxNumberOfFiles: 50,
             minNumberOfFiles: 1,
+            allowedFileTypes: ['image/*', '.heic', '.HEIC', '.heif', '.HEIF'],
         },
         onBeforeFileAdded: (file: any) => {
             if (file.meta.isThumbnail) {
@@ -164,12 +202,23 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     uppy.use(Dashboard, {
         trigger: merged.trigger,
         inline: merged.inline,
+        theme: initialTheme,
         proudlyDisplayPoweredByUppy: false,
-        hideCancelButton: true,
-        hidePauseResumeCancelButtons: true,
-        hidePauseResumeButton: true,
-        plugins: merged.plugins,
+        height: 470,
+        width: '100%',
+        hideUploadButton: false,
+        hideRetryButton: false,
+        hidePauseResumeButton: false,
+        hideCancelButton: false,
+        showRemoveButtonAfterComplete: true,
+        plugins: ['ImageEditor', ...(merged.plugins ?? [])],
     });
+
+    // Visual parity with designer's UppyDashboardAws: pre-upload compression +
+    // in-Dashboard crop/rotate editor. ImageEditor targets the Dashboard, so it
+    // must be registered after it.
+    uppy.use(Compressor);
+    uppy.use(ImageEditor, { target: Dashboard });
 
     // --- Companion Plugins ---
     if (merged.plugins?.includes('Facebook')) {
@@ -230,6 +279,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
 
         uppy.on('thumbnail:generated', async (file: any, preview: string) => {
             if (file.meta.isThumbnail) return;
+            if (merged.uploadThumbnails === false) return; // abe: keep dashboard preview, never upload it to S3
             if (generatedThumbnailFor.has(file.id)) return;
             generatedThumbnailFor.add(file.id);
 
@@ -267,10 +317,11 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         async getUploadParameters(file: any, options: { signal: AbortSignal }) {
             const response = await fetchWithAuth(`${SERVER_URL}/api/uppy/sign-s3`, {
                 method: 'POST',
-                body: serialize({
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     filename: sanitizeName(file.name),
                     contentType: file.type,
-                }) as any, // Cast to any because fetch body types are strict
+                }),
                 signal: options.signal,
             });
 
@@ -301,20 +352,23 @@ const uppyModal = (options: UppyModalOptions = {}) => {
                 throw err;
             }
 
-            const metadata: Record<string, string> = {};
-            Object.keys(file.meta || {}).forEach((key) => {
-                if (file.meta[key] != null) {
-                    metadata[key] = file.meta[key].toString().replace(/[^a-zA-Z0-9.]/g, '');
-                }
-            });
+            // Clean top-level fields the server reads directly — no nested `metadata` object.
+            const createBody: Record<string, any> = {
+                filename: sanitizeName(file.name),
+                type: file.type,
+                size: file.size,
+            };
+            if (file.meta?.folderId != null && file.meta.folderId !== '') {
+                createBody.folderId = file.meta.folderId;
+            }
+            if (file.meta?.isThumbnail) {
+                createBody.isThumbnail = 'true';
+            }
 
             const response = await fetchWithAuth(`${SERVER_URL}/api/uppy/s3/multipart`, {
                 method: 'POST',
-                body: serialize({
-                    filename: sanitizeName(file.name),
-                    type: file.type,
-                    metadata,
-                }) as any,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(createBody),
                 signal,
             });
 
@@ -372,7 +426,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
             if (!response.ok) throw new Error('Unsuccessful request', { cause: response });
 
             const data = await response.json();
-            return data && data.parts ? data.parts : [];
+            return Array.isArray(data) ? data : (data?.parts ?? []);
         },
 
         async completeMultipartUpload(file: any, { key, uploadId, parts }: any, signal: AbortSignal) {
@@ -386,61 +440,69 @@ const uppyModal = (options: UppyModalOptions = {}) => {
             const uploadIdEnc = encodeURIComponent(uploadId);
             const response = await fetchWithAuth(`${SERVER_URL}/api/uppy/s3/multipart/${uploadIdEnc}/complete?key=${filename}`, {
                 method: 'POST',
-                body: serialize({ parts }) as any,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ parts }),
                 signal,
             });
 
             if (!response.ok) throw new Error('Unsuccessful request', { cause: response });
 
-            return response.json();
+            const data = await response.json();
+            // Retain the server's { location, ingested, uploads? } so the
+            // 'complete' handler can forward the ingested library entries to the
+            // parent frame — Uppy only surfaces `location` on the file itself.
+            file.ingestResponse = data;
+            return data;
         },
     });
 
-    const saveFileToDB = async (imagesData: any) => {
-        if (!imagesData || imagesData.length === 0) throw new Error('imagesData is empty');
-        try {
-            const currentFolder = uppy.getState().meta?.folder || '';
-            // TODO:Arreglar para que llame a la URL correcta segun el entorno y brand
-            const response = await fetchWithAuth(`${PUBLIC_UPLOAD_URL}`, {
-                method: 'POST',
-                body: serialize({
-                    images: imagesData,
-                    folder: currentFolder,
-                    brand: merged.brand ?? 'default',
-                    brandName: merged.brandName ?? merged.brand ?? 'default',
-                }) as any,
-            });
-            if (!response.ok) {
-                console.warn('saveFileToDB', response);
-            }
-        } catch (error) {
-            console.warn('saveFileToDB ERROR', error);
-            // alert('There was an unexpected error saving the images. Please contact support.');
-        }
-    };
-
-    uppy.on('upload-success', (file: any, response: any) => {
-        if ((!file.uploadAwsUrl || file.uploadAwsUrl === 'undefined' || file.uploadAwsUrl === 'null') && response.uploadURL) {
-            file.uploadAwsUrl = decodeURIComponent(response.uploadURL.split('?')[0]);
-        } else if (file.uploadURL && file.uploadURL !== 'undefined' && file.uploadURL !== 'null') {
-            file.uploadAwsUrl = decodeURIComponent(file.uploadURL.split('?')[0]);
-        }
-
-        if (!file.response) file.response = response;
-
-        // IMPORTANT: Only save original files to DB, not thumbnails
-        if (file.meta.isThumbnail) {
-            console.log('Thumbnail uploaded:', file.name);
-            return;
-        }
-
-        const imagesData = JSON.stringify([file]);
-        saveFileToDB(imagesData);
-    });
-
+    // Server-side ingest (completeMultipartUpload -> capsule) is the ONLY
+    // phase-1 library notification — the legacy client-side saveFileToDB POST
+    // is gone. On 'complete', notify the parent frame so the designer can
+    // refresh its library, guarding the postMessage target against the injected
+    // allow-list (never '*', never a foreign origin).
     uppy.on('complete', (result: any) => {
         if (merged.callbackFn) merged.callbackFn(result);
+
+        const successful = Array.isArray(result?.successful) ? result.successful : [];
+        const uploads: any[] = [];
+        let count = 0;
+        let failed = 0;
+        for (const file of successful) {
+            if (file.meta?.isThumbnail) continue; // thumbnails are not library assets
+            const r = file.ingestResponse;
+            if (r?.ingested === true) {
+                count += 1;
+                if (r.uploads?.length) uploads.push(...r.uploads);
+            } else if (r?.ingestConfigured === false) {
+                // Brand has no ingest step (e.g. edo): an S3 success IS an addition.
+                count += 1;
+            } else {
+                failed += 1;
+            }
+        }
+
+        const targetOrigin = resolveAllowedTargetOrigin(document.referrer, ALLOWED_ANCESTORS);
+        if (!targetOrigin) return;
+
+        const payload: Record<string, any> = { type: 'upload-complete', count, failed };
+        if (uploads.length > 0) payload.uploads = uploads;
+        window.parent.postMessage(payload, targetOrigin);
     });
+
+    // Live theme handoff. Accept `set-theme` ONLY from an allow-listed ancestor:
+    // reuse resolveAllowedTargetOrigin (the browser mirror of origin-guard.ts) —
+    // null means the sender origin is not allow-listed, so ignore the message.
+    if (typeof window !== 'undefined') {
+        window.addEventListener('message', (event: MessageEvent) => {
+            if (resolveAllowedTargetOrigin(event.origin, ALLOWED_ANCESTORS) === null) return;
+            if (!isSetThemeMessage(event.data)) return;
+            const theme = resolveTheme(event.data.theme);
+            applyThemeClass(theme);
+            const dashboard = uppy.getPlugin('Dashboard');
+            if (dashboard) dashboard.setOptions({ theme });
+        });
+    }
 
     return uppy;
 };

@@ -5,6 +5,7 @@ import { S3Client, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { createTestApp } from './test-utils/http.js';
 import { makeBrand } from './test-utils/fixtures.js';
 import { makeValidEnv } from './test-utils/env-fixtures.js';
+import { getBaseBrandConfig } from './modules/brand/registry.js';
 
 // Readiness (Task 1.3) checks Redis via `getRedis().ping()` — swap in
 // ioredis-mock so those requests never touch the network.
@@ -56,6 +57,9 @@ const s3Mock = mockClient(S3Client);
 // fixture (via the slug match), so brand-specific overrides (auth.signInUrl,
 // limits, s3, etc.) still take effect.
 const EDO_HOST = 'companion.stage.entourageyearbooks.com';
+// Real companionHosts entry for `abe` in the same code-only base registry —
+// same Host-based resolution caveat as EDO_HOST above.
+const ABE_HOST = 'companion.abeduls.com';
 
 describe('server integration', () => {
     beforeEach(async () => {
@@ -497,6 +501,42 @@ describe('server integration', () => {
             const csp = res.headers['content-security-policy'];
             expect(csp).toMatch(/connect-src 'self'/);
             expect(csp).toMatch(/frame-ancestors 'self'/);
+        });
+    });
+
+    // P1-C7: helmet's `xFrameOptions` is now `false` — the legacy
+    // `X-Frame-Options: SAMEORIGIN` default would otherwise fight the
+    // per-brand `frame-ancestors` CSP directive above and block the /uppy
+    // <iframe> embed (P1-M4) regardless of what the CSP allows.
+    // `frame-ancestors` is the sole framing control, for every brand.
+    describe('framing control: X-Frame-Options disabled, frame-ancestors CSP authoritative (P1-C7)', () => {
+        it('abe: no X-Frame-Options header, and frame-ancestors includes both abe embed origins', async () => {
+            // Reads the actual registry `domains` rather than hardcoding
+            // them, so this test tracks the real entry, not a stale copy.
+            const abeDomains = getBaseBrandConfig('abe').domains;
+            const { app } = await createTestApp({
+                brands: [makeBrand({ slug: 'abe', domains: abeDomains })],
+            });
+            const res = await request(app).get('/uppy').set('Host', ABE_HOST);
+            expect(res.headers['x-frame-options']).toBeUndefined();
+            const csp = res.headers['content-security-policy'];
+            expect(csp).toMatch(/frame-ancestors[^;]*https:\/\/abeduls\.com/);
+            expect(csp).toMatch(/frame-ancestors[^;]*https:\/\/designer\.abeduls\.com/);
+        });
+
+        it("edo regression: frame-ancestors still derives from edo's own domains (no abe origin leak), and X-Frame-Options is absent there too", async () => {
+            const { app } = await createTestApp({
+                brands: [makeBrand({
+                    slug: 'edo',
+                    domains: ['linkdesigner.entourageyearbooks.com'],
+                })],
+            });
+            const res = await request(app).get('/uppy').set('Host', EDO_HOST);
+            expect(res.headers['x-frame-options']).toBeUndefined();
+            const csp = res.headers['content-security-policy'];
+            expect(csp).toMatch(/frame-ancestors[^;]*https:\/\/linkdesigner\.entourageyearbooks\.com/);
+            expect(csp).not.toContain('https://abeduls.com');
+            expect(csp).not.toContain('https://designer.abeduls.com');
         });
     });
 });
