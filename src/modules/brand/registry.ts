@@ -17,12 +17,11 @@ function deepFreeze<T>(value: T): T {
  * the Companion-only contract (companionHosts, assets.s3Prefix, upload, limits,
  * s3, providers, secret — see brand.contract.ts).
  *
- * `edo` is the MVP brand (spec §5): fully populated, servable (non-empty
- * companionHosts). `abe`/`picaboo` are NOT servable yet — `companionHosts: []`
- * on purpose (empty array, not absent, to satisfy the type) until their
- * external whoami endpoints are confirmed (D5.b for abe/capsule; picaboo has
- * no confirmed partner data at all). We do NOT invent a capsule whoamiUrl for
- * abe — see the empty placeholders below, clearly marked.
+ * `edo` and `abe` are servable (non-empty companionHosts); abe validates the
+ * forwarded capsule cookie against an external whoami (D5.b). `picaboo` is NOT
+ * servable yet — `companionHosts: []` on purpose (empty array, not absent, to
+ * satisfy the type) until its partner data is confirmed. We do NOT invent
+ * partner endpoints — see the empty placeholders below, clearly marked.
  */
 const BASE_REGISTRY: BrandRegistry = deepFreeze({
     [BRAND_SLUGS.ENTOURAGE]: {
@@ -54,25 +53,33 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
     [BRAND_SLUGS.ABEDULS]: {
         slug: BRAND_SLUGS.ABEDULS,
         name: 'Abeduls',
-        domains: ['designer.abeduls.com', 'designer3.abeduls.com', 'designer.abeduls.local'],
-        // Not servable: abe's capsule is an internal endpoint in abeduls3's
-        // designer app. The Companion (standalone) would need an EXTERNAL
-        // whoami endpoint for capsule (spec D5.b) that is not yet confirmed —
-        // left empty on purpose rather than inventing one.
-        companionHosts: [],
+        // Designer hosts (prod + local) allowed to embed /uppy (frame-ancestors) and call the API (CORS).
+        domains: ['abeduls.com', 'designer.abeduls.com', 'designer.abeduls.local', 'abeduls.local'],
+        // SA2: Companion's own hosts (prod + local). Code-only — the override
+        // mechanism (identity.ts) can never touch this field.
+        companionHosts: ['companion.abeduls.com', 'companion.abeduls.local'],
         auth: {
-            kind: 'capsule',
-            signInUrl: '',
-            whoamiUrl: '',
-            whoamiAllowedHosts: [],
+            // Standalone Companion validates the forwarded capsule cookie against an
+            // EXTERNAL whoami (D5.b) — same flow as any partner; `kind` is cosmetic.
+            kind: 'partner-whoami',
+            signInUrl: 'https://abeduls.com/sign-in',
+            whoamiUrl: 'https://abeduls.com/api/user',
+            whoamiAllowedHosts: ['abeduls.com'],
             sessionCookieName: 'abes_session',
             responseMapping: { idField: 'id', emailField: 'email', nameField: 'displayName', imageField: 'imageUrl' },
         },
-        assets: { s3Prefix: 'brands/abe/' },
+        // SA1: shares capsule's bucket 1:1 — keys land at 'original/{id}/...', no 'brands/abe/' prefix.
+        assets: { s3Prefix: '' },
         upload: { plugins: [], system: 'ABEDULS', systemDetails: 'DESIGNER' },
-        limits: { maxUploadBytes: 50 * 1024 * 1024 },
-        companionUrl: '',
-        secret: '',
+        limits: {
+            maxUploadBytes: 50 * 1024 * 1024,
+            allowedContentTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif'],
+        },
+        public: { foldersUrl: 'https://abeduls.com/api/folders' },
+        companionUrl: 'https://companion.abeduls.com',
+        secret: '', // resolved from COMPANION_SECRET in brand.service.ts
+        // bucket + creds arrive via env (ABE_S3_BUCKET/ABE_S3_REGION -> loadBrandSecrets);
+        // no literal bucket until the real one is confirmed. region is a sane fallback.
         s3: { bucket: '', region: 'us-east-1' },
         providers: {},
     } satisfies CompanionBrandConfig,
