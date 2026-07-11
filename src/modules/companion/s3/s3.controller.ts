@@ -4,6 +4,7 @@ import {
     CreateMultipartUploadCommand,
     CompleteMultipartUploadCommand,
     AbortMultipartUploadCommand,
+    HeadObjectCommand,
     ListPartsCommand,
     type Part,
     type CompletedPart
@@ -13,6 +14,9 @@ import type { Response, NextFunction } from 'express';
 import type { AppRequest } from '../../../core/types/express.js';
 import type { Brand } from '../../brand/brand.types.js';
 import { buildS3Key, buildUserKeyPrefix } from './s3.key-builder.js';
+import { resolveValidatedIngestTarget, readIngestToken } from '../../brand/identity.js';
+import { postIngest } from '../ingest/ingest.client.js';
+import { stashUploadMeta, readUploadMeta, deleteUploadMeta, type UploadMeta } from '../ingest/upload-meta.store.js';
 import { logger } from '../../../lib/logger.js';
 
 // --- Helpers ---
@@ -68,6 +72,33 @@ const rejectIfOutsideLimits = (
     }
 
     return false;
+};
+
+/** Parses a client-supplied `folderId` into a positive integer, or `null`. */
+export const parseFolderId = (raw: unknown): number | null => {
+    if (raw === undefined || raw === null || raw === '') return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+};
+
+/**
+ * Operator signal for a completed-but-not-ingested upload (Phase-1 residual,
+ * C-3): the S3 object exists but produced no `uploads` library row. Emitted as
+ * a single stable structured warn (`event: 'upload-ingested-false'`) that
+ * alerting/log-based metrics key on; `reason` separates accepted rejections
+ * (`over-limit`/`mime-not-allowed` — do NOT re-ingest) from ingest failures
+ * (partner 5xx/timeout/misconfig — reconcile candidates).
+ *
+ * Manual reconcile (no durable worker this round — SQS DEFERRED): list
+ * `original/<userId>/*` S3 keys, diff against the partner's `uploads` table,
+ * and re-POST the ingest endpoint (P1-M2) for the legit `reason`-less/failure
+ * orphans only.
+ */
+const recordIngestedFalse = (brandSlug: string, key: string, reason: string): void => {
+    logger.warn(
+        { brand: brandSlug, key, reason, event: 'upload-ingested-false' },
+        '[ingest] upload completed but not ingested (Phase-1 residual; manual reconcile)',
+    );
 };
 
 // S3 multipart contract: PartNumber must be an integer in [1, 10000].
@@ -180,18 +211,15 @@ export const createMultipartUpload = async (req: AppRequest, res: Response, _nex
             return;
         }
 
-        // MEDIO-2 (security audit): validate the client-declared Content-Type
-        // against the brand's allowlist, same helper/behavior as signS3.
-        // KNOWN LIMITATION (deferred to Fase 8, spec D14/8.5): byte-size
-        // limits are intentionally NOT enforced here. Unlike signS3, the
-        // client never declares a size anywhere in the multipart flow
-        // (createMultipartUpload/signPart both omit it), and signPart signs a
-        // plain SigV4 PUT-by-query-string per part — there is no
-        // `content-length-range` mechanism for that, unlike a presigned POST.
-        // Real server-side byte enforcement for multipart requires migrating
-        // to presigned POST, which is out of scope here (uppyModal.ts is
-        // browser-only, H21).
-        if (rejectIfOutsideLimits(brand, { contentType: type }, res)) return;
+        // P1: with multipart-for-all (uppyModal.ts shouldUseMultipart -> true),
+        // the client now declares its post-compression byte size at create so
+        // an obviously over-limit upload is rejected up front, alongside the
+        // existing Content-Type allowlist check. This is DECLARATIVE only — the
+        // authoritative size gate is the HeadObject check on complete (a
+        // dishonest client can still declare a small size). Absence of a
+        // declared size is not an error (older clients still work).
+        const declaredLength = parseDeclaredLength(req.body.size ?? req.body.contentLength);
+        if (rejectIfOutsideLimits(brand, { contentLength: declaredLength, contentType: type }, res)) return;
 
         const key = buildS3Key({ req, filename, metadata });
 
@@ -204,10 +232,27 @@ export const createMultipartUpload = async (req: AppRequest, res: Response, _nex
         });
 
         const s3Data = await brand.s3.client.send(command);
+        const uploadId = s3Data.UploadId;
+
+        // Stash the values the complete handler needs (folder, declared size,
+        // thumbnail flag), keyed by uploadId. `userId` is the server-validated
+        // identity, never client meta. Best-effort: a Redis blip must not fail
+        // the upload — complete degrades gracefully on a missing stash.
+        if (uploadId && req.user?.id) {
+            const meta: UploadMeta = {
+                filename,
+                mimetype: type,
+                declaredSize: declaredLength ?? null,
+                folderId: parseFolderId(req.body.folderId),
+                userId: req.user.id,
+                isThumbnail: req.body.isThumbnail === 'true',
+            };
+            await stashUploadMeta(brand.slug, uploadId, meta);
+        }
 
         res.json({
             key: s3Data.Key,
-            uploadId: s3Data.UploadId,
+            uploadId,
         });
     } catch (error) {
         logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error adding multipart');
@@ -311,45 +356,150 @@ export const listParts = async (req: AppRequest, res: Response, _next: NextFunct
 };
 
 /**
- * Handle completing multipart upload
+ * Handle completing multipart upload — plus the Phase-1 wire contract: after
+ * S3 finalizes the object, enforce the size/MIME LIBRARY boundary via
+ * HeadObject and forward the file to the partner's ingest endpoint inline.
+ *
+ * Ordering matters: once CompleteMultipartUploadCommand succeeds the object
+ * exists and the multipart upload is consumed, so EVERY subsequent step
+ * (HeadObject, ingest) must resolve to `200` — a non-2xx would make Uppy retry
+ * CompleteMultipartUpload against an already-completed upload (S3 NoSuchUpload).
+ * The inner try enforces that invariant.
  */
 export const completeMultipartUpload = async (req: AppRequest, res: Response, _next: NextFunction): Promise<void> => {
+    const brand = req.brand;
+    if (!brand || !brand.s3.client || !brand.s3.bucket) {
+        res.status(400).json({ error: 'Missing S3 config' });
+        return;
+    }
+
+    const { uploadId } = req.params;
+    const { key } = req.query;
+    const { parts } = req.body;
+
+    if (typeof key !== 'string') {
+        res.status(400).json({ error: 's3: the object key must be passed as a query parameter.' });
+        return;
+    }
+    if (sendIfKeyNotOwned(req, key, res)) return;
+    const userId = req.user?.id;
+    if (!userId) {
+        res.status(401).json({ error: 's3: user not authenticated' });
+        return;
+    }
+    if (!Array.isArray(parts) || !parts.every(isValidPart)) {
+        res.status(400).json({ error: 's3: `parts` must be an array of {ETag, PartNumber} objects.' });
+        return;
+    }
+
+    const s3 = brand.s3.client;
+    const bucket = brand.s3.bucket;
+
+    let location: string | undefined;
     try {
-        const brand = req.brand;
-        if (!brand || !brand.s3.client || !brand.s3.bucket) {
-            res.status(400).json({ error: 'Missing S3 config' });
-            return;
-        }
-
-        const { uploadId } = req.params;
-        const { key } = req.query;
-        const { parts } = req.body;
-
-        if (typeof key !== 'string') {
-            res.status(400).json({ error: 's3: the object key must be passed as a query parameter.' });
-            return;
-        }
-        if (sendIfKeyNotOwned(req, key, res)) return;
-        if (!Array.isArray(parts) || !parts.every(isValidPart)) {
-            res.status(400).json({ error: 's3: `parts` must be an array of {ETag, PartNumber} objects.' });
-            return;
-        }
-
-        const command = new CompleteMultipartUploadCommand({
-            Bucket: brand.s3.bucket,
+        const data = await s3.send(new CompleteMultipartUploadCommand({
+            Bucket: bucket,
             Key: key,
             UploadId: uploadId,
             MultipartUpload: { Parts: parts },
-        });
-
-        const data = await brand.s3.client.send(command);
-
-        res.json({
-            location: data.Location,
-        });
+        }));
+        location = data.Location;
     } catch (error) {
-        logger.error({ err: error, brand: req.brand?.slug }, '[s3] Error completing multipart');
+        // The multipart upload was NOT consumed — a retry is legitimate.
+        logger.error({ err: error, brand: brand.slug }, '[s3] Error completing multipart');
         res.status(500).json({ error: 'Error completing multipart' });
+        return;
+    }
+
+    // Post-complete: the object now exists. Never throw out of here — always 200.
+    try {
+        const meta = await readUploadMeta(brand.slug, uploadId);
+        await deleteUploadMeta(brand.slug, uploadId);
+
+        // Thumbnails (Uppy ThumbnailGenerator previews) land in S3 but are never
+        // a library asset — parity with the removed client-side upload-success skip.
+        if (meta?.isThumbnail) {
+            res.json({ location, ingested: false });
+            return;
+        }
+
+        // Authoritative size/type — catches a client that declared a small size
+        // at create then uploaded more across parts. X-1 owner decision: an
+        // over-limit object is NOT deleted (no s3:DeleteObject); the limit is
+        // enforced at the LIBRARY boundary (it never enters `uploads`).
+        const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+        const actualSize = head.ContentLength ?? 0;
+        const actualType = head.ContentType ?? meta?.mimetype ?? '';
+        const { maxUploadBytes, allowedContentTypes } = brand.limits;
+
+        if (actualSize > maxUploadBytes) {
+            recordIngestedFalse(brand.slug, key, 'over-limit');
+            res.json({ location, ingested: false, rejected: 'over-limit' });
+            return;
+        }
+        if (allowedContentTypes && actualType && !allowedContentTypes.includes(actualType)) {
+            recordIngestedFalse(brand.slug, key, 'mime-not-allowed');
+            res.json({ location, ingested: false, rejected: 'mime-not-allowed' });
+            return;
+        }
+
+        // Brand without an ingest callback (e.g. edo) — no library to notify.
+        // Not an orphan needing reconcile, so no operator metric.
+        if (!brand.ingest) {
+            res.json({ location, ingested: false });
+            return;
+        }
+
+        // Fetch through the SSRF-validated URL, never brand.ingest.url directly.
+        const target = resolveValidatedIngestTarget(brand);
+        if (!target.ok) {
+            logger.error({ brand: brand.slug, reason: target.reason }, '[ingest] target rejected by SSRF gate');
+            recordIngestedFalse(brand.slug, key, `target:${target.reason}`);
+            res.json({ location, ingested: false });
+            return;
+        }
+
+        let token: string;
+        try {
+            token = readIngestToken(brand.ingest.tokenEnv).trim();
+        } catch (err) {
+            logger.error({ err, brand: brand.slug }, '[ingest] token misconfigured');
+            recordIngestedFalse(brand.slug, key, 'token-misconfigured');
+            res.json({ location, ingested: false });
+            return;
+        }
+
+        const filename = meta?.filename ?? key.split('/').pop() ?? 'untitled';
+        const result = await postIngest({
+            url: target.url,
+            token,
+            userId,
+            brandSlug: brand.slug,
+            caller: 'companion',
+            files: [{
+                key,
+                filename,
+                mimetype: actualType,
+                fileSize: actualSize,
+                ...(meta?.folderId != null ? { folderId: meta.folderId } : {}),
+                source: 'local',
+            }],
+        });
+
+        const ingested = result.ok && result.uploads.length > 0;
+        if (!ingested) {
+            recordIngestedFalse(brand.slug, key, result.ok ? 'skipped-by-partner' : result.reason);
+            res.json({ location, ingested: false });
+            return;
+        }
+
+        // X-2: forward capsule's uploads UNCHANGED (Companion cannot invent the
+        // final URL — capsule may apply AWS_PUBLIC_BUCKET_BASE_URL).
+        res.json({ location, ingested: true, uploads: result.uploads });
+    } catch (error) {
+        logger.error({ err: error, brand: brand.slug }, '[s3] Post-complete ingest step failed');
+        recordIngestedFalse(brand.slug, key, 'post-complete-error');
+        res.json({ location, ingested: false });
     }
 };
 

@@ -76,12 +76,19 @@ export const buildConnectSrc = (brand: Brand | undefined): string => {
     return Array.from(origins).join(' ');
 };
 
+/**
+ * The brand's designer domain(s) as concrete `https://<host>` origins. Single
+ * source of truth for BOTH the `frame-ancestors` CSP directive (who may embed
+ * /uppy) AND the postMessage target allow-list injected into the page
+ * (`ALLOWED_ANCESTORS_VALUE`, uppy.routes.ts) — the set of origins allowed to
+ * embed us is exactly the set we may postMessage back to.
+ */
+export const brandEmbedOrigins = (brand: Brand | undefined): string[] =>
+    brand ? brand.domains.map((domain) => `https://${domain}`) : [];
+
 /** `frame-ancestors`: same-origin + every one of the brand's designer domain(s), so the /uppy page can be embedded there. */
 export const buildFrameAncestors = (brand: Brand | undefined): string => {
-    const origins = new Set(["'self'"]);
-    if (brand) {
-        for (const domain of brand.domains) origins.add(`https://${domain}`);
-    }
+    const origins = new Set(["'self'", ...brandEmbedOrigins(brand)]);
     return Array.from(origins).join(' ');
 };
 

@@ -36,8 +36,7 @@ export interface UppyModalOptions {
     SERVER_URL?: string;
     COMPANION_URL?: string;
     COMPANION_ALLOWED_HOSTS?: RegExp;
-    PUBLIC_BACKEND_URL?: string;
-    PUBLIC_UPLOAD_URL?: string;
+    allowedAncestors?: string[];
     GOOGLE_API_KEY_DRIVE?: string | null;
     GOOGLE_API_KEY_PHOTOS?: string | null;
     GOOGLE_CLIENT_ID?: string | null;
@@ -82,7 +81,12 @@ const readOption = (options: HelperOptions, key: string, fallback: any): any => 
     return element ? element.value : fallback;
 };
 
-const shouldUseMultipart = (file: any) => file.size > 100 * 1024 * 1024;
+// Multipart for EVERY file — deliberate deviation from Uppy's default (single
+// PUT under 100 MiB, multipart above). completeMultipartUpload is the only
+// universal server completion hook (single PUT has none), and the Phase-1 wire
+// contract needs it for HeadObject size enforcement + inline ingest on EVERY
+// upload, tiny images included.
+const shouldUseMultipart = () => true;
 
 // --- Main Function ---
 
@@ -94,8 +98,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         SERVER_URL: 'http://localhost:3000',
         COMPANION_URL: 'http://localhost:3020',
         COMPANION_ALLOWED_HOSTS: /.*/,
-        PUBLIC_BACKEND_URL: 'http://localhost',
-        PUBLIC_UPLOAD_URL: undefined,
+        allowedAncestors: [],
         GOOGLE_API_KEY_DRIVE: null,
         GOOGLE_API_KEY_PHOTOS: null,
         GOOGLE_CLIENT_ID: null,
@@ -112,19 +115,30 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     const SERVER_URL = readOption(merged, 'SERVER_URL', 'http://localhost:3000');
     const COMPANION_URL = readOption(merged, 'COMPANION_URL', 'http://localhost:3020');
     const COMPANION_ALLOWED_HOSTS = merged.COMPANION_ALLOWED_HOSTS ?? /.*/;
-    const PUBLIC_BACKEND_URL = readOption(merged, 'PUBLIC_BACKEND_URL', readOption(merged, 'PUBLIC_BACKEND_URL', 'http://localhost'));
-    const PUBLIC_UPLOAD_URL = readOption(merged, 'PUBLIC_UPLOAD_URL', `${PUBLIC_BACKEND_URL}/api/frame/contents/upload/public`);
+    const ALLOWED_ANCESTORS = Array.isArray(merged.allowedAncestors) ? merged.allowedAncestors : [];
 
     const GOOGLE_API_KEY_DRIVE = readOption(merged, 'GOOGLE_API_KEY_DRIVE', null);
     const GOOGLE_API_KEY_PHOTOS = readOption(merged, 'GOOGLE_API_KEY_PHOTOS', null);
     const GOOGLE_CLIENT_ID = readOption(merged, 'GOOGLE_CLIENT_ID', null);
     const GOOGLE_APP_ID = readOption(merged, 'GOOGLE_APP_ID', null);
     // Auth travels via the brand session cookie at Domain=.<rootDomain>.
-    // The browser sends it automatically with credentials: 'include' on
-    // both same-origin (/api/uppy/*) and cross-origin (publicUploadUrl)
-    // requests, since they all share the brand registrable domain.
+    // The browser sends it automatically with credentials: 'include' on the
+    // same-origin /api/uppy/* calls that sign/create/complete the S3 upload.
     const fetchWithAuth = (url: string, options: RequestInit = {}) =>
         fetch(url, { ...options, credentials: 'include' });
+
+    // Browser mirror of origin-guard.ts#resolveAllowedTargetOrigin — the asset
+    // build uses esbuild `transform` (not `bundle`), so this file cannot import
+    // it. Returns the validated parent origin, or null to abort (never '*').
+    const resolveAllowedTargetOrigin = (referrer: string, allowed: string[]): string | null => {
+        if (!referrer) return null;
+        try {
+            const origin = new URL(referrer).origin;
+            return allowed.includes(origin) ? origin : null;
+        } catch {
+            return null;
+        }
+    };
 
     const uppy = new Uppy({
         debug: true,
@@ -308,13 +322,25 @@ const uppyModal = (options: UppyModalOptions = {}) => {
                 }
             });
 
+            // Declared post-compression size (server rejects over-limit up
+            // front) + folder + thumbnail flag travel as clean top-level fields
+            // (NOT through the sanitizing `metadata` copy above).
+            const createBody: Record<string, any> = {
+                filename: sanitizeName(file.name),
+                type: file.type,
+                metadata,
+                size: file.size,
+            };
+            if (file.meta?.folderId != null && file.meta.folderId !== '') {
+                createBody.folderId = file.meta.folderId;
+            }
+            if (file.meta?.isThumbnail) {
+                createBody.isThumbnail = 'true';
+            }
+
             const response = await fetchWithAuth(`${SERVER_URL}/api/uppy/s3/multipart`, {
                 method: 'POST',
-                body: serialize({
-                    filename: sanitizeName(file.name),
-                    type: file.type,
-                    metadata,
-                }) as any,
+                body: serialize(createBody) as any,
                 signal,
             });
 
@@ -392,54 +418,39 @@ const uppyModal = (options: UppyModalOptions = {}) => {
 
             if (!response.ok) throw new Error('Unsuccessful request', { cause: response });
 
-            return response.json();
+            const data = await response.json();
+            // Retain the server's { location, ingested, uploads? } so the
+            // 'complete' handler can forward the ingested library entries to the
+            // parent frame — Uppy only surfaces `location` on the file itself.
+            file.ingestResponse = data;
+            return data;
         },
     });
 
-    const saveFileToDB = async (imagesData: any) => {
-        if (!imagesData || imagesData.length === 0) throw new Error('imagesData is empty');
-        try {
-            const currentFolder = uppy.getState().meta?.folder || '';
-            // TODO:Arreglar para que llame a la URL correcta segun el entorno y brand
-            const response = await fetchWithAuth(`${PUBLIC_UPLOAD_URL}`, {
-                method: 'POST',
-                body: serialize({
-                    images: imagesData,
-                    folder: currentFolder,
-                    brand: merged.brand ?? 'default',
-                    brandName: merged.brandName ?? merged.brand ?? 'default',
-                }) as any,
-            });
-            if (!response.ok) {
-                console.warn('saveFileToDB', response);
-            }
-        } catch (error) {
-            console.warn('saveFileToDB ERROR', error);
-            // alert('There was an unexpected error saving the images. Please contact support.');
-        }
-    };
-
-    uppy.on('upload-success', (file: any, response: any) => {
-        if ((!file.uploadAwsUrl || file.uploadAwsUrl === 'undefined' || file.uploadAwsUrl === 'null') && response.uploadURL) {
-            file.uploadAwsUrl = decodeURIComponent(response.uploadURL.split('?')[0]);
-        } else if (file.uploadURL && file.uploadURL !== 'undefined' && file.uploadURL !== 'null') {
-            file.uploadAwsUrl = decodeURIComponent(file.uploadURL.split('?')[0]);
-        }
-
-        if (!file.response) file.response = response;
-
-        // IMPORTANT: Only save original files to DB, not thumbnails
-        if (file.meta.isThumbnail) {
-            console.log('Thumbnail uploaded:', file.name);
-            return;
-        }
-
-        const imagesData = JSON.stringify([file]);
-        saveFileToDB(imagesData);
-    });
-
+    // Server-side ingest (completeMultipartUpload -> capsule) is the ONLY
+    // phase-1 library notification — the legacy client-side saveFileToDB POST
+    // is gone. On 'complete', notify the parent frame so the designer can
+    // refresh its library, guarding the postMessage target against the injected
+    // allow-list (never '*', never a foreign origin).
     uppy.on('complete', (result: any) => {
         if (merged.callbackFn) merged.callbackFn(result);
+
+        const successful = Array.isArray(result?.successful) ? result.successful : [];
+        const uploads: any[] = [];
+        let count = 0;
+        for (const file of successful) {
+            if (file.meta?.isThumbnail) continue; // thumbnails are not library assets
+            count += 1;
+            const ingested = file.ingestResponse;
+            if (ingested?.uploads?.length) uploads.push(...ingested.uploads);
+        }
+
+        const targetOrigin = resolveAllowedTargetOrigin(document.referrer, ALLOWED_ANCESTORS);
+        if (!targetOrigin) return;
+
+        const payload: Record<string, any> = { type: 'upload-complete', count };
+        if (uploads.length > 0) payload.uploads = uploads;
+        window.parent.postMessage(payload, targetOrigin);
     });
 
     return uppy;

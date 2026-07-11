@@ -124,7 +124,6 @@
     <input id="googlePhotosApiKey" style="display: none;" value="GOOGLE_API_KEY_PHOTOS_VALUE" />
     <input id="googleClientId" style="display: none;" value="GOOGLE_CLIENT_ID_VALUE" />
     <input id="googleAppId" style="display: none;" value="GOOGLE_APP_ID_VALUE" />
-    <input id="publicUploadUrl" style="display: none;" value="PUBLIC_UPLOAD_URL_VALUE" />
 
     <!-- Upload wrapper: folder selector + uppy -->
     <div class="upload-wrapper">
@@ -157,8 +156,6 @@
         // Server-injected values (replaced at runtime)
         const serverUrl = SERVER_URL_VALUE || 'http://localhost:3000';
         const companionUrl = COMPANION_URL_VALUE || 'http://localhost:3020';
-        const publicBackendUrl = PUBLIC_BACKEND_URL_VALUE || 'http://localhost';
-        const publicUploadUrl = PUBLIC_UPLOAD_URL_VALUE || `${publicBackendUrl}/api/frame/contents/upload/public`;
         const googleDriveApiKey = GOOGLE_API_KEY_DRIVE_VALUE || '';
         const googlePhotosApiKey = GOOGLE_API_KEY_PHOTOS_VALUE || '';
         const googleClientId = GOOGLE_CLIENT_ID_VALUE || '';
@@ -171,13 +168,17 @@
         // Folders data (injected by server)
         const foldersData = FOLDERS_DATA_VALUE || [];
 
+        // postMessage target allow-list (origins allowed to embed this page)
+        const allowedAncestors = ALLOWED_ANCESTORS_VALUE || [];
+
         // Update page title
         if (brandName && brandName.toLowerCase() !== 'default') {
             document.title = `${brandName} Upload`;
         }
 
-        // Populate folder selector
+        // Populate folder selector (hidden entirely when the brand has no folders)
         const folderSelect = document.getElementById('folderSelect');
+        const folderSelector = document.querySelector('.folder-selector');
         if (foldersData && foldersData.length > 0) {
             folderSelect.innerHTML = '';
 
@@ -195,8 +196,8 @@
 
                 folderSelect.appendChild(option);
             });
-        } else {
-            folderSelect.innerHTML = '<option value="">No folders available</option>';
+        } else if (folderSelector) {
+            folderSelector.style.display = 'none';
         }
 
         // Get selected folder ID
@@ -211,8 +212,7 @@
             plugins: ENABLED_PLUGINS_VALUE,
             SERVER_URL: serverUrl,
             COMPANION_URL: companionUrl,
-            PUBLIC_BACKEND_URL: publicBackendUrl,
-            PUBLIC_UPLOAD_URL: publicUploadUrl,
+            allowedAncestors,
             GOOGLE_API_KEY_DRIVE: googleDriveApiKey,
             GOOGLE_API_KEY_PHOTOS: googlePhotosApiKey,
             GOOGLE_CLIENT_ID: googleClientId,
