@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { companionBrandConfigSchema } from './brand.schema.js';
 import { getBaseBrandConfig, getServableSlugs } from './registry.js';
 
 describe('registry: edo (servable, MVP brand)', () => {
@@ -24,6 +25,10 @@ describe('registry: edo (servable, MVP brand)', () => {
 
     it('has no S3 key prefix (SA1: uses original/{id}/... directly)', () => {
         expect(edo.assets.s3Prefix).toBe('');
+    });
+
+    it('has no requireVerifiedEmail flag (ungated, back-compat) (P1-C2)', () => {
+        expect(edo.auth.requireVerifiedEmail).toBeUndefined();
     });
 
     it('is backed by the entourage-uploads bucket in us-east-1', () => {
@@ -81,6 +86,11 @@ describe('registry: abe (servable, P1-C1)', () => {
 
     it('has no S3 key prefix (SA1: shares capsule bucket 1:1 via original/{id}/...)', () => {
         expect(abe.assets.s3Prefix).toBe('');
+    });
+
+    it('boot-validates with requireVerifiedEmail enabled, parity with capsule proxy gate (P1-C2)', () => {
+        expect(abe.auth.requireVerifiedEmail).toBe(true);
+        expect(() => companionBrandConfigSchema.parse(abe)).not.toThrow();
     });
 
     it('has an empty registry-literal bucket, resolved at deploy via ABE_S3_BUCKET (P1-G1)', () => {
