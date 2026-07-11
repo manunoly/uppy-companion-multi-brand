@@ -69,20 +69,29 @@ export const getEnabledPlugins = (brand: Brand): EdoUploadPlugin[] => {
         return [...brand.upload.plugins];
     }
 
+    const { google, dropbox, facebook } = brand.providers;
+
+    // No typed plugin list AND no configured provider (abe): local-only. Returning
+    // ['Url'] here would enable the remote-import surface, which bypasses the custom
+    // completeMultipartUpload (no ingest) — out of Phase-1 scope.
+    if (!google && !dropbox && !facebook) {
+        return [];
+    }
+
     // Fallback: detect plugins from configured providers, restricted to the
     // EdoUploadPlugin allowlist.
     const plugins: EdoUploadPlugin[] = ['Url'];
 
-    if (brand.providers.google) {
+    if (google) {
         plugins.push('GoogleDrivePicker');
         plugins.push('GooglePhotosPicker');
     }
 
-    if (brand.providers.dropbox) {
+    if (dropbox) {
         plugins.push('Dropbox');
     }
 
-    if (brand.providers.facebook) {
+    if (facebook) {
         plugins.push('Facebook');
     }
 
@@ -330,6 +339,9 @@ export const serveUppyPage = async (
         // corrupted value would break out of the surrounding <script> tag.
         html = html.replace(/FOLDERS_DATA_VALUE/g, safeJsonForHtmlScript(folders));
         html = html.replace(/ENABLED_PLUGINS_VALUE/g, safeJsonForHtmlScript(enabledPlugins));
+        // Absent = true (backward-compat): only abe opts out, keeping the dashboard
+        // preview but never uploading the thumbnail to S3 (capsule discards it).
+        html = html.replace(/UPLOAD_THUMBNAILS_VALUE/g, safeJsonForHtmlScript(brand.upload.uploadThumbnails ?? true));
         // postMessage target allow-list (upload-complete / auth-required) —
         // same origins as the frame-ancestors CSP directive (core/csp.ts).
         html = html.replace(/ALLOWED_ANCESTORS_VALUE/g, safeJsonForHtmlScript(brandEmbedOrigins(brand)));

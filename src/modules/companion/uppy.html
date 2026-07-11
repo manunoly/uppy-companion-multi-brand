@@ -207,6 +207,9 @@
         // postMessage target allow-list (origins allowed to embed this page)
         const allowedAncestors = ALLOWED_ANCESTORS_VALUE || [];
 
+        // Per-brand: when false, previews still show in the dashboard but are not uploaded to S3.
+        const uploadThumbnails = UPLOAD_THUMBNAILS_VALUE;
+
         // Update page title
         if (brandName && brandName.toLowerCase() !== 'default') {
             document.title = `${brandName} Upload`;
@@ -249,6 +252,7 @@
             SERVER_URL: serverUrl,
             COMPANION_URL: companionUrl,
             allowedAncestors,
+            uploadThumbnails,
             GOOGLE_API_KEY_DRIVE: googleDriveApiKey,
             GOOGLE_API_KEY_PHOTOS: googlePhotosApiKey,
             GOOGLE_CLIENT_ID: googleClientId,

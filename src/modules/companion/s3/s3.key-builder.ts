@@ -11,6 +11,23 @@ const sanitizeFilename = (name: string | undefined | null): string => {
     return name.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 255) || 'untitled';
 };
 
+// S3 keys map 1:1 to capsule's `uploads.filepath` (varchar(255)) + FileSchema.key
+// (.max(255)); a longer key stores in S3 but 400s at ingest, orphaning the object.
+const MAX_KEY_LENGTH = 255;
+// Sane floor so a pathological (mis-configured) prefix never clamps the name to nothing.
+const MIN_FILENAME_LENGTH = 8;
+
+/** Clamps a filename to `budget` chars, keeping its extension when one is present. */
+const clampFilenameToBudget = (filename: string, budget: number): string => {
+    if (filename.length <= budget) return filename;
+    const dot = filename.lastIndexOf('.');
+    // No usable extension (no dot, leading dot, or trailing dot) — hard clamp the whole name.
+    if (dot <= 0 || dot === filename.length - 1) return filename.slice(0, budget);
+    const ext = filename.slice(dot);
+    if (ext.length >= budget) return filename.slice(0, budget);
+    return filename.slice(0, budget - ext.length) + ext;
+};
+
 /**
  * Returns the S3 key prefix that scopes uploads to a single user. Used both
  * to build new keys and to validate that a client-supplied key belongs to the
@@ -90,6 +107,10 @@ export const buildS3Key = ({ req, filename, metadata }: BuildS3KeyParams): strin
     const now = new Date();
     const timestamp = `${now.getHours()}${now.getMinutes()}${now.getSeconds()}${now.getMilliseconds()}`;
     const prefix = buildUserKeyPrefix(brand, user);
+    const dateSegment = `${now.getFullYear()}/${now.getMonth() + 1}/${now.getDate()}/${timestamp}/`;
 
-    return `${prefix}${now.getFullYear()}/${now.getMonth() + 1}/${now.getDate()}/${timestamp}/${sanitizedFilename}`;
+    const budget = Math.max(MAX_KEY_LENGTH - prefix.length - dateSegment.length, MIN_FILENAME_LENGTH);
+    const clampedFilename = clampFilenameToBudget(sanitizedFilename, budget);
+
+    return `${prefix}${dateSegment}${clampedFilename}`;
 };

@@ -24,6 +24,8 @@ class FakeUppy {
     constructorOptions: Record<string, unknown>;
     // P1-C9: the live set-theme handler calls uppy.getPlugin('Dashboard').setOptions(...).
     dashboardPlugin = { setOptions: vi.fn() };
+    handlers: Record<string, (...args: unknown[]) => unknown> = {};
+    addFile = vi.fn();
     constructor(constructorOptions: Record<string, unknown> = {}) {
         this.constructorOptions = constructorOptions;
     }
@@ -31,7 +33,8 @@ class FakeUppy {
         this.plugins.push({ plugin, opts });
         return this;
     }
-    on(_event: string, _handler: (...args: unknown[]) => void): FakeUppy {
+    on(event: string, handler: (...args: unknown[]) => unknown): FakeUppy {
+        this.handlers[event] = handler;
         return this;
     }
     setMeta(_meta: Record<string, unknown>): FakeUppy {
@@ -41,6 +44,19 @@ class FakeUppy {
         return name === 'Dashboard' ? this.dashboardPlugin : undefined;
     }
 }
+
+type FetchInit = { headers: Record<string, string>; body: string };
+type MultipartData = { key: string; uploadId: string; parts?: unknown[] };
+type CompleteFn = (file: { name: string; type: string }, data: MultipartData, signal: AbortSignal) => Promise<unknown>;
+type CreateFn = (file: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
+type ListPartsFn = (file: { name: string }, data: MultipartData, signal: AbortSignal) => Promise<unknown>;
+
+/** Extracts the registered AwsS3 plugin options (getUploadParameters, create/complete/listParts). */
+const getAwsOpts = (uppy: FakeUppy): Record<string, unknown> => {
+    const registration = uppy.plugins.find((r) => r.plugin === 'AwsS3');
+    if (!registration?.opts) throw new Error('AwsS3 plugin not registered');
+    return registration.opts;
+};
 
 vi.mock('https://releases.transloadit.com/uppy/v5.1.8/uppy.min.mjs', () => ({
     Uppy: FakeUppy,
@@ -79,6 +95,7 @@ interface FakeClassList {
 interface FakeWindow {
     location: { search: string };
     addEventListener: (type: string, handler: (event: { origin: string; data: unknown }) => void) => void;
+    parent: { postMessage: (data: unknown, targetOrigin: string) => void };
 }
 
 interface FakeDocument {
@@ -98,15 +115,17 @@ type BrowserGlobals = { window?: FakeWindow; document?: FakeDocument };
  * jsdom/happy-dom, which aren't dependencies of this package — just enough
  * surface for the guards to see `typeof window/document !== 'undefined'`.
  */
-const installFakeBrowserGlobals = (search: string) => {
+const installFakeBrowserGlobals = (search: string, referrer = '') => {
     const classes = new Set<string>();
     let messageListener: ((event: { origin: string; data: unknown }) => void) | undefined;
+    const postMessage = vi.fn();
 
     const fakeWindow: FakeWindow = {
         location: { search },
         addEventListener: (type, handler) => {
             if (type === 'message') messageListener = handler;
         },
+        parent: { postMessage },
     };
     const fakeDocument: FakeDocument = {
         documentElement: {
@@ -116,7 +135,7 @@ const installFakeBrowserGlobals = (search: string) => {
             },
         },
         body: { dataset: {} },
-        referrer: '',
+        referrer,
         getElementById: () => null,
     };
 
@@ -125,6 +144,7 @@ const installFakeBrowserGlobals = (search: string) => {
 
     return {
         classes,
+        postMessage,
         dispatchMessage: (event: { origin: string; data: unknown }) => messageListener?.(event),
     };
 };
@@ -268,5 +288,227 @@ describe('uppyModal — live set-theme postMessage, origin-gated (P1-C9)', () =>
         dispatchMessage({ origin: ALLOWED_ORIGIN, data: { type: 'upload-complete', count: 1 } });
 
         expect(uppy.dashboardPlugin.setOptions).not.toHaveBeenCalled();
+    });
+});
+
+// FIX 1: the multipart create/complete bodies used to be form-urlencoded via a
+// `serialize()` helper that rendered arrays as `parts[]=[object Object]`, which
+// express.urlencoded({extended:false}) parsed to `req.body.parts === undefined`
+// → 400 on every complete. Both bodies now go out as JSON so a real `parts`
+// array survives the wire. sign-s3 also carries JSON for consistency.
+describe('uppyModal — S3 request bodies are JSON (FIX 1 wire contract)', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('completeMultipartUpload sends Content-Type application/json and a body carrying the real parts array', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ location: 'l', ingested: true }) });
+        vi.stubGlobal('fetch', fetchMock);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const opts = getAwsOpts(uppyModal(NODE_SAFE_OPTIONS) as unknown as FakeUppy);
+
+        const parts = [{ ETag: '"abc"', PartNumber: 1 }];
+        await (opts.completeMultipartUpload as CompleteFn)(
+            { name: 'f.jpg', type: 'image/jpeg' },
+            { key: 'original/u1/f.jpg', uploadId: 'up1', parts },
+            new AbortController().signal,
+        );
+
+        const init = fetchMock.mock.calls[0][1] as FetchInit;
+        expect(init.headers['Content-Type']).toBe('application/json');
+        expect(JSON.parse(init.body)).toEqual({ parts });
+    });
+
+    it('createMultipartUpload sends Content-Type application/json and clean top-level fields', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ key: 'k', uploadId: 'up1' }) });
+        vi.stubGlobal('fetch', fetchMock);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const opts = getAwsOpts(uppyModal(NODE_SAFE_OPTIONS) as unknown as FakeUppy);
+
+        await (opts.createMultipartUpload as CreateFn)(
+            { name: 'f.jpg', type: 'image/jpeg', size: 2048, meta: { folderId: '9' } },
+            new AbortController().signal,
+        );
+
+        const init = fetchMock.mock.calls[0][1] as FetchInit;
+        expect(init.headers['Content-Type']).toBe('application/json');
+        expect(JSON.parse(init.body)).toMatchObject({ filename: 'f.jpg', type: 'image/jpeg', size: 2048, folderId: '9' });
+    });
+});
+
+// FIX 2: listParts previously returned `data.parts` only, discarding the raw
+// array the controller actually responds — resumed uploads never saw existing parts.
+describe('uppyModal — listParts returns the raw server array (FIX 2)', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('returns the array response unchanged', async () => {
+        const parts = [{ PartNumber: 1, ETag: '"abc"' }];
+        const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => parts });
+        vi.stubGlobal('fetch', fetchMock);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const opts = getAwsOpts(uppyModal(NODE_SAFE_OPTIONS) as unknown as FakeUppy);
+
+        const result = await (opts.listParts as ListPartsFn)(
+            { name: 'f.jpg' },
+            { key: 'original/u1/f.jpg', uploadId: 'up1' },
+            new AbortController().signal,
+        );
+
+        expect(result).toEqual(parts);
+    });
+});
+
+// FIX 5: with uploadThumbnails:false (abe) the ThumbnailGenerator still renders
+// dashboard previews, but the preview is NOT re-added as a separate S3 upload
+// (capsule discards isThumbnail). Absent/true (edo) keeps uploading it.
+describe('uppyModal — uploadThumbnails gates the S3 thumbnail upload (FIX 5)', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    const stubThumbnailIO = () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ blob: async () => ({ type: 'image/png' }) }));
+        vi.stubGlobal('File', class FakeFile {
+            constructor(public parts: unknown[], public name: string, public opts: { type?: string } = {}) {}
+        });
+    };
+
+    it('does NOT re-add the generated thumbnail when uploadThumbnails is false', async () => {
+        stubThumbnailIO();
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, enableThumbnails: true, uploadThumbnails: false }) as unknown as FakeUppy;
+
+        const handler = uppy.handlers['thumbnail:generated'];
+        expect(handler).toBeDefined();
+        await handler({ id: 'f1', name: 'a.jpg', meta: {} }, 'data:image/png;base64,xxx');
+
+        expect(uppy.addFile).not.toHaveBeenCalled();
+    });
+
+    it('re-adds the generated thumbnail when uploadThumbnails is absent (edo default true)', async () => {
+        stubThumbnailIO();
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, enableThumbnails: true }) as unknown as FakeUppy;
+
+        const handler = uppy.handlers['thumbnail:generated'];
+        await handler({ id: 'f2', name: 'b.jpg', meta: {} }, 'data:image/png;base64,xxx');
+
+        expect(uppy.addFile).toHaveBeenCalledTimes(1);
+        expect(uppy.addFile.mock.calls[0][0].meta.isThumbnail).toBe(true);
+    });
+});
+
+// FIX 6: the 'complete' handler used to count EVERY non-thumbnail S3-successful
+// file, announcing a failed ingest to the parent as success. It now counts only
+// files whose server response is `ingested:true`, and reports the rest as `failed`.
+describe('uppyModal — complete handler counts only ingested files (FIX 6)', () => {
+    const ALLOWED = 'https://designer.abeduls.com';
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('excludes an ingested:false file from count, reports it as failed, and posts { count, failed }', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+
+        const complete = uppy.handlers['complete'];
+        expect(complete).toBeDefined();
+        complete({
+            successful: [
+                { meta: {}, ingestResponse: { ingested: true, uploads: [{ id: 1, url: 'https://cdn/a.jpg' }] } },
+                { meta: {}, ingestResponse: { ingested: false } },
+                { meta: { isThumbnail: true }, ingestResponse: { ingested: false } },
+            ],
+        });
+
+        expect(postMessage).toHaveBeenCalledTimes(1);
+        const [payload, target] = postMessage.mock.calls[0];
+        expect(target).toBe(ALLOWED);
+        expect(payload).toEqual({
+            type: 'upload-complete',
+            count: 1,
+            failed: 1,
+            uploads: [{ id: 1, url: 'https://cdn/a.jpg' }],
+        });
+    });
+
+    it('omits uploads and reports failed only when no file ingested', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+
+        uppy.handlers['complete']({
+            successful: [{ meta: {}, ingestResponse: { ingested: false, rejected: 'over-limit' } }],
+        });
+
+        expect(postMessage).toHaveBeenCalledTimes(1);
+        expect(postMessage.mock.calls[0][0]).toEqual({ type: 'upload-complete', count: 0, failed: 1 });
+    });
+});
+
+// Regression: FIX 6 counted every non-ingested file as `failed`, which broke edo
+// — edo has no ingest step, so completeMultipartUpload returns `ingested:false,
+// ingestConfigured:false` for a genuine S3 success. The handler now treats
+// `ingestConfigured:false` as an addition (count), reserving `failed` for the abe
+// case where ingest was expected (ingestConfigured:true) but no row persisted.
+describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest regression)', () => {
+    const ALLOWED = 'https://designer.abeduls.com';
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('counts an ingestConfigured:false file (edo S3 success) in count, not failed', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+
+        uppy.handlers['complete']({
+            successful: [
+                { meta: {}, ingestResponse: { location: 'l1', ingested: false, ingestConfigured: false } },
+                { meta: {}, ingestResponse: { location: 'l2', ingested: false, ingestConfigured: false } },
+            ],
+        });
+
+        expect(postMessage).toHaveBeenCalledTimes(1);
+        expect(postMessage.mock.calls[0][0]).toEqual({ type: 'upload-complete', count: 2, failed: 0 });
+    });
+
+    it('counts an ingestConfigured:true + ingested:false file (abe ingest failure) in failed', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+
+        uppy.handlers['complete']({
+            successful: [{ meta: {}, ingestResponse: { location: 'l', ingested: false, ingestConfigured: true } }],
+        });
+
+        expect(postMessage).toHaveBeenCalledTimes(1);
+        expect(postMessage.mock.calls[0][0]).toEqual({ type: 'upload-complete', count: 0, failed: 1 });
+    });
+
+    it('mixes ingested:true, edo (ingestConfigured:false), and abe-failed files correctly', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+
+        uppy.handlers['complete']({
+            successful: [
+                { meta: {}, ingestResponse: { ingested: true, uploads: [{ id: 1, url: 'https://cdn/a.jpg' }] } },
+                { meta: {}, ingestResponse: { ingested: false, ingestConfigured: false } },
+                { meta: {}, ingestResponse: { ingested: false, ingestConfigured: true } },
+            ],
+        });
+
+        expect(postMessage.mock.calls[0][0]).toEqual({
+            type: 'upload-complete',
+            count: 2,
+            failed: 1,
+            uploads: [{ id: 1, url: 'https://cdn/a.jpg' }],
+        });
     });
 });

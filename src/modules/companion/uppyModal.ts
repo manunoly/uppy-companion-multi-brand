@@ -49,6 +49,7 @@ export interface UppyModalOptions {
     brandLogoUrl?: string | null;
     brandUserEndpoint?: string | null;
     enableThumbnails?: boolean;
+    uploadThumbnails?: boolean;
     [key: string]: any;
 }
 
@@ -63,19 +64,6 @@ const DEFAULT_PLUGINS = [
 // --- Helpers ---
 
 const sanitizeName = (name: string): string => name.replace(/[^a-zA-Z0-9.]/g, '').slice(0, 999);
-
-const serialize = (data: Record<string, any>): URLSearchParams => {
-    const params = new URLSearchParams();
-    Object.entries(data || {}).forEach(([key, value]) => {
-        if (value == null) return;
-        if (Array.isArray(value)) {
-            value.forEach((item) => params.append(`${key}[]`, item));
-        } else {
-            params.append(key, String(value));
-        }
-    });
-    return params;
-};
 
 const readOption = (options: HelperOptions, key: string, fallback: any): any => {
     if (options[key] != null) return options[key];
@@ -131,6 +119,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         brandLogoUrl: null,
         brandUserEndpoint: null,
         enableThumbnails: true,
+        uploadThumbnails: true,
         ...options,
     };
 
@@ -290,6 +279,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
 
         uppy.on('thumbnail:generated', async (file: any, preview: string) => {
             if (file.meta.isThumbnail) return;
+            if (merged.uploadThumbnails === false) return; // abe: keep dashboard preview, never upload it to S3
             if (generatedThumbnailFor.has(file.id)) return;
             generatedThumbnailFor.add(file.id);
 
@@ -327,10 +317,11 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         async getUploadParameters(file: any, options: { signal: AbortSignal }) {
             const response = await fetchWithAuth(`${SERVER_URL}/api/uppy/sign-s3`, {
                 method: 'POST',
-                body: serialize({
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     filename: sanitizeName(file.name),
                     contentType: file.type,
-                }) as any, // Cast to any because fetch body types are strict
+                }),
                 signal: options.signal,
             });
 
@@ -361,10 +352,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
                 throw err;
             }
 
-            // Every value travels as a clean top-level field: filename/type/
-            // declared size + optional folder/thumbnail flag. No `metadata`
-            // object — serialize() stringifies it to the literal "[object
-            // Object]", which the server can't build an S3 key from.
+            // Clean top-level fields the server reads directly — no nested `metadata` object.
             const createBody: Record<string, any> = {
                 filename: sanitizeName(file.name),
                 type: file.type,
@@ -379,7 +367,8 @@ const uppyModal = (options: UppyModalOptions = {}) => {
 
             const response = await fetchWithAuth(`${SERVER_URL}/api/uppy/s3/multipart`, {
                 method: 'POST',
-                body: serialize(createBody) as any,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(createBody),
                 signal,
             });
 
@@ -437,7 +426,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
             if (!response.ok) throw new Error('Unsuccessful request', { cause: response });
 
             const data = await response.json();
-            return data && data.parts ? data.parts : [];
+            return Array.isArray(data) ? data : (data?.parts ?? []);
         },
 
         async completeMultipartUpload(file: any, { key, uploadId, parts }: any, signal: AbortSignal) {
@@ -451,7 +440,8 @@ const uppyModal = (options: UppyModalOptions = {}) => {
             const uploadIdEnc = encodeURIComponent(uploadId);
             const response = await fetchWithAuth(`${SERVER_URL}/api/uppy/s3/multipart/${uploadIdEnc}/complete?key=${filename}`, {
                 method: 'POST',
-                body: serialize({ parts }) as any,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ parts }),
                 signal,
             });
 
@@ -477,17 +467,25 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         const successful = Array.isArray(result?.successful) ? result.successful : [];
         const uploads: any[] = [];
         let count = 0;
+        let failed = 0;
         for (const file of successful) {
             if (file.meta?.isThumbnail) continue; // thumbnails are not library assets
-            count += 1;
-            const ingested = file.ingestResponse;
-            if (ingested?.uploads?.length) uploads.push(...ingested.uploads);
+            const r = file.ingestResponse;
+            if (r?.ingested === true) {
+                count += 1;
+                if (r.uploads?.length) uploads.push(...r.uploads);
+            } else if (r?.ingestConfigured === false) {
+                // Brand has no ingest step (e.g. edo): an S3 success IS an addition.
+                count += 1;
+            } else {
+                failed += 1;
+            }
         }
 
         const targetOrigin = resolveAllowedTargetOrigin(document.referrer, ALLOWED_ANCESTORS);
         if (!targetOrigin) return;
 
-        const payload: Record<string, any> = { type: 'upload-complete', count };
+        const payload: Record<string, any> = { type: 'upload-complete', count, failed };
         if (uploads.length > 0) payload.uploads = uploads;
         window.parent.postMessage(payload, targetOrigin);
     });

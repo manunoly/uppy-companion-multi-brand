@@ -109,6 +109,8 @@ export interface CompanionBrandConfig {
         readonly plugins: readonly EdoUploadPlugin[];
         readonly system: string;
         readonly systemDetails: string;
+        /** When false, Uppy previews thumbnails but never uploads them to S3. Absent = true (backward-compat). */
+        readonly uploadThumbnails?: boolean;
     };
     readonly limits: {
         readonly maxUploadBytes: number;

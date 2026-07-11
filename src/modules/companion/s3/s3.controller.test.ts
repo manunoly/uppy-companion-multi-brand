@@ -321,6 +321,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
             location: 'https://bucket/f.jpg',
             ingested: true,
             uploads: [{ id: 1, url: 'https://cdn/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg' }],
+            ingestConfigured: true,
         });
         expect(mockedPostIngest).toHaveBeenCalledTimes(1);
         const call = mockedPostIngest.mock.calls[0][0];
@@ -378,7 +379,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         const { res, json } = makeRes();
         await completeMultipartUpload(req, res, (() => {}) as never);
 
-        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, rejected: 'over-limit' });
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, rejected: 'over-limit', ingestConfigured: true });
         expect(mockedPostIngest).not.toHaveBeenCalled();
         expect(s3mock.commandCalls(DeleteObjectCommand).length).toBe(0);
     });
@@ -402,7 +403,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         const { res, json } = makeRes();
         await completeMultipartUpload(req, res, (() => {}) as never);
 
-        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.bin', ingested: false, rejected: 'mime-not-allowed' });
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.bin', ingested: false, rejected: 'mime-not-allowed', ingestConfigured: true });
         expect(mockedPostIngest).not.toHaveBeenCalled();
         expect(s3mock.commandCalls(DeleteObjectCommand).length).toBe(0);
     });
@@ -431,7 +432,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         const { res, json } = makeRes();
         await completeMultipartUpload(completeReq, res, (() => {}) as never);
 
-        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, rejected: 'over-limit' });
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, rejected: 'over-limit', ingestConfigured: true });
         expect(mockedPostIngest).not.toHaveBeenCalled();
         expect(s3mock.commandCalls(DeleteObjectCommand).length).toBe(0);
     });
@@ -457,7 +458,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         await completeMultipartUpload(req, res, (() => {}) as never);
 
         expect(status).not.toHaveBeenCalled();
-        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, ingestConfigured: true });
         expect(s3mock.commandCalls(DeleteObjectCommand).length).toBe(0);
     });
 
@@ -478,7 +479,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         const { res, json } = makeRes();
         await completeMultipartUpload(req, res, (() => {}) as never);
 
-        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/thumb_f.jpg', ingested: false });
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/thumb_f.jpg', ingested: false, ingestConfigured: true });
         expect(s3mock.commandCalls(HeadObjectCommand).length).toBe(0);
         expect(mockedPostIngest).not.toHaveBeenCalled();
     });
@@ -501,7 +502,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         const { res, json } = makeRes();
         await completeMultipartUpload(req, res, (() => {}) as never);
 
-        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, ingestConfigured: false });
         expect(mockedPostIngest).not.toHaveBeenCalled();
     });
 
@@ -524,7 +525,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         const { res, json } = makeRes();
         await completeMultipartUpload(req, res, (() => {}) as never);
 
-        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, ingestConfigured: true });
         expect(mockedPostIngest).not.toHaveBeenCalled();
     });
 
@@ -547,7 +548,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
         const { res, json } = makeRes();
         await completeMultipartUpload(req, res, (() => {}) as never);
 
-        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false });
+        expect(json).toHaveBeenCalledWith({ location: 'https://bucket/f.jpg', ingested: false, ingestConfigured: true });
         expect(mockedPostIngest).not.toHaveBeenCalled();
     });
 
@@ -583,6 +584,7 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
             location: undefined,
             ingested: true,
             uploads: [{ id: 9, url: 'https://cdn/f.jpg', filename: 'f.jpg', mimetype: 'image/jpeg' }],
+            ingestConfigured: true,
         });
         expect(mockedPostIngest).toHaveBeenCalledTimes(1);
     });
@@ -656,14 +658,14 @@ describe('completeMultipartUpload — HeadObject enforcement + inline ingest (P1
 
         const first = makeRes();
         await completeMultipartUpload(makeReq(), first.res, (() => {}) as never);
-        expect(first.json).toHaveBeenCalledWith({ location: 'https://bucket/thumb_f.jpg', ingested: false });
+        expect(first.json).toHaveBeenCalledWith({ location: 'https://bucket/thumb_f.jpg', ingested: false, ingestConfigured: true });
 
         // Stash must still be readable after the first complete — not deleted.
         expect(await readUploadMeta(brand.slug, 'upload-thumb-retry')).not.toBeNull();
 
         const second = makeRes();
         await completeMultipartUpload(makeReq(), second.res, (() => {}) as never);
-        expect(second.json).toHaveBeenCalledWith({ location: undefined, ingested: false });
+        expect(second.json).toHaveBeenCalledWith({ location: undefined, ingested: false, ingestConfigured: true });
 
         expect(mockedPostIngest).not.toHaveBeenCalled();
         expect(s3mock.commandCalls(HeadObjectCommand).length).toBe(0);

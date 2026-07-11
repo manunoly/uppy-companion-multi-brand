@@ -72,7 +72,9 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
         },
         // SA1: shares capsule's bucket 1:1 — keys land at 'original/{id}/...', no 'brands/abe/' prefix.
         assets: { s3Prefix: '' },
-        upload: { plugins: [], system: 'ABEDULS', systemDetails: 'DESIGNER' },
+        // uploadThumbnails:false — capsule discards isThumbnail uploads, so the preview
+        // JPEGs are dead S3 objects and the root of the thumbnail ingest bugs.
+        upload: { plugins: [], system: 'ABEDULS', systemDetails: 'DESIGNER', uploadThumbnails: false },
         limits: {
             maxUploadBytes: 50 * 1024 * 1024,
             allowedContentTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif'],

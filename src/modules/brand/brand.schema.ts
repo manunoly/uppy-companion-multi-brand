@@ -90,6 +90,7 @@ export const companionBrandConfigSchema = z.object({
             plugins: z.array(edoUploadPluginSchema),
             system: z.string().min(1),
             systemDetails: z.string().min(1),
+            uploadThumbnails: z.boolean().optional(),
         })
         .strict(),
     limits: z

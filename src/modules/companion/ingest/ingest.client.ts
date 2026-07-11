@@ -40,7 +40,7 @@ export interface IngestRequest {
 }
 
 export type IngestResult =
-    | { ok: true; uploads: IngestUpload[] }
+    | { ok: true; uploads: IngestUpload[]; skipped?: readonly unknown[] }
     | { ok: false; reason: string };
 
 const TIMEOUT_MS = 3000;
@@ -78,11 +78,14 @@ const attemptIngest = async (req: IngestRequest): Promise<IngestResult> => {
         return { ok: false, reason: 'invalid-json' };
     }
 
-    const parsed = body as { success?: unknown; uploads?: unknown };
+    const parsed = body as { success?: unknown; uploads?: unknown; skipped?: unknown };
     if (parsed.success !== true) {
         return { ok: false, reason: 'not-success' };
     }
     const uploads = Array.isArray(parsed.uploads) ? (parsed.uploads as IngestUpload[]) : [];
+    if (Array.isArray(parsed.skipped)) {
+        return { ok: true, uploads, skipped: parsed.skipped };
+    }
     return { ok: true, uploads };
 };
 

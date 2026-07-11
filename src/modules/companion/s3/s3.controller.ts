@@ -445,13 +445,15 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
 
     // Post-complete: the object now exists. Never throw out of here — always 200.
     try {
+        // Lets the client tell "brand has no ingest step" (edo) from "ingest failed" (abe).
+        const ingestConfigured = !!brand.ingest;
         // Don't delete the stash: a lost-response retry re-enters here and needs it idempotent; the 24h TTL reclaims it.
         const meta = await readUploadMeta(brand.slug, uploadId);
 
         // Thumbnails (Uppy ThumbnailGenerator previews) land in S3 but are never
         // a library asset — parity with the removed client-side upload-success skip.
         if (meta?.isThumbnail) {
-            res.json({ location, ingested: false });
+            res.json({ location, ingested: false, ingestConfigured });
             return;
         }
 
@@ -466,19 +468,19 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
 
         if (actualSize > maxUploadBytes) {
             recordIngestedFalse(brand.slug, key, 'over-limit');
-            res.json({ location, ingested: false, rejected: 'over-limit' });
+            res.json({ location, ingested: false, rejected: 'over-limit', ingestConfigured });
             return;
         }
         if (allowedContentTypes && actualType && !allowedContentTypes.includes(actualType)) {
             recordIngestedFalse(brand.slug, key, 'mime-not-allowed');
-            res.json({ location, ingested: false, rejected: 'mime-not-allowed' });
+            res.json({ location, ingested: false, rejected: 'mime-not-allowed', ingestConfigured });
             return;
         }
 
         // Brand without an ingest callback (e.g. edo) — no library to notify.
         // Not an orphan needing reconcile, so no operator metric.
         if (!brand.ingest) {
-            res.json({ location, ingested: false });
+            res.json({ location, ingested: false, ingestConfigured });
             return;
         }
 
@@ -487,7 +489,7 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
         if (!target.ok) {
             logger.error({ brand: brand.slug, reason: target.reason }, '[ingest] target rejected by SSRF gate');
             recordIngestedFalse(brand.slug, key, `target:${target.reason}`);
-            res.json({ location, ingested: false });
+            res.json({ location, ingested: false, ingestConfigured });
             return;
         }
 
@@ -497,7 +499,7 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
         } catch (err) {
             logger.error({ err, brand: brand.slug }, '[ingest] token misconfigured');
             recordIngestedFalse(brand.slug, key, 'token-misconfigured');
-            res.json({ location, ingested: false });
+            res.json({ location, ingested: false, ingestConfigured });
             return;
         }
 
@@ -521,13 +523,13 @@ export const completeMultipartUpload = async (req: AppRequest, res: Response, _n
         const ingested = result.ok && result.uploads.length > 0;
         if (!ingested) {
             recordIngestedFalse(brand.slug, key, result.ok ? 'skipped-by-partner' : result.reason);
-            res.json({ location, ingested: false });
+            res.json({ location, ingested: false, ingestConfigured });
             return;
         }
 
         // X-2: forward capsule's uploads UNCHANGED (Companion cannot invent the
         // final URL — capsule may apply AWS_PUBLIC_BUCKET_BASE_URL).
-        res.json({ location, ingested: true, uploads: result.uploads });
+        res.json({ location, ingested: true, uploads: result.uploads, ingestConfigured });
     } catch (error) {
         logger.error({ err: error, brand: brand.slug }, '[s3] Post-complete ingest step failed');
         recordIngestedFalse(brand.slug, key, 'post-complete-error');

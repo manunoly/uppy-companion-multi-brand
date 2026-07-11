@@ -121,4 +121,28 @@ describe('buildS3Key', () => {
         const key = buildS3Key({ req, metadata: { name: 'fromMeta.jpg' } });
         expect(key.endsWith('/fromMeta.jpg')).toBe(true);
     });
+
+    // FIX 4: prefix + date segments push the key past 255 for a long filename,
+    // which capsule's ingest (FileSchema.key .max(255) / uploads.filepath
+    // varchar(255)) rejects AFTER S3 already stored the object (orphan).
+    it('clamps a near-255-char filename so the full key stays ≤ 255 and keeps the extension', () => {
+        const req = makeAppRequest({
+            brand: makeBrand({ slug: 'edo', assets: { s3Prefix: '' } }),
+            user: makeUser({ id: 'u1' }),
+        } as never);
+        const longName = `${'a'.repeat(245)}.jpeg`; // 250 chars — extension survives sanitize's 255 cap
+        const key = buildS3Key({ req, filename: longName });
+        expect(key.length).toBeLessThanOrEqual(255);
+        expect(key.endsWith('.jpeg')).toBe(true);
+        expect(key.startsWith('original/u1/')).toBe(true);
+    });
+
+    it('leaves a normal-length filename fully intact (clamp is a no-op)', () => {
+        const req = makeAppRequest({
+            brand: makeBrand({ slug: 'edo', assets: { s3Prefix: '' } }),
+            user: makeUser({ id: 'u1' }),
+        } as never);
+        const key = buildS3Key({ req, filename: 'holiday-photo.jpeg' });
+        expect(key.endsWith('/holiday-photo.jpeg')).toBe(true);
+    });
 });

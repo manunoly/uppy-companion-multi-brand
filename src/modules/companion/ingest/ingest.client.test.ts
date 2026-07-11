@@ -118,6 +118,15 @@ describe('postIngest — S2S ingest POST (P1-C-PROTOCOL wire contract)', () => {
         expect(result).toEqual({ ok: true, uploads: [] });
     });
 
+    // FIX 6: capsule may skip some files (duplicate / over-limit). Preserve that
+    // list on the result so future messaging can surface it; absent when omitted.
+    it("preserves capsule's skipped array when the success response includes it", async () => {
+        const skipped = [{ key: 'original/u123/dupe.jpg', reason: 'duplicate' }];
+        (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(okResponse({ success: true, uploads: [], skipped }));
+        const result = await postIngest(baseReq);
+        expect(result).toEqual({ ok: true, uploads: [], skipped });
+    });
+
     it('resolves {ok:false, reason:"not-success"} when success is not exactly true (retried once, same result both times)', async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(okResponse({ success: false }));
         const result = await postIngest(baseReq);
