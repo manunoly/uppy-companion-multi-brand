@@ -76,6 +76,23 @@ describe('buildCompanionOptions — SSRF hardening (D9)', () => {
         expect(matchesHost(options.server.validHosts, 'companion.other.example.com')).toBe(true);
     });
 
+    // @uppy/companion's validateConfig throws "If you want to use '/' as
+    // server.path, leave the 'path' variable unset" for the literal string
+    // '/' (github.com/transloadit/uppy/issues/4271). A companionUrl with no
+    // subpath (the common case — e.g. https://companion.abeduls.com) must
+    // NOT produce server.path: '/'; it must be left unset.
+    it('server.path is unset (not "/") when companionUrl has no subpath', () => {
+        const brand = makeBrand({ companionUrl: 'https://companion.abeduls.com' });
+        const options = buildCompanionOptions(brand, { protocol: 'https' });
+        expect(options.server.path).toBeUndefined();
+    });
+
+    it('server.path is preserved when companionUrl has a real subpath', () => {
+        const brand = makeBrand({ companionUrl: 'https://shared.example.com/abe' });
+        const options = buildCompanionOptions(brand, { protocol: 'https' });
+        expect(options.server.path).toBe('/abe');
+    });
+
     // Security review BAJO-2: Companion's own `hasMatch` treats every
     // `validHosts` entry as an UNANCHORED regex with no escaping of its own.
     // A raw hostname like `companion.entourageyearbooks.com` would let the
