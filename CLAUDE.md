@@ -111,7 +111,7 @@ There is no `COMPANION_BRANDS` CSV and no "default brand" concept anymore (D4) �
 
 Required: `COMPANION_SECRET` (≥16 chars, shared across every brand), `PUBLIC_HOST`-equivalent (`COMPANION_HOST`/`publicHost`, has a `localhost:<port>` default). `REDIS_URL` defaults to a local dev instance; in production it's provided by Railway's Redis plugin. `SECRETS_SOURCE` (`env` default / `aws`), `BRAND_FORCE`, `<SLUG>_BRAND_OVERRIDE`, the full per-brand secret variable scheme (`<PREFIX>_S3_*`, `<PREFIX>_<PROVIDER>_KEY`/`_SECRET`, `<PREFIX>_GOOGLE_*`), and `RATE_LIMIT_*`/`RATE_LIMIT_GLOBAL_*` are all documented in `.env.example`. `HEALTH_CHECK_KEY` gates the detailed view at `GET /api/brands?key=...` (basic view shows only `id`/`displayName`, detailed view masks all secrets to `****...last4`).
 
-**Env convention:** config env fields use Zod `.default(...)` in `src/config/env.schema.ts`; secrets are required (no default). Read at call-time via the config accessor, never a bare module-level `process.env.X` capture (the boot-time `env.schema` parse is the one allowed top-level read).
+**Env convention:** config env fields use Zod `.default(...)` in `src/config/env.schema.ts`; secrets are required (no default). The parsed config is produced once in `src/config/env.ts` (`export const env = deriveEnv()`) and consumed through that `env` object. Prefer reading config through `env` over a bare `process.env.X`; new code should not add module-level `process.env` captures — a few pre-existing ones remain outside the parse (e.g. the log level in `src/lib/logger.ts`).
 
 ### Gotchas
 
