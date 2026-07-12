@@ -35,7 +35,12 @@ export interface CompanionS3Options {
 export interface CompanionServerOptions {
     host: string;
     protocol: 'http' | 'https';
-    path: string;
+    /**
+     * Omit (do not set to '/') for a root-path deployment — @uppy/companion's
+     * validateConfig throws on the literal string '/'
+     * (github.com/transloadit/uppy/issues/4271; checked via `if (server?.path)`).
+     */
+    path?: string;
     /**
      * Allowlist for the OAuth `redirect_uri` handoff — Companion's
      * `oauth-redirect` controller only redirects to a host in this list

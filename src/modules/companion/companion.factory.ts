@@ -165,7 +165,7 @@ const buildUploadUrls = (brand: Brand): string[] => {
 interface ParsedCompanionUrl {
     host: string;
     protocol: 'http' | 'https';
-    path: string;
+    path?: string;
 }
 
 /**
@@ -178,10 +178,14 @@ interface ParsedCompanionUrl {
 const parseCompanionUrl = (brand: Brand): ParsedCompanionUrl => {
     try {
         const url = new URL(brand.companionUrl);
+        // @uppy/companion's validateConfig throws on the literal string '/'
+        // (github.com/transloadit/uppy/issues/4271) — root-path deployments
+        // (the common case) must leave `path` unset, not '/'.
+        const path = url.pathname.replace(/\/$/, '');
         return {
             host: url.host,
             protocol: url.protocol.replace(':', '') as 'http' | 'https',
-            path: url.pathname.replace(/\/$/, '') || '/',
+            path: path || undefined,
         };
     } catch (err) {
         logger.error({ err, brand: brand.slug, companionUrl: brand.companionUrl }, '[companion] Invalid or missing companionUrl for brand');
