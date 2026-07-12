@@ -111,6 +111,8 @@ There is no `COMPANION_BRANDS` CSV and no "default brand" concept anymore (D4) �
 
 Required: `COMPANION_SECRET` (≥16 chars, shared across every brand), `PUBLIC_HOST`-equivalent (`COMPANION_HOST`/`publicHost`, has a `localhost:<port>` default). `REDIS_URL` defaults to a local dev instance; in production it's provided by Railway's Redis plugin. `SECRETS_SOURCE` (`env` default / `aws`), `BRAND_FORCE`, `<SLUG>_BRAND_OVERRIDE`, the full per-brand secret variable scheme (`<PREFIX>_S3_*`, `<PREFIX>_<PROVIDER>_KEY`/`_SECRET`, `<PREFIX>_GOOGLE_*`), and `RATE_LIMIT_*`/`RATE_LIMIT_GLOBAL_*` are all documented in `.env.example`. `HEALTH_CHECK_KEY` gates the detailed view at `GET /api/brands?key=...` (basic view shows only `id`/`displayName`, detailed view masks all secrets to `****...last4`).
 
+**Env convention:** config env fields use Zod `.default(...)` in `src/config/env.schema.ts`; secrets are required (no default). The parsed config is produced once in `src/config/env.ts` (`export const env = deriveEnv()`) and consumed through that `env` object. Prefer reading config through `env` over a bare `process.env.X`; new code should not add module-level `process.env` captures — a few pre-existing ones remain outside the parse (e.g. the log level in `src/lib/logger.ts`).
+
 ### Gotchas
 
 - **Don't use `createBrandMiddleware` for the primary Host-based resolution.** `server.ts` calls `resolveBrandByHost(req.headers.host)` directly and attaches `req.brand` itself; `createBrandMiddleware` (`brand.middleware.ts`) reads `req.params.brand`/query/header and exists only for routes that take an explicit `:brand` identifier — there is no "default brand" for it to fall back to (D4 retired that concept), so an unresolved identifier there just leaves `req.brand` unset.
