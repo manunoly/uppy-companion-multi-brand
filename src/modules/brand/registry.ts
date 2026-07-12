@@ -54,7 +54,12 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
         slug: BRAND_SLUGS.ABEDULS,
         name: 'Abeduls',
         // Designer hosts (prod + local) allowed to embed /uppy (frame-ancestors) and call the API (CORS).
-        domains: ['abeduls.com', 'designer.abeduls.com', 'designer.abeduls.local', 'abeduls.local'],
+        // NOTE: capsule's real prod apex is 'www.abeduls.com' — bare 'abeduls.com' only
+        // 301s the homepage and 404s every other route (confirmed 2026-07-12; see the
+        // companion prod-crash incident). Every abeduls.com reference in this brand
+        // entry must use the 'www.' host or it silently breaks (whoami 404s, ingest
+        // SSRF-gate mismatch, CSP frame-ancestors rejects the real embedding origin).
+        domains: ['www.abeduls.com', 'designer.abeduls.com', 'designer.abeduls.local', 'abeduls.local'],
         // SA2: Companion's own hosts (prod + local). Code-only — the override
         // mechanism (identity.ts) can never touch this field.
         companionHosts: ['companion.abeduls.com', 'companion.abeduls.local'],
@@ -62,9 +67,9 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
             // Standalone Companion validates the forwarded capsule cookie against an
             // EXTERNAL whoami (D5.b) — same flow as any partner; `kind` is cosmetic.
             kind: 'partner-whoami',
-            signInUrl: 'https://abeduls.com/sign-in',
-            whoamiUrl: 'https://abeduls.com/api/user',
-            whoamiAllowedHosts: ['abeduls.com'],
+            signInUrl: 'https://www.abeduls.com/sign-in',
+            whoamiUrl: 'https://www.abeduls.com/api/user',
+            whoamiAllowedHosts: ['www.abeduls.com'],
             sessionCookieName: 'abes_session',
             responseMapping: { idField: 'id', emailField: 'email', nameField: 'displayName', imageField: 'imageUrl' },
             // Parity with capsule's proxy gate: an unverified-email user resolves as unauthenticated.
@@ -79,10 +84,10 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
             maxUploadBytes: 50 * 1024 * 1024,
             allowedContentTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif'],
         },
-        public: { foldersUrl: 'https://abeduls.com/api/folders' },
+        public: { foldersUrl: 'https://www.abeduls.com/api/folders' },
         // S2S ingest-callback target: capsule's internal media-ingest endpoint. Host
-        // (abeduls.com) sits under whoamiAllowedHosts, so it passes the SSRF gate.
-        ingest: { url: 'https://abeduls.com/api/internal/media/ingest', tokenEnv: 'ABE_INGEST_TOKEN' },
+        // (www.abeduls.com) sits under whoamiAllowedHosts, so it passes the SSRF gate.
+        ingest: { url: 'https://www.abeduls.com/api/internal/media/ingest', tokenEnv: 'ABE_INGEST_TOKEN' },
         companionUrl: 'https://companion.abeduls.com',
         secret: '', // resolved from COMPANION_SECRET in brand.service.ts
         // bucket + creds arrive via env (ABE_S3_BUCKET/ABE_S3_REGION -> loadBrandSecrets);

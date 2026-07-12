@@ -211,7 +211,7 @@ describe('resolveValidatedWhoamiTarget', () => {
     it("returns ok:true for abe's real registry entry (servable as of P1-C1)", () => {
         const result = resolveValidatedWhoamiTarget(getBaseBrandConfig('abe'));
         expect(result.ok).toBe(true);
-        if (result.ok) expect(result.whoamiUrl.href).toBe('https://abeduls.com/api/user');
+        if (result.ok) expect(result.whoamiUrl.href).toBe('https://www.abeduls.com/api/user');
     });
 
     it("picaboo's placeholder config (empty whoamiUrl) is ok:false — not servable yet", () => {

@@ -74,8 +74,8 @@ describe('registry: abe (servable, P1-C1)', () => {
         expect(abe.auth.kind).toBe('partner-whoami');
     });
 
-    it('has the abeduls.com SSRF allowlist', () => {
-        expect(abe.auth.whoamiAllowedHosts).toEqual(['abeduls.com']);
+    it('has the www.abeduls.com SSRF allowlist', () => {
+        expect(abe.auth.whoamiAllowedHosts).toEqual(['www.abeduls.com']);
     });
 
     it('uses the abes_session cookie and the capsule /api/user responseMapping', () => {
@@ -109,7 +109,7 @@ describe('registry: abe (servable, P1-C1)', () => {
 
     it("declares the designer + apex domains that embed /uppy (frame-ancestors/CORS)", () => {
         expect(abe.domains).toEqual(
-            expect.arrayContaining(['abeduls.com', 'designer.abeduls.com', 'designer.abeduls.local', 'abeduls.local']),
+            expect.arrayContaining(['www.abeduls.com', 'designer.abeduls.com', 'designer.abeduls.local', 'abeduls.local']),
         );
     });
 
@@ -128,11 +128,11 @@ describe('registry: abe (servable, P1-C1)', () => {
 
     it('declares companionUrl and the capsule public folders endpoint', () => {
         expect(abe.companionUrl).toBe('https://companion.abeduls.com');
-        expect(abe.public?.foldersUrl).toBe('https://abeduls.com/api/folders');
+        expect(abe.public?.foldersUrl).toBe('https://www.abeduls.com/api/folders');
     });
 
     it('declares the S2S ingest-callback seam (P1-C3)', () => {
-        expect(abe.ingest).toEqual({ url: 'https://abeduls.com/api/internal/media/ingest', tokenEnv: 'ABE_INGEST_TOKEN' });
+        expect(abe.ingest).toEqual({ url: 'https://www.abeduls.com/api/internal/media/ingest', tokenEnv: 'ABE_INGEST_TOKEN' });
         expect(() => companionBrandConfigSchema.parse(abe)).not.toThrow();
     });
 

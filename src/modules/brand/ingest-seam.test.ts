@@ -22,12 +22,12 @@ afterEach(() => {
 });
 
 describe('resolveValidatedIngestTarget', () => {
-    it("returns ok:true for abe's real registry entry (host abeduls.com)", () => {
+    it("returns ok:true for abe's real registry entry (host www.abeduls.com)", () => {
         const result = resolveValidatedIngestTarget(abe);
         expect(result.ok).toBe(true);
         if (result.ok) {
-            expect(result.url.hostname).toBe('abeduls.com');
-            expect(result.url.href).toBe('https://abeduls.com/api/internal/media/ingest');
+            expect(result.url.hostname).toBe('www.abeduls.com');
+            expect(result.url.href).toBe('https://www.abeduls.com/api/internal/media/ingest');
         }
     });
 
