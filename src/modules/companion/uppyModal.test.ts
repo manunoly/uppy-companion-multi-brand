@@ -414,6 +414,7 @@ describe('uppyModal — complete handler counts only ingested files (FIX 6)', ()
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         const complete = uppy.handlers['complete'];
         expect(complete).toBeDefined();
@@ -440,6 +441,7 @@ describe('uppyModal — complete handler counts only ingested files (FIX 6)', ()
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         uppy.handlers['complete']({
             successful: [{ meta: {}, ingestResponse: { ingested: false, rejected: 'over-limit' } }],
@@ -466,6 +468,7 @@ describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest 
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         uppy.handlers['complete']({
             successful: [
@@ -482,6 +485,7 @@ describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest 
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         uppy.handlers['complete']({
             successful: [{ meta: {}, ingestResponse: { location: 'l', ingested: false, ingestConfigured: true } }],
@@ -495,6 +499,7 @@ describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest 
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         uppy.handlers['complete']({
             successful: [
@@ -510,5 +515,43 @@ describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest 
             failed: 1,
             uploads: [{ id: 1, url: 'https://cdn/a.jpg' }],
         });
+    });
+});
+
+// The parent frame (capsule/designer modal) runs a short timeout after showing
+// the iframe and falls back to its own in-app uploader if this message never
+// arrives — the only way to detect a load failure a server-side health probe
+// structurally cannot see (frame-ancestors CSP rejection, a network failure
+// reaching this origin from the user's browser, etc.).
+describe('uppyModal — announces readiness to the parent frame on mount', () => {
+    const ALLOWED = 'https://designer.abeduls.com';
+
+    it('posts { type: "uppy-ready" } to the allow-listed referrer origin once mounted', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] });
+
+        expect(postMessage).toHaveBeenCalledWith({ type: 'uppy-ready' }, ALLOWED);
+    });
+
+    it('does not post uppy-ready when the referrer is not allow-listed', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', 'https://evil.example.com');
+        const { default: uppyModal } = await import('./uppyModal.js');
+        uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] });
+
+        expect(postMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not post uppy-ready when there is no referrer at all', async () => {
+        const { postMessage } = installFakeBrowserGlobals('');
+        const { default: uppyModal } = await import('./uppyModal.js');
+        uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] });
+
+        expect(postMessage).not.toHaveBeenCalled();
+    });
+
+    it('is node-safe: does not throw when window/document are absent', async () => {
+        const { default: uppyModal } = await import('./uppyModal.js');
+        expect(() => uppyModal(NODE_SAFE_OPTIONS)).not.toThrow();
     });
 });
