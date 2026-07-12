@@ -504,6 +504,17 @@ const uppyModal = (options: UppyModalOptions = {}) => {
         });
     }
 
+    // Signal the parent frame that Uppy mounted successfully. The parent runs
+    // a short timeout after showing the iframe and falls back to its own
+    // in-app uploader if this message never arrives — the only way to detect
+    // a load failure a server-side health probe structurally cannot see
+    // (frame-ancestors CSP rejection, a network failure reaching this origin
+    // from the user's browser, etc.).
+    if (typeof window !== 'undefined' && window.parent !== window) {
+        const readyTarget = resolveAllowedTargetOrigin(document.referrer, ALLOWED_ANCESTORS);
+        if (readyTarget) window.parent.postMessage({ type: 'uppy-ready' }, readyTarget);
+    }
+
     return uppy;
 };
 
