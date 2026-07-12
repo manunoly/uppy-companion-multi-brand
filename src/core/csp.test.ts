@@ -57,14 +57,14 @@ describe('buildFrameAncestors', () => {
         expect(buildFrameAncestors(brand)).not.toContain('evil.example.com');
     });
 
-    it("abe (real registry entry, P1-C1): allows the abeduls.com + designer.abeduls.com origins to embed /uppy", () => {
+    it("abe (real registry entry, P1-C1): allows the www.abeduls.com + designer.abeduls.com origins to embed /uppy", () => {
         // Reads the actual registry `domains` rather than hardcoding them, so this
         // test tracks the real entry instead of a stale assumption about it.
         const abeDomains = getBaseBrandConfig('abe').domains;
         const brand = makeBrand({ slug: 'abe', domains: abeDomains });
         const frameAncestors = buildFrameAncestors(brand);
         expect(frameAncestors).toContain("'self'");
-        expect(frameAncestors).toContain('https://abeduls.com');
+        expect(frameAncestors).toContain('https://www.abeduls.com');
         expect(frameAncestors).toContain('https://designer.abeduls.com');
     });
 });

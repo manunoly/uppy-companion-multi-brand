@@ -520,7 +520,7 @@ describe('server integration', () => {
             const res = await request(app).get('/uppy').set('Host', ABE_HOST);
             expect(res.headers['x-frame-options']).toBeUndefined();
             const csp = res.headers['content-security-policy'];
-            expect(csp).toMatch(/frame-ancestors[^;]*https:\/\/abeduls\.com/);
+            expect(csp).toMatch(/frame-ancestors[^;]*https:\/\/www\.abeduls\.com/);
             expect(csp).toMatch(/frame-ancestors[^;]*https:\/\/designer\.abeduls\.com/);
         });
 
@@ -535,7 +535,7 @@ describe('server integration', () => {
             expect(res.headers['x-frame-options']).toBeUndefined();
             const csp = res.headers['content-security-policy'];
             expect(csp).toMatch(/frame-ancestors[^;]*https:\/\/linkdesigner\.entourageyearbooks\.com/);
-            expect(csp).not.toContain('https://abeduls.com');
+            expect(csp).not.toContain('https://www.abeduls.com');
             expect(csp).not.toContain('https://designer.abeduls.com');
         });
     });
