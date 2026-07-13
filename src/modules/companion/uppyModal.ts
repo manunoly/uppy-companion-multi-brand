@@ -1,28 +1,27 @@
 // @ts-nocheck
 /// <reference lib="dom" />
-// @ts-ignore
-import {
-    Uppy,
-    Dashboard,
-    // Companion Providers
-    Facebook,
-    Dropbox,
-    GoogleDrive,
-    Instagram,
-    OneDrive,
-    Box,
-    Unsplash,
-    Zoom,
-    Url,
-    // Google Pickers
-    GoogleDrivePicker,
-    GooglePhotosPicker,
-    // Plugins
-    ThumbnailGenerator,
-    Compressor,
-    ImageEditor,
-    AwsS3,
-} from 'https://releases.transloadit.com/uppy/v5.1.8/uppy.min.mjs';
+import Uppy from '@uppy/core';
+import Dashboard from '@uppy/dashboard';
+import Facebook from '@uppy/facebook';
+import Dropbox from '@uppy/dropbox';
+import GoogleDrive from '@uppy/google-drive';
+import Instagram from '@uppy/instagram';
+import OneDrive from '@uppy/onedrive';
+import Box from '@uppy/box';
+import Unsplash from '@uppy/unsplash';
+import Zoom from '@uppy/zoom';
+import Url from '@uppy/url';
+import GoogleDrivePicker from '@uppy/google-drive-picker';
+import GooglePhotosPicker from '@uppy/google-photos-picker';
+import ThumbnailGenerator from '@uppy/thumbnail-generator';
+import Compressor from '@uppy/compressor';
+import ImageEditor from '@uppy/image-editor';
+import AwsS3 from '@uppy/aws-s3';
+
+import '@uppy/core/css/style.min.css';
+import '@uppy/dashboard/css/style.min.css';
+import '@uppy/url/css/style.min.css';
+import '@uppy/image-editor/css/style.min.css';
 
 
 // --- Types & Interfaces ---
@@ -138,9 +137,8 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     const fetchWithAuth = (url: string, options: RequestInit = {}) =>
         fetch(url, { ...options, credentials: 'include' });
 
-    // Browser mirror of origin-guard.ts#resolveAllowedTargetOrigin — the asset
-    // build uses esbuild `transform` (not `bundle`), so this file cannot import
-    // it. Returns the validated parent origin, or null to abort (never '*').
+    // Browser mirror of origin-guard.ts#resolveAllowedTargetOrigin. Returns the
+    // validated parent origin, or null to abort (never '*').
     const resolveAllowedTargetOrigin = (referrer: string, allowed: string[]): string | null => {
         if (!referrer) return null;
         try {
@@ -502,6 +500,17 @@ const uppyModal = (options: UppyModalOptions = {}) => {
             const dashboard = uppy.getPlugin('Dashboard');
             if (dashboard) dashboard.setOptions({ theme });
         });
+    }
+
+    // Signal the parent frame that Uppy mounted successfully. The parent runs
+    // a short timeout after showing the iframe and falls back to its own
+    // in-app uploader if this message never arrives — the only way to detect
+    // a load failure a server-side health probe structurally cannot see
+    // (frame-ancestors CSP rejection, a network failure reaching this origin
+    // from the user's browser, etc.).
+    if (typeof window !== 'undefined' && window.parent !== window) {
+        const readyTarget = resolveAllowedTargetOrigin(document.referrer, ALLOWED_ANCESTORS);
+        if (readyTarget) window.parent.postMessage({ type: 'uppy-ready' }, readyTarget);
     }
 
     return uppy;

@@ -1,8 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Response } from 'express';
-import { toJsStringLiteral, safeJsonForHtmlScript, safePath, getEnabledPlugins, serveUppyPage } from './uppy.routes.js';
+import {
+    toJsStringLiteral,
+    safeJsonForHtmlScript,
+    safePath,
+    getEnabledPlugins,
+    serveUppyPage,
+    serveUppyModalJs,
+    serveUppyCss,
+    assetCacheControl,
+} from './uppy.routes.js';
 import { getBaseBrandConfig } from '../brand/registry.js';
 import { makeBrand, makeAppRequest, makeUser } from '../../test-utils/fixtures.js';
+import type { AppRequest } from '../../core/types/express.js';
 
 describe('toJsStringLiteral', () => {
     it('wraps plain text in single quotes', () => {
@@ -212,5 +222,84 @@ describe('serveUppyPage — whoamiUrl re-validated at the HTML-injection point',
         await serveUppyPage(req, res, vi.fn());
 
         expect(state.body).toContain('https://api.test.example.com/auth/me');
+    });
+});
+
+describe('serveUppyPage - self-hosted client assets', () => {
+    const makeRes = () => {
+        const state = { statusCode: 200, headers: {} as Record<string, string>, body: '' };
+        const res = {
+            locals: { cspNonce: 'test-nonce' },
+            set(name: string, value: string) { state.headers[name] = value; return res; },
+            setHeader(name: string, value: string) { state.headers[name] = value; return res; },
+            status(code: number) { state.statusCode = code; return res; },
+            send(body: string) { state.body = body; return res; },
+        };
+        return { res: res as unknown as Response, state };
+    };
+
+    it('uses versioned same-origin JS and CSS with no retired CDN assets', async () => {
+        const brand = makeBrand({ auth: { whoamiUrl: 'https://api.test.example.com/auth/me' }, public: {} });
+        const req = makeAppRequest({ brand, user: makeUser() });
+        const { res, state } = makeRes();
+
+        await serveUppyPage(req, res, vi.fn());
+
+        expect(state.body).toMatch(/href="\/uppy\.css\?v=[a-zA-Z0-9_-]+"/);
+        expect(state.body).toMatch(/\.\/uppyModal\.js\?v=[a-zA-Z0-9_-]+/);
+        expect(state.body).not.toContain('UPPY_ASSET_VERSION');
+        expect(state.body).not.toMatch(/releases\.transloadit\.com|cdnjs\.cloudflare\.com|sweetalert2/i);
+        expect(state.body).not.toContain('nomodule');
+    });
+});
+
+describe('Uppy asset routes - real source-mode bundle', () => {
+    const makeRes = () => {
+        const state = { statusCode: 200, headers: {} as Record<string, string>, body: '' };
+        const res = {
+            set(name: string, value: string) { state.headers[name] = value; return res; },
+            setHeader(name: string, value: string) { state.headers[name] = value; return res; },
+            type(value: string) { state.headers['Content-Type'] = value; return res; },
+            status(code: number) { state.statusCode = code; return res; },
+            send(body: string) { state.body = body; return res; },
+            sendFile() { throw new Error('source-mode test unexpectedly found a prebuilt asset'); },
+        };
+        return { res: res as unknown as Response, state };
+    };
+
+    it('bundles JavaScript without browser-unresolvable Uppy imports', async () => {
+        const { res, state } = makeRes();
+        await serveUppyModalJs({} as AppRequest, res, vi.fn());
+
+        expect(state.statusCode).toBe(200);
+        expect(state.headers['Cache-Control']).toBe('no-store');
+        expect(state.body.length).toBeGreaterThan(100_000);
+        expect(state.body).not.toMatch(/from\s*["']@uppy\//);
+    }, 20_000);
+
+    it('bundles Dashboard, URL, and Image Editor styles', async () => {
+        const { res, state } = makeRes();
+        await serveUppyCss({} as AppRequest, res, vi.fn());
+
+        expect(state.statusCode).toBe(200);
+        expect(state.headers['Cache-Control']).toBe('no-store');
+        expect(state.body).toContain('.uppy-Dashboard');
+        expect(state.body).toContain('.uppy-Url');
+        expect(state.body).toContain('.uppy-ImageCropper');
+    }, 20_000);
+});
+
+describe('assetCacheControl', () => {
+    it('allows immutable caching only for version-stamped asset URLs', () => {
+        expect(assetCacheControl('a5f35d7ce668625f')).toBe('public, max-age=31536000, immutable');
+        expect(assetCacheControl('dev')).toBe('public, max-age=31536000, immutable');
+    });
+
+    // A bare /uppyModal.js request has no cache-busting mechanism: immutable
+    // there would pin any unversioned consumer to a stale bundle for a year.
+    it('falls back to short-lived caching when the version is absent or malformed', () => {
+        expect(assetCacheControl(undefined)).toBe('public, max-age=300');
+        expect(assetCacheControl('')).toBe('public, max-age=300');
+        expect(assetCacheControl(['a', 'b'])).toBe('public, max-age=300');
     });
 });

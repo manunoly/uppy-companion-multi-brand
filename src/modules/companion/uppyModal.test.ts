@@ -2,12 +2,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 /**
  * uppyModal.ts is a browser bundle (`@ts-nocheck`, imports the Uppy SDK from
- * a CDN URL specifier) transpiled standalone by scripts/build-assets.mjs — it
+ * from npm packages) bundled by scripts/build-assets.mjs — it
  * is excluded from coverage (vitest.config.ts) because most of it only runs
  * in a real DOM. The factory body itself (plugin registration, Dashboard
  * options, `restrictions`), though, has no DOM dependency as long as the
  * GOOGLE_* and enableThumbnails options are all supplied (see
- * NODE_SAFE_OPTIONS below) — mocking the CDN specifier lets it run under
+ * NODE_SAFE_OPTIONS below) — mocking the package specifiers lets it run under
  * Vitest. `shouldUseMultipart` pins the P1-C-PROTOCOL deviation from Uppy's
  * default (single PUT under 100 MiB, multipart above) — EVERY file goes
  * through multipart now, tiny images included, because
@@ -58,25 +58,27 @@ const getAwsOpts = (uppy: FakeUppy): Record<string, unknown> => {
     return registration.opts;
 };
 
-vi.mock('https://releases.transloadit.com/uppy/v5.1.8/uppy.min.mjs', () => ({
-    Uppy: FakeUppy,
-    Dashboard: 'Dashboard',
-    Facebook: 'Facebook',
-    Dropbox: 'Dropbox',
-    GoogleDrive: 'GoogleDrive',
-    Instagram: 'Instagram',
-    OneDrive: 'OneDrive',
-    Box: 'Box',
-    Unsplash: 'Unsplash',
-    Zoom: 'Zoom',
-    Url: 'Url',
-    GoogleDrivePicker: 'GoogleDrivePicker',
-    GooglePhotosPicker: 'GooglePhotosPicker',
-    ThumbnailGenerator: 'ThumbnailGenerator',
-    Compressor: 'Compressor',
-    ImageEditor: 'ImageEditor',
-    AwsS3: 'AwsS3',
-}));
+vi.mock('@uppy/core', () => ({ default: FakeUppy }));
+vi.mock('@uppy/dashboard', () => ({ default: 'Dashboard' }));
+vi.mock('@uppy/facebook', () => ({ default: 'Facebook' }));
+vi.mock('@uppy/dropbox', () => ({ default: 'Dropbox' }));
+vi.mock('@uppy/google-drive', () => ({ default: 'GoogleDrive' }));
+vi.mock('@uppy/instagram', () => ({ default: 'Instagram' }));
+vi.mock('@uppy/onedrive', () => ({ default: 'OneDrive' }));
+vi.mock('@uppy/box', () => ({ default: 'Box' }));
+vi.mock('@uppy/unsplash', () => ({ default: 'Unsplash' }));
+vi.mock('@uppy/zoom', () => ({ default: 'Zoom' }));
+vi.mock('@uppy/url', () => ({ default: 'Url' }));
+vi.mock('@uppy/google-drive-picker', () => ({ default: 'GoogleDrivePicker' }));
+vi.mock('@uppy/google-photos-picker', () => ({ default: 'GooglePhotosPicker' }));
+vi.mock('@uppy/thumbnail-generator', () => ({ default: 'ThumbnailGenerator' }));
+vi.mock('@uppy/compressor', () => ({ default: 'Compressor' }));
+vi.mock('@uppy/image-editor', () => ({ default: 'ImageEditor' }));
+vi.mock('@uppy/aws-s3', () => ({ default: 'AwsS3' }));
+vi.mock('@uppy/core/css/style.min.css', () => ({}));
+vi.mock('@uppy/dashboard/css/style.min.css', () => ({}));
+vi.mock('@uppy/url/css/style.min.css', () => ({}));
+vi.mock('@uppy/image-editor/css/style.min.css', () => ({}));
 
 const NODE_SAFE_OPTIONS = {
     plugins: [],
@@ -414,6 +416,7 @@ describe('uppyModal — complete handler counts only ingested files (FIX 6)', ()
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         const complete = uppy.handlers['complete'];
         expect(complete).toBeDefined();
@@ -440,6 +443,7 @@ describe('uppyModal — complete handler counts only ingested files (FIX 6)', ()
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         uppy.handlers['complete']({
             successful: [{ meta: {}, ingestResponse: { ingested: false, rejected: 'over-limit' } }],
@@ -466,6 +470,7 @@ describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest 
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         uppy.handlers['complete']({
             successful: [
@@ -482,6 +487,7 @@ describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest 
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         uppy.handlers['complete']({
             successful: [{ meta: {}, ingestResponse: { location: 'l', ingested: false, ingestConfigured: true } }],
@@ -495,6 +501,7 @@ describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest 
         const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] }) as unknown as FakeUppy;
+        postMessage.mockClear(); // drop the uppy-ready call fired at mount
 
         uppy.handlers['complete']({
             successful: [
@@ -510,5 +517,43 @@ describe('uppyModal — complete handler honors ingestConfigured (edo no-ingest 
             failed: 1,
             uploads: [{ id: 1, url: 'https://cdn/a.jpg' }],
         });
+    });
+});
+
+// The parent frame (capsule/designer modal) runs a short timeout after showing
+// the iframe and falls back to its own in-app uploader if this message never
+// arrives — the only way to detect a load failure a server-side health probe
+// structurally cannot see (frame-ancestors CSP rejection, a network failure
+// reaching this origin from the user's browser, etc.).
+describe('uppyModal — announces readiness to the parent frame on mount', () => {
+    const ALLOWED = 'https://designer.abeduls.com';
+
+    it('posts { type: "uppy-ready" } to the allow-listed referrer origin once mounted', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', ALLOWED);
+        const { default: uppyModal } = await import('./uppyModal.js');
+        uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] });
+
+        expect(postMessage).toHaveBeenCalledWith({ type: 'uppy-ready' }, ALLOWED);
+    });
+
+    it('does not post uppy-ready when the referrer is not allow-listed', async () => {
+        const { postMessage } = installFakeBrowserGlobals('', 'https://evil.example.com');
+        const { default: uppyModal } = await import('./uppyModal.js');
+        uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] });
+
+        expect(postMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not post uppy-ready when there is no referrer at all', async () => {
+        const { postMessage } = installFakeBrowserGlobals('');
+        const { default: uppyModal } = await import('./uppyModal.js');
+        uppyModal({ ...NODE_SAFE_OPTIONS, allowedAncestors: [ALLOWED] });
+
+        expect(postMessage).not.toHaveBeenCalled();
+    });
+
+    it('is node-safe: does not throw when window/document are absent', async () => {
+        const { default: uppyModal } = await import('./uppyModal.js');
+        expect(() => uppyModal(NODE_SAFE_OPTIONS)).not.toThrow();
     });
 });

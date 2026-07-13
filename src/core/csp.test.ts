@@ -97,13 +97,13 @@ describe('buildImgSrc', () => {
 });
 
 describe('buildScriptSrc', () => {
-    it("incluye 'self', el nonce por-request y los CDNs base, sin Google por defecto", () => {
+    it("incluye 'self' y el nonce por-request, sin CDNs externos ni Google por defecto", () => {
         const brand = makeBrand({ upload: { plugins: ['Url'], system: 's', systemDetails: 'd' } });
         const src = buildScriptSrc(brand, 'abc123');
         expect(src).toContain("'self'");
         expect(src).toContain("'nonce-abc123'");
-        expect(src).toContain('https://releases.transloadit.com');
-        expect(src).toContain('https://cdnjs.cloudflare.com');
+        expect(src).not.toContain('releases.transloadit.com');
+        expect(src).not.toContain('cdnjs.cloudflare.com');
         expect(src).not.toContain('apis.google.com');
     });
 
@@ -119,26 +119,20 @@ describe('buildScriptSrc', () => {
     });
 });
 
-// X-13: the /uppy page loads uppy.min.css from releases.transloadit.com
-// (uppy.html:8); without it in style-src the Dashboard renders unstyled.
+// Uppy CSS is now bundled and served same-origin; no external style source is needed.
 describe('buildStyleSrc', () => {
     it('is a static array (brand-independent — no argument to vary on)', () => {
-        expect(buildStyleSrc()).toEqual([
-            "'self'",
-            "'unsafe-inline'",
-            'https://cdnjs.cloudflare.com',
-            'https://releases.transloadit.com',
-        ]);
+        expect(buildStyleSrc()).toEqual(["'self'", "'unsafe-inline'"]);
     });
 
-    it('includes the Uppy Dashboard CSS origin (X-13)', () => {
-        expect(buildStyleSrc()).toContain('https://releases.transloadit.com');
+    it('does not include the retired Uppy CDN origin', () => {
+        expect(buildStyleSrc()).not.toContain('https://releases.transloadit.com');
     });
 
-    it('keeps the pre-existing self/unsafe-inline/cdnjs entries (no regression)', () => {
+    it('keeps self and unsafe-inline without the retired cdnjs origin', () => {
         const styleSrc = buildStyleSrc();
         expect(styleSrc).toContain("'self'");
         expect(styleSrc).toContain("'unsafe-inline'");
-        expect(styleSrc).toContain('https://cdnjs.cloudflare.com');
+        expect(styleSrc).not.toContain('https://cdnjs.cloudflare.com');
     });
 });
