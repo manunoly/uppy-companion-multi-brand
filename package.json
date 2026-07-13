@@ -69,7 +69,7 @@
         "@uppy/zoom": "^4.1.0",
         "@vitest/coverage-v8": "^4.1.5",
         "aws-sdk-client-mock": "^4.1.0",
-        "esbuild": "^0.27.2",
+        "esbuild": "^0.28.1",
         "ioredis-mock": "^8.13.1",
         "supertest": "^7.2.2",
         "tsx": "^4.21.0",
