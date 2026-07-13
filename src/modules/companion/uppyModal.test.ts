@@ -188,6 +188,19 @@ describe('uppyModal — Dashboard visual parity + client restrictions (P1-C8)', 
         expect(dashboardRegistration?.opts?.plugins).toContain('ImageEditor');
     });
 
+    // Regression: the Dashboard registration omitted `target`, so Uppy mounted
+    // it to `document.body` instead of uppy.html's `#uppyContainer` — the
+    // Dashboard rendered detached from `.upload-wrapper`, breaking every bit
+    // of layout the page's CSS assumes (confirmed via a real esbuild bundle +
+    // headless Chromium render, not just this unit test).
+    it('mounts the Dashboard at the caller-provided target instead of the document body default', async () => {
+        const { default: uppyModal } = await import('./uppyModal.js');
+        const uppy = uppyModal({ ...NODE_SAFE_OPTIONS, target: '#uppyContainer' }) as unknown as FakeUppy;
+
+        const dashboardRegistration = uppy.plugins.find((registration) => registration.plugin === 'Dashboard');
+        expect(dashboardRegistration?.opts?.target).toBe('#uppyContainer');
+    });
+
     it('registers Compressor and an ImageEditor targeting the Dashboard', async () => {
         const { default: uppyModal } = await import('./uppyModal.js');
         const uppy = uppyModal(NODE_SAFE_OPTIONS) as unknown as FakeUppy;

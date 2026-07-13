@@ -200,6 +200,7 @@ const uppyModal = (options: UppyModalOptions = {}) => {
     uppy.use(Dashboard, {
         trigger: merged.trigger,
         inline: merged.inline,
+        target: merged.target,
         theme: initialTheme,
         proudlyDisplayPoweredByUppy: false,
         height: 470,
