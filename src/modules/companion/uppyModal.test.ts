@@ -2,12 +2,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 /**
  * uppyModal.ts is a browser bundle (`@ts-nocheck`, imports the Uppy SDK from
- * a CDN URL specifier) transpiled standalone by scripts/build-assets.mjs — it
+ * from npm packages) bundled by scripts/build-assets.mjs — it
  * is excluded from coverage (vitest.config.ts) because most of it only runs
  * in a real DOM. The factory body itself (plugin registration, Dashboard
  * options, `restrictions`), though, has no DOM dependency as long as the
  * GOOGLE_* and enableThumbnails options are all supplied (see
- * NODE_SAFE_OPTIONS below) — mocking the CDN specifier lets it run under
+ * NODE_SAFE_OPTIONS below) — mocking the package specifiers lets it run under
  * Vitest. `shouldUseMultipart` pins the P1-C-PROTOCOL deviation from Uppy's
  * default (single PUT under 100 MiB, multipart above) — EVERY file goes
  * through multipart now, tiny images included, because
@@ -58,25 +58,27 @@ const getAwsOpts = (uppy: FakeUppy): Record<string, unknown> => {
     return registration.opts;
 };
 
-vi.mock('https://releases.transloadit.com/uppy/v5.1.8/uppy.min.mjs', () => ({
-    Uppy: FakeUppy,
-    Dashboard: 'Dashboard',
-    Facebook: 'Facebook',
-    Dropbox: 'Dropbox',
-    GoogleDrive: 'GoogleDrive',
-    Instagram: 'Instagram',
-    OneDrive: 'OneDrive',
-    Box: 'Box',
-    Unsplash: 'Unsplash',
-    Zoom: 'Zoom',
-    Url: 'Url',
-    GoogleDrivePicker: 'GoogleDrivePicker',
-    GooglePhotosPicker: 'GooglePhotosPicker',
-    ThumbnailGenerator: 'ThumbnailGenerator',
-    Compressor: 'Compressor',
-    ImageEditor: 'ImageEditor',
-    AwsS3: 'AwsS3',
-}));
+vi.mock('@uppy/core', () => ({ default: FakeUppy }));
+vi.mock('@uppy/dashboard', () => ({ default: 'Dashboard' }));
+vi.mock('@uppy/facebook', () => ({ default: 'Facebook' }));
+vi.mock('@uppy/dropbox', () => ({ default: 'Dropbox' }));
+vi.mock('@uppy/google-drive', () => ({ default: 'GoogleDrive' }));
+vi.mock('@uppy/instagram', () => ({ default: 'Instagram' }));
+vi.mock('@uppy/onedrive', () => ({ default: 'OneDrive' }));
+vi.mock('@uppy/box', () => ({ default: 'Box' }));
+vi.mock('@uppy/unsplash', () => ({ default: 'Unsplash' }));
+vi.mock('@uppy/zoom', () => ({ default: 'Zoom' }));
+vi.mock('@uppy/url', () => ({ default: 'Url' }));
+vi.mock('@uppy/google-drive-picker', () => ({ default: 'GoogleDrivePicker' }));
+vi.mock('@uppy/google-photos-picker', () => ({ default: 'GooglePhotosPicker' }));
+vi.mock('@uppy/thumbnail-generator', () => ({ default: 'ThumbnailGenerator' }));
+vi.mock('@uppy/compressor', () => ({ default: 'Compressor' }));
+vi.mock('@uppy/image-editor', () => ({ default: 'ImageEditor' }));
+vi.mock('@uppy/aws-s3', () => ({ default: 'AwsS3' }));
+vi.mock('@uppy/core/css/style.min.css', () => ({}));
+vi.mock('@uppy/dashboard/css/style.min.css', () => ({}));
+vi.mock('@uppy/url/css/style.min.css', () => ({}));
+vi.mock('@uppy/image-editor/css/style.min.css', () => ({}));
 
 const NODE_SAFE_OPTIONS = {
     plugins: [],

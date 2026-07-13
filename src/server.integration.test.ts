@@ -188,13 +188,25 @@ describe('server integration', () => {
         expect(res.text).toContain("'https://companion.example.com'");
     });
 
-    // Fase 5.4: SRI on the pinned CDN assets + a CSP nonce on the inline
-    // <script type="module">. Motive (audit finding, ALTO): uppy.html's
+    it.each([
+        ['/uppyModal.js?v=dev', /application\/javascript/],
+        ['/uppy.css?v=dev', /text\/css/],
+    ])('GET %s serves a compressed source-mode asset', async (assetPath, contentType) => {
+        const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
+        const res = await request(app).get(assetPath).set('Host', EDO_HOST).set('Accept-Encoding', 'gzip');
+
+        expect(res.status).toBe(200);
+        expect(res.headers['content-type']).toMatch(contentType);
+        expect(res.headers['content-encoding']).toBe('gzip');
+        expect(res.headers['cache-control']).toBe('no-store');
+    }, 20_000);
+
+    // Fase 5.4: a CSP nonce on the inline <script type="module">. uppy.html's
     // inline module script imports ./uppyModal.js and reads the
     // server-injected placeholders — Task 5.2's `script-src 'self'` CSP
     // would BLOCK it outright without a nonce (and 'unsafe-inline' would
     // defeat the CSP's purpose entirely).
-    describe('SRI + CSP nonce (Fase 5.4)', () => {
+    describe('self-hosted assets + CSP nonce (Fase 5.4)', () => {
         const authOk = () => {
             (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
                 new Response(
@@ -204,23 +216,16 @@ describe('server integration', () => {
             );
         };
 
-        it('every pinned CDN <link>/<script> carries integrity + crossorigin="anonymous"', async () => {
+        it('references versioned same-origin assets and no third-party CDN', async () => {
             authOk();
             const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
             const res = await request(app).get('/uppy').set('Host', EDO_HOST).set('Cookie', 'session=valid-session-token');
             expect(res.status).toBe(200);
 
-            const cdnUrls = [
-                'https://releases.transloadit.com/uppy/v5.1.8/uppy.min.css',
-                'https://releases.transloadit.com/uppy/v5.1.8/uppy.min.js',
-                'https://cdnjs.cloudflare.com/ajax/libs/sweetalert2/11.23.0/sweetalert2.min.css',
-                'https://cdnjs.cloudflare.com/ajax/libs/sweetalert2/11.23.0/sweetalert2.min.js',
-            ];
-            for (const url of cdnUrls) {
-                const escaped = url.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-                const tagRegex = new RegExp(`${escaped}"[^>]*integrity="sha384-[A-Za-z0-9+/=]+"[^>]*crossorigin="anonymous"`);
-                expect(res.text).toMatch(tagRegex);
-            }
+            expect(res.text).toMatch(/href="\/uppy\.css\?v=[a-zA-Z0-9_-]+"/);
+            expect(res.text).toMatch(/\.\/uppyModal\.js\?v=[a-zA-Z0-9_-]+/);
+            expect(res.text).not.toMatch(/releases\.transloadit\.com|cdnjs\.cloudflare\.com|sweetalert2/i);
+            expect(res.text).not.toContain('UPPY_ASSET_VERSION');
         });
 
         it('the inline <script type="module"> nonce equals the CSP header nonce (mismatch would silently break Uppy under CSP)', async () => {
@@ -434,14 +439,14 @@ describe('server integration', () => {
     // <script type="module"> (Fase 5.4) needs 'nonce-<x>' since 'self' alone
     // does not cover it, and 'unsafe-inline' would defeat the CSP entirely.
     describe('CSP nonce (Fase 5.2)', () => {
-        it('sets script-src with a nonce plus the pinned CDN origins', async () => {
+        it('sets script-src with a nonce and no retired CDN origins', async () => {
             const { app } = await createTestApp({ brands: [makeBrand({ slug: 'edo' })] });
             const res = await request(app).get('/api/healthz');
             const csp = res.headers['content-security-policy'];
             expect(csp).toBeDefined();
             expect(csp).toMatch(/script-src[^;]*'nonce-[A-Za-z0-9+/=]+'/);
-            expect(csp).toContain('https://releases.transloadit.com');
-            expect(csp).toContain('https://cdnjs.cloudflare.com');
+            expect(csp).not.toContain('https://releases.transloadit.com');
+            expect(csp).not.toContain('https://cdnjs.cloudflare.com');
         });
 
         it('uses a fresh nonce on every request', async () => {

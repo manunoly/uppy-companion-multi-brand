@@ -288,6 +288,11 @@ export const serveUppyPage = async (
         const htmlPath = path.join(__dirname, 'uppy.html');
         let html = await fs.readFile(htmlPath, 'utf8');
 
+        // The production build replaces this with a content-derived version.
+        // Source-mode development has no build step, so keep its asset URLs
+        // deterministic while the dev asset handlers disable caching.
+        html = html.replace(/UPPY_ASSET_VERSION/g, 'dev');
+
         const enabledPlugins = getEnabledPlugins(brand);
 
         // Host-handed theme (query-param, no cookie): stamp the class on <html>
@@ -363,31 +368,48 @@ export const serveUppyPage = async (
     }
 };
 
-// Memoized in-process cache for the dev-mode transpile fallback. Keyed by source
-// content so an in-place edit to uppyModal.ts naturally invalidates the cache,
-// and tsx-watch restarts wipe the cache anyway.
-let devTranspiledCache: { source: string; output: string } | null = null;
+// Immutable is only safe when the URL carries the content-derived `?v=` —
+// an unversioned request has no cache-busting mechanism, so keep it short-lived.
+export const assetCacheControl = (version: unknown): string =>
+    typeof version === 'string' && version.length > 0
+        ? 'public, max-age=31536000, immutable'
+        : 'public, max-age=300';
 
-const transpileForDev = async (tsSource: string): Promise<string> => {
-    if (devTranspiledCache?.source === tsSource) return devTranspiledCache.output;
-    // Dynamic import: esbuild is a devDependency. Production never hits this branch
-    // because uppyModal.js is precompiled by scripts/build-assets.mjs.
-    const { transform } = await import('esbuild');
-    const result = await transform(tsSource, {
-        loader: 'ts',
+// Memoized in-process cache for the source-mode development bundle. An edit to
+// the entry source invalidates it, while tsx-watch restarts cover dependency edits.
+let devBundleCache: { source: string; js: string; css: string } | null = null;
+
+const buildDevBundle = async (): Promise<{ js: string; css: string }> => {
+    const tsPath = path.join(__dirname, 'uppyModal.ts');
+    const source = await fs.readFile(tsPath, 'utf8');
+    if (devBundleCache?.source === source) return devBundleCache;
+
+    // esbuild and the Uppy client packages are build-time dependencies. The
+    // production image never reaches this branch because it contains prebuilt assets.
+    const { build } = await import('esbuild');
+    const result = await build({
+        entryPoints: [tsPath],
+        outfile: path.join(__dirname, 'uppyModal.js'),
+        bundle: true,
+        write: false,
         target: 'es2020',
         format: 'esm',
+        platform: 'browser',
     });
-    devTranspiledCache = { source: tsSource, output: result.code };
-    return result.code;
+    const js = result.outputFiles.find((file) => file.path.endsWith('.js'))?.text;
+    const css = result.outputFiles.find((file) => file.path.endsWith('.css'))?.text;
+    if (!js || !css) throw new Error('esbuild did not produce both Uppy JS and CSS assets');
+
+    devBundleCache = { source, js, css };
+    return devBundleCache;
 };
 
 /**
  * Serves the uppyModal.js file. Prefers the precompiled artifact (prod);
- * falls back to on-demand transpilation when only the .ts source is present (dev).
+ * falls back to on-demand bundling when only the .ts source is present (dev).
  */
 export const serveUppyModalJs = async (
-    _req: AppRequest,
+    req: AppRequest,
     res: Response,
     _next: NextFunction
 ): Promise<void> => {
@@ -395,12 +417,12 @@ export const serveUppyModalJs = async (
 
     try {
         await fs.access(jsPath);
-        res.set('Cache-Control', 'public, max-age=300');
+        res.set('Cache-Control', assetCacheControl(req.query.v));
         res.type('application/javascript');
         res.sendFile(jsPath);
         return;
     } catch (err) {
-        // Only fall through to the dev transpile when the precompiled artifact is
+        // Only fall through to the dev bundle when the precompiled artifact is
         // genuinely missing. Other errors (permissions, IO) should surface as 500
         // — in production esbuild is a devDependency and the dynamic import would
         // crash, masking the real failure.
@@ -413,13 +435,45 @@ export const serveUppyModalJs = async (
     }
 
     try {
-        const tsPath = path.join(__dirname, 'uppyModal.ts');
-        const tsSource = await fs.readFile(tsPath, 'utf8');
-        const code = await transpileForDev(tsSource);
+        const { js } = await buildDevBundle();
+        res.set('Cache-Control', 'no-store');
         res.setHeader('Content-Type', 'application/javascript');
-        res.send(code);
+        res.send(js);
     } catch (error) {
         logger.error({ err: error }, '[uppy] Error serving uppyModal.js');
         res.status(500).send('Error loading script');
+    }
+};
+
+/** Serves the CSS extracted from uppyModal.ts's Uppy CSS imports. */
+export const serveUppyCss = async (
+    req: AppRequest,
+    res: Response,
+    _next: NextFunction,
+): Promise<void> => {
+    const cssPath = path.join(__dirname, 'uppyModal.css');
+
+    try {
+        await fs.access(cssPath);
+        res.set('Cache-Control', assetCacheControl(req.query.v));
+        res.type('text/css');
+        res.sendFile(cssPath);
+        return;
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            logger.error({ err }, '[uppy] uppyModal.css exists but failed to access');
+            res.status(500).send('Error loading stylesheet');
+            return;
+        }
+    }
+
+    try {
+        const { css } = await buildDevBundle();
+        res.set('Cache-Control', 'no-store');
+        res.setHeader('Content-Type', 'text/css');
+        res.send(css);
+    } catch (error) {
+        logger.error({ err: error }, '[uppy] Error serving uppyModal.css');
+        res.status(500).send('Error loading stylesheet');
     }
 };

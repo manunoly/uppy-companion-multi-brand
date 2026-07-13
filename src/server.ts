@@ -3,6 +3,7 @@ import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import type { SessionOptions } from 'express-session';
 import helmet from 'helmet';
+import compression from 'compression';
 import { rateLimit } from 'express-rate-limit';
 import { RedisStore as SessionRedisStore } from 'connect-redis';
 import { RedisStore as RateLimitRedisStore, type RedisReply } from 'rate-limit-redis';
@@ -28,6 +29,7 @@ import {
     attachCompanionSocket,
     serveUppyPage,
     serveUppyModalJs,
+    serveUppyCss,
     apiRouter,
     type CompanionInstance
 } from './modules/companion/index.js';
@@ -314,8 +316,7 @@ export const assembleApp = ({
                     (req: IncomingMessage, res: ServerResponse) =>
                         buildScriptSrc(brandForCsp(req), (res as unknown as express.Response).locals.cspNonce),
                 ],
-                // X-13: the Uppy Dashboard CSS loads from releases.transloadit.com
-                // (uppy.html:8) — without it the page renders unstyled under CSP.
+                // Uppy CSS is built and served same-origin; 'self' covers it.
                 'style-src': buildStyleSrc(),
                 // Security review MEDIO-3: helmet 8's defaults leave these
                 // four directives either un-derived (falling back to
@@ -507,10 +508,12 @@ export const assembleApp = ({
     // Shared rate limiter (Fase 5.2, D13) — mounted on /uppy and /api/* only
     // (not health/readiness, which the orchestrator polls continuously).
     const rateLimiter = buildRateLimiter(envParam);
+    const compressUppyAsset = compression();
 
     // Uppy upload page - shows plugins based on brand providers
     app.get('/uppy', rateLimiter, serveUppyPage);
-    app.get('/uppyModal.js', serveUppyModalJs);
+    app.get('/uppyModal.js', compressUppyAsset, serveUppyModalJs);
+    app.get('/uppy.css', compressUppyAsset, serveUppyCss);
 
     // Per-brand CORS, resolved dynamically per request via req.brand (no
     // longer baked in at a per-brand mount time). Precomputed once per brand

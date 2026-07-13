@@ -45,11 +45,6 @@ const GOOGLE_PICKER_FRAME_ORIGINS = ['https://docs.google.com', 'https://account
 const GOOGLE_THUMBNAIL_IMG_ORIGINS = ['https://lh3.googleusercontent.com', 'https://drive.google.com'];
 const GOOGLE_SCRIPT_ORIGINS = ['https://apis.google.com'];
 
-// Uppy ships its JS bundle + Dashboard CSS from transloadit; sweetalert2 ships
-// its JS + CSS from cdnjs. Both feed script-src AND style-src (uppy.html).
-const TRANSLOADIT_ORIGIN = 'https://releases.transloadit.com';
-const CDNJS_ORIGIN = 'https://cdnjs.cloudflare.com';
-
 const s3OriginFor = (brand: Brand): string | null => {
     if (!brand.s3.bucket || !brand.s3.region) return null;
     return `https://${brand.s3.bucket}.s3.${brand.s3.region}.amazonaws.com`;
@@ -116,19 +111,13 @@ export const buildImgSrc = (brand: Brand | undefined): string => {
 };
 
 /**
- * `script-src`: same-origin + el nonce por-request de la página /uppy + los
- * CDNs de Uppy (transloadit) y SweetAlert2 (cdnjs) + el loader de Google APIs
+ * `script-src`: same-origin + el nonce por-request de la página /uppy + el loader de Google APIs
  * (`apis.google.com`) cuando la marca habilita el Drive/Photos Picker. El
  * nonce se pasa desde `res.locals.cspNonce` (server.ts) porque helmet resuelve
  * esta directiva por-request.
  */
 export const buildScriptSrc = (brand: Brand | undefined, nonce: string): string => {
-    const origins = [
-        "'self'",
-        `'nonce-${nonce}'`,
-        TRANSLOADIT_ORIGIN,
-        CDNJS_ORIGIN,
-    ];
+    const origins = ["'self'", `'nonce-${nonce}'`];
     if (brand && usesGooglePicker(brand)) {
         origins.push(...GOOGLE_SCRIPT_ORIGINS);
     }
@@ -137,10 +126,10 @@ export const buildScriptSrc = (brand: Brand | undefined, nonce: string): string 
 
 /**
  * `style-src`: same-origin + `'unsafe-inline'` (Uppy's Dashboard injects
- * runtime `<style>`/style attributes that can't be nonced) + the Uppy CDN
- * (`uppy.min.css`, uppy.html:8) + cdnjs (sweetalert2 CSS). Brand-independent —
+ * runtime `<style>`/style attributes that can't be nonced). Uppy CSS is served
+ * same-origin. Brand-independent —
  * every brand's /uppy loads the same CSS. Returns individual sources (matching
  * the other directive arrays) rather than a joined string because this one is
  * static, not resolved per-request.
  */
-export const buildStyleSrc = (): string[] => ["'self'", "'unsafe-inline'", CDNJS_ORIGIN, TRANSLOADIT_ORIGIN];
+export const buildStyleSrc = (): string[] => ["'self'", "'unsafe-inline'"];
