@@ -382,6 +382,8 @@ let devBundleCache: { source: string; js: string; css: string } | null = null;
 const buildDevBundle = async (): Promise<{ js: string; css: string }> => {
     const tsPath = path.join(__dirname, 'uppyModal.ts');
     const source = await fs.readFile(tsPath, 'utf8');
+    // Narrows devBundleCache to non-null below: if it were null, the left side
+    // of the comparison would be `undefined`, never strictly equal to `source`.
     if (devBundleCache?.source === source) return devBundleCache;
 
     // esbuild and the Uppy client packages are build-time dependencies. The
