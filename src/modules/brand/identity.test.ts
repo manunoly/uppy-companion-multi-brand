@@ -6,10 +6,12 @@ import {
     normalizeBrandUser,
     resolveEffectiveAuth,
     resolveEffectiveSessionCookieName,
+    resolveValidatedAuthOrigin,
     resolveValidatedWhoamiTarget,
     validateWhoamiUrl,
 } from './identity.js';
 import { getBaseBrandConfig } from './registry.js';
+import { makeBrand } from '../../test-utils/fixtures.js';
 import { logger } from '../../lib/logger.js';
 
 const edo = getBaseBrandConfig('edo');
@@ -23,7 +25,8 @@ const CAPSULE_FIXTURE: CompanionBrandConfig = {
         signInUrl: 'https://abe.example.com/login',
         whoamiUrl: 'https://api.abe.example.com/whoami',
         whoamiAllowedHosts: ['abe.example.com'],
-        sessionCookieName: 'abes_session',
+        authIssuer: 'https://auth.abe.example.com',
+        authAllowedHosts: ['abe.example.com'],
         responseMapping: { idField: 'id', emailField: 'email', nameField: 'displayName', imageField: 'imageUrl' },
     },
 };
@@ -216,5 +219,91 @@ describe('resolveValidatedWhoamiTarget', () => {
 
     it("picaboo's placeholder config (empty whoamiUrl) is ok:false — not servable yet", () => {
         expect(resolveValidatedWhoamiTarget(getBaseBrandConfig('picaboo')).ok).toBe(false);
+    });
+});
+
+describe('resolveValidatedAuthOrigin', () => {
+    const capsuleBrand = makeBrand({
+        slug: 'abe',
+        auth: {
+            kind: 'capsule',
+            authIssuer: 'https://auth.example.test',
+            authAllowedHosts: ['example.test'],
+        },
+    });
+
+    it('accepts an issuer inside the allowlist', () => {
+        const result = resolveValidatedAuthOrigin(capsuleBrand);
+        expect(result).toEqual({ ok: true, issuer: 'https://auth.example.test' });
+    });
+
+    it('rejects a partner-whoami brand — it has no auth origin', () => {
+        const result = resolveValidatedAuthOrigin(makeBrand({ slug: 'edo' }));
+        expect(result.ok).toBe(false);
+    });
+
+    it("the registry's own dev issuer passes the registry's own allowlist", () => {
+        // The override .env.example prescribes points at auth.abeduls.local. When that host is not
+        // in authAllowedHosts the verifier is never created and local verification silently never
+        // runs — the only symptom is one warn at boot.
+        const abe = getBaseBrandConfig('abe');
+        if (abe.auth.kind !== 'capsule') throw new Error('abe must be a capsule brand');
+
+        expect(resolveValidatedAuthOrigin(abe).ok).toBe(true);
+        const dev: CompanionBrandConfig = { ...abe, auth: { ...abe.auth, authIssuer: 'https://auth.abeduls.local' } };
+        expect(resolveValidatedAuthOrigin(dev)).toEqual({ ok: true, issuer: 'https://auth.abeduls.local' });
+    });
+
+    it('rejects an issuer whose host is outside authAllowedHosts', () => {
+        const evil = makeBrand({
+            slug: 'abe',
+            auth: {
+                kind: 'capsule',
+                authIssuer: 'https://auth.attacker.test',
+                authAllowedHosts: ['example.test'],
+            },
+        });
+        expect(resolveValidatedAuthOrigin(evil).ok).toBe(false);
+    });
+
+    it('rejects a non-https issuer', () => {
+        const insecure = makeBrand({
+            slug: 'abe',
+            auth: {
+                kind: 'capsule',
+                authIssuer: 'http://auth.example.test',
+                authAllowedHosts: ['example.test'],
+            },
+        });
+        expect(resolveValidatedAuthOrigin(insecure).ok).toBe(false);
+    });
+
+    it('authAllowedHosts is code-only — an override can never widen it', () => {
+        process.env.ABE_BRAND_OVERRIDE = JSON.stringify({ auth: { authAllowedHosts: ['attacker.test'] } });
+        try {
+            const result = resolveValidatedAuthOrigin(
+                makeBrand({
+                    slug: 'abe',
+                    auth: {
+                        kind: 'capsule',
+                        authIssuer: 'https://auth.attacker.test',
+                        authAllowedHosts: ['example.test'],
+                    },
+                }),
+            );
+            expect(result.ok).toBe(false);
+        } finally {
+            delete process.env.ABE_BRAND_OVERRIDE;
+        }
+    });
+
+    it('an issuer override INSIDE the allowlist is honoured (per-environment origins)', () => {
+        process.env.ABE_BRAND_OVERRIDE = JSON.stringify({ auth: { authIssuer: 'https://auth.staging.example.test' } });
+        try {
+            const result = resolveValidatedAuthOrigin(capsuleBrand);
+            expect(result).toEqual({ ok: true, issuer: 'https://auth.staging.example.test' });
+        } finally {
+            delete process.env.ABE_BRAND_OVERRIDE;
+        }
     });
 });

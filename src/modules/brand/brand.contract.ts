@@ -35,7 +35,12 @@ export type BrandAuthConfig =
           readonly signOutUrl?: string;
           readonly whoamiUrl: string;
           readonly whoamiAllowedHosts: readonly string[];
-          readonly sessionCookieName: string;
+          // Never set it on a capsule brand: the names are derived from authIssuer's protocol, and
+          // resolveSession ignores this field entirely. It stays only so the partner-only readers
+          // (folders, uppy page, admin dump) compile without narrowing on `kind`.
+          readonly sessionCookieName?: string;
+          readonly authIssuer: string;
+          readonly authAllowedHosts: readonly string[];
           readonly responseMapping: BrandResponseMapping;
           // When true, a whoami response whose raw `emailVerified` claim is not `true` resolves as unauthenticated.
           readonly requireVerifiedEmail?: boolean;

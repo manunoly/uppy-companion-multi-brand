@@ -69,7 +69,7 @@ export function buildCookieHeader(name: string, value: string): string | null {
 // type discriminator; `whoamiAllowedHosts` is the SSRF gate itself;
 // `requireVerifiedEmail` is a security policy. Any NEW non-overridable field
 // added to BrandAuthConfig MUST be listed here.
-const PROTECTED_AUTH_KEYS = new Set(['kind', 'whoamiAllowedHosts', 'requireVerifiedEmail']);
+const PROTECTED_AUTH_KEYS = new Set(['kind', 'whoamiAllowedHosts', 'requireVerifiedEmail', 'authAllowedHosts']);
 const PROTO_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_COOKIE_NAME_LENGTH = 128;
 
@@ -94,8 +94,9 @@ export function readBrandOverride(slug: BrandSlug): Record<string, unknown> | nu
 /**
  * Effective auth = registry auth + `<SLUG>_BRAND_OVERRIDE.auth` (nested JSON).
  * Only string fields already present on the base auth object may be
- * overridden (`whoamiUrl`, `signInUrl`, `signOutUrl`, `sessionCookieName`) —
- * `kind`/`whoamiAllowedHosts` are protected, `responseMapping` is an object
+ * overridden (`whoamiUrl`, `signInUrl`, `signOutUrl`, `sessionCookieName`,
+ * `authIssuer`) — `kind`/`whoamiAllowedHosts`/`authAllowedHosts` are
+ * protected, `responseMapping` is an object
  * (deferred/unsupported), and unknown keys are dropped. Every rejection is
  * logged (`{slug, field}` only — never the attempted value) per the
  * Companion's SA3/D3 divergence from abeduls3 (which does not log).
@@ -155,12 +156,33 @@ export function resolveEffectiveAuth(config: CompanionBrandConfig): BrandAuthCon
  * cookie to pull off the incoming request" MUST resolve the name through
  * here so it agrees with `resolveValidatedWhoamiTarget`'s forwarded name.
  */
-export function resolveEffectiveSessionCookieName(config: CompanionBrandConfig): string {
+export function resolveEffectiveSessionCookieName(config: CompanionBrandConfig): string | undefined {
     return resolveEffectiveAuth(config).sessionCookieName;
 }
 
+export type ValidatedAuthOrigin =
+    | { ok: true; issuer: string }
+    | { ok: false; reason: string };
+
+/**
+ * The auth-origin analogue of resolveValidatedWhoamiTarget. authIssuer is an overridable string,
+ * so it is gated by the code-only authAllowedHosts — an unvalidated issuer override points the
+ * verifier at an attacker's JWKS, which then mints `valid` for anything.
+ */
+export function resolveValidatedAuthOrigin(config: CompanionBrandConfig): ValidatedAuthOrigin {
+    const eff = resolveEffectiveAuth(config);
+    if (eff.kind !== 'capsule') return { ok: false, reason: 'brand has no auth origin' };
+
+    const issuer = validateWhoamiUrl(eff.authIssuer, eff.authAllowedHosts);
+    if (!issuer.ok) return { ok: false, reason: `authIssuer: ${issuer.reason}` };
+
+    // The raw value, not issuer.url: the iss claim must match auth-service byte for byte, and
+    // URL() normalizes (a trailing slash, a lowercased host) in ways that would silently miss.
+    return { ok: true, issuer: eff.authIssuer };
+}
+
 export type ValidatedWhoamiTarget =
-    | { ok: true; whoamiUrl: URL; signInUrl: string; signOutUrl?: string; sessionCookieName: string }
+    | { ok: true; whoamiUrl: URL; signInUrl: string; signOutUrl?: string; sessionCookieName?: string }
     | { ok: false; reason: string };
 
 /**

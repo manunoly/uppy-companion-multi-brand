@@ -64,13 +64,16 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
         // mechanism (identity.ts) can never touch this field.
         companionHosts: ['companion.abeduls.com', 'companion.abeduls.local'],
         auth: {
-            // Standalone Companion validates the forwarded capsule cookie against an
-            // EXTERNAL whoami (D5.b) — same flow as any partner; `kind` is cosmetic.
-            kind: 'partner-whoami',
+            // kind selects the resolver branch: capsule verifies session_data locally, partners always forward.
+            kind: 'capsule',
             signInUrl: 'https://www.abeduls.com/sign-in',
             whoamiUrl: 'https://www.abeduls.com/api/user',
             whoamiAllowedHosts: ['www.abeduls.com'],
-            sessionCookieName: 'abes_session',
+            authIssuer: 'https://auth.abeduls.com',
+            // .local belongs here for the same reason it belongs in `domains`: the issuer is
+            // per-environment, and without it the dev override .env.example prescribes is
+            // rejected and local verification silently never runs.
+            authAllowedHosts: ['abeduls.com', 'abeduls.local'],
             responseMapping: { idField: 'id', emailField: 'email', nameField: 'displayName', imageField: 'imageUrl' },
             // Parity with capsule's proxy gate: an unverified-email user resolves as unauthenticated.
             requireVerifiedEmail: true,
@@ -84,6 +87,9 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
             maxUploadBytes: 50 * 1024 * 1024,
             allowedContentTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif'],
         },
+        // Inert: a capsule brand has no single session cookie to forward, and this endpoint was
+        // never wired for the Better Auth pair, so fetchFolders returns [] for abe. Do NOT add a
+        // sessionCookieName here to "fix" it — the contract forbids naming the cookie at all.
         public: { foldersUrl: 'https://www.abeduls.com/api/folders' },
         // S2S ingest-callback target: capsule's internal media-ingest endpoint. Host
         // (www.abeduls.com) sits under whoamiAllowedHosts, so it passes the SSRF gate.

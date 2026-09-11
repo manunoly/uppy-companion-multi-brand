@@ -5,6 +5,7 @@ import {
     normalizeBrandUser,
     resolveEffectiveAuth,
     resolveEffectiveSessionCookieName,
+    resolveValidatedAuthOrigin,
     resolveValidatedWhoamiTarget,
     WHOAMI_MAX_BODY_BYTES,
     WHOAMI_TIMEOUT_MS,
@@ -13,6 +14,9 @@ import { getRedis } from '../../lib/redis.js';
 import { logger } from '../../lib/logger.js';
 import * as breaker from './whoami-breaker.js';
 import { enrichEdoUser } from './enrich-edo.js';
+import { abeCookieNameCandidates } from './abe-cookie-names.js';
+import { buildBetterAuthPair, buildCredentialOnly, parseCookieEntries } from './better-auth-cookies.js';
+import { getAbeSessionVerifier } from './abe-session-verifier.js';
 
 export type SessionResolution =
     | { status: 'authenticated'; user: BrandUser }
@@ -22,6 +26,18 @@ export type SessionResolution =
 
 const CACHE_TTL_SECONDS = 45;
 const CACHE_NAMESPACE = 'companion-whoami'; // own namespace — does NOT collide with node-socket's `socket-whoami:`
+const VERIFY_MISS_WARN_INTERVAL_MS = 60_000;
+
+// Per slug+cause floor: a silent per-request local miss is how a misconfigured issuer hides as a
+// slow whoami. Keyed by cause so one noisy brand cannot mute another.
+const lastMissWarnAt = new Map<string, number>();
+function warnMissThrottled(slug: string, cause: string, message: string): void {
+    const key = `${slug}:${cause}`;
+    const now = Date.now();
+    if (now - (lastMissWarnAt.get(key) ?? 0) < VERIFY_MISS_WARN_INTERVAL_MS) return;
+    lastMissWarnAt.set(key, now);
+    logger.warn({ slug, cause }, message);
+}
 
 function cacheKeyFor(slug: string, cookieValue: string): string {
     const hash = createHash('sha256').update(cookieValue).digest('hex');
@@ -103,7 +119,11 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<str
  * property, not an implementation detail (spec D5.a / plan Task 3.2) —
  * faithfully mirrors abeduls3's `resolvePartnerSocketIdentity.ts:44-73`:
  *
- *   1. Extract the raw cookie VALUE by the brand's effective cookie name.
+ *   1. Credential presence, per brand kind — `capsule` reads the Better Auth
+ *      `session_token` under both derived namespaces, `partner-whoami` the
+ *      registry's cookie name. Absent ⇒ `unauthenticated`. MUST precede
+ *      step 2, or an anonymous request against a brand with a broken
+ *      `whoamiUrl` answers `misconfigured` (403) instead of 401.
  *   2. SSRF gate (resolveValidatedWhoamiTarget) — before anything else
  *      touches the network; `misconfigured` never falls through to fetch.
  *   3. Build the forwarded `Cookie:` header — a malformed/delimiter-bearing
@@ -111,12 +131,20 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<str
  *      breaker, else an unauthenticated attacker could open it for every
  *      user of the brand by spamming malformed cookies (auth DoS). This MUST
  *      precede step 4.
- *   4. Circuit breaker — fail-fast BEFORE the cache/fetch.
- *   5. Redis cache (namespace `companion-whoami:`, TTL 45s, full serialized
- *      `BrandUser` — needed to retain `edoId`/email on a cache hit).
+ *   3b. [capsule only] Verify `session_data` locally against the auth
+ *      origin's JWKS. `valid` returns without Redis, fetch or breaker;
+ *      `unavailable` logs and falls through WITHOUT touching the breaker;
+ *      `credential-mismatch` falls through forwarding the credential ALONE.
+ *   4. Redis cache (namespace `companion-whoami:`, TTL 45s, full serialized
+ *      `BrandUser` — needed to retain `edoId`/email on a cache hit). Read
+ *      BEFORE the breaker: a hot identity needs no fetch, so it must survive
+ *      a partner blip that has already opened the shared breaker.
+ *   5. Circuit breaker — fail-fast BEFORE the fetch.
  *   6. Forward the cookie to the whoami endpoint (`redirect:'manual'`, 5s
  *      timeout).
- *   7. Interpret the response status (every redirect form is failure).
+ *   7. Interpret the response status (every redirect form is failure; 401/403
+ *      is a client condition the upstream answered, the rest of the 4xx range
+ *      is about the REQUEST and fails like any other fault).
  *   8. Body cap (16 KB) via streaming — never trust `Content-Length` alone.
  *   9. Normalize, apply the registry email-verified gate (unverified ⇒
  *      unauthenticated, never cached), then (edo-only) enrich with
@@ -128,30 +156,103 @@ export async function resolveSession(
 ): Promise<SessionResolution> {
     const slug = brand.slug;
 
-    // 1. Extract the raw cookie VALUE by the brand's effective cookie name.
-    const cookieName = resolveEffectiveSessionCookieName(brand);
-    const cookieValue = extractCookieValue(cookieHeader, cookieName);
-    if (cookieValue === null) return { status: 'unauthenticated' };
+    let builtCookieHeader: string;
+    let cacheHashSource: string;
+    let whoamiUrl: URL;
 
-    // 2. SSRF gate: validate + allowlist the whoami target BEFORE anything
-    // else touches the network. Never falls through to fetch on failure.
-    const target = resolveValidatedWhoamiTarget(brand);
-    if (!target.ok) {
-        logger.error({ slug, reason: target.reason }, '[auth] whoami target misconfigured');
-        return { status: 'misconfigured', reason: target.reason };
+    if (brand.auth.kind === 'capsule') {
+        // An unvalidated issuer yields both namespaces rather than a guess: the forward still works,
+        // the whoami still decides, and a misconfigured origin degrades instead of locking abe out.
+        const authOrigin = resolveValidatedAuthOrigin(brand);
+        const candidates = abeCookieNameCandidates(authOrigin.ok ? authOrigin.issuer : '');
+        const entries = parseCookieEntries(cookieHeader ?? '');
+
+        // Same validity test the forward uses, so an unforwardable token cannot count toward ambiguity.
+        const matchedTokens = candidates
+            .map((names) => {
+                const value = entries.find(([name]) => name === names.sessionToken)?.[1];
+                if (value === undefined || value === '') return undefined;
+                return buildCookieHeader(names.sessionToken, value) === null ? undefined : value;
+            })
+            .filter((value): value is string => value !== undefined);
+        if (matchedTokens.length === 0) return { status: 'unauthenticated' };
+
+        // SSRF gate, AFTER the credential check — an anonymous request against a misconfigured
+        // brand must stay 401-shaped, never 403-shaped.
+        const target = resolveValidatedWhoamiTarget(brand);
+        if (!target.ok) {
+            logger.error({ slug, reason: target.reason }, '[auth] whoami target misconfigured');
+            return { status: 'misconfigured', reason: target.reason };
+        }
+        whoamiUrl = target.whoamiUrl;
+
+        let credentialOnly = false;
+        if (matchedTokens.length === 1) {
+            const verifier = getAbeSessionVerifier(brand);
+            if (verifier) {
+                const verified = await verifier.verify(cookieHeader);
+                if (verified.status === 'valid') {
+                    const effectiveAuth = resolveEffectiveAuth(brand);
+                    if (effectiveAuth.requireVerifiedEmail && !verified.emailVerified) {
+                        return { status: 'unauthenticated' };
+                    }
+                    return { status: 'authenticated', user: verified.user };
+                }
+                logger.debug({ slug, cause: verified.cause }, '[auth] abe local verification miss');
+                if (verified.cause === 'unavailable') {
+                    logger.warn({ slug }, '[auth] abe local verification unavailable (JWKS unreachable)');
+                } else if (verified.cause === 'credential-mismatch') {
+                    credentialOnly = true;
+                    warnMissThrottled(
+                        slug,
+                        verified.cause,
+                        '[auth] abe session_data does not belong to the presented credential — forwarding the credential alone',
+                    );
+                } else if (verified.cause === 'poisoned') {
+                    warnMissThrottled(
+                        slug,
+                        verified.cause,
+                        '[auth] abe local verification rejected the token — check authIssuer matches auth-service BETTER_AUTH_URL byte for byte',
+                    );
+                }
+            }
+        }
+
+        const forwards = candidates
+            .map((names) => (credentialOnly ? buildCredentialOnly(entries, names) : buildBetterAuthPair(entries, names)))
+            .filter((pair): pair is string => pair !== null);
+        if (forwards.length === 0) return { status: 'unauthenticated' };
+
+        builtCookieHeader = forwards.join('; ');
+        cacheHashSource = matchedTokens.join(' ');
+    } else {
+        // Byte-identical to today's order: name -> extract -> unauthenticated -> gate -> build.
+        const cookieName = resolveEffectiveSessionCookieName(brand);
+        if (!cookieName) {
+            logger.error({ slug }, '[auth] partner-whoami brand missing sessionCookieName');
+            return { status: 'misconfigured', reason: 'missing sessionCookieName' };
+        }
+        const cookieValue = extractCookieValue(cookieHeader, cookieName);
+        if (cookieValue === null) return { status: 'unauthenticated' };
+
+        const target = resolveValidatedWhoamiTarget(brand);
+        if (!target.ok) {
+            logger.error({ slug, reason: target.reason }, '[auth] whoami target misconfigured');
+            return { status: 'misconfigured', reason: target.reason };
+        }
+        whoamiUrl = target.whoamiUrl;
+
+        const built = buildCookieHeader(target.sessionCookieName ?? cookieName, cookieValue);
+        if (built === null) return { status: 'unauthenticated' };
+
+        builtCookieHeader = built;
+        cacheHashSource = cookieValue;
     }
 
-    // 3. Build the forwarded Cookie header. MUST precede the breaker check.
-    const forwardedCookie = buildCookieHeader(target.sessionCookieName, cookieValue);
-    if (forwardedCookie === null) return { status: 'unauthenticated' };
-
-    // 4. Circuit breaker — fail-fast BEFORE the cache/fetch.
-    if (await breaker.isOpen(slug)) {
-        return { status: 'unavailable', reason: 'breaker open' };
-    }
-
-    // 5. Redis cache — full serialized BrandUser, only ever written on success.
-    const cacheKey = cacheKeyFor(slug, cookieValue);
+    // 4. Redis cache — full serialized BrandUser, only ever written on success.
+    // Read before the breaker: a hot identity needs no fetch, so it must survive a partner
+    // blip that already opened the breaker.
+    const cacheKey = cacheKeyFor(slug, cacheHashSource);
     const redis = getRedis();
     try {
         const cached = await redis.get(cacheKey);
@@ -163,12 +264,17 @@ export async function resolveSession(
         logger.warn({ err, slug }, '[auth] whoami cache read failed; falling through to fetch');
     }
 
+    // 5. Circuit breaker — fail-fast BEFORE the fetch.
+    if (await breaker.isOpen(slug)) {
+        return { status: 'unavailable', reason: 'breaker open' };
+    }
+
     // 6. Forward the cookie to the whoami endpoint.
     let response: Response;
     try {
-        response = await fetch(target.whoamiUrl.toString(), {
+        response = await fetch(whoamiUrl.toString(), {
             method: 'GET',
-            headers: { Cookie: forwardedCookie },
+            headers: { Cookie: builtCookieHeader },
             redirect: 'manual',
             signal: AbortSignal.timeout(WHOAMI_TIMEOUT_MS),
         });
@@ -185,9 +291,19 @@ export async function resolveSession(
         await breaker.recordFailure(slug);
         return { status: 'unavailable', reason: 'whoami redirect' };
     }
-    if (response.status === 401) {
-        await breaker.recordSuccess(slug); // partner answered — circuit is healthy
+    // The upstream answered about THIS session, so the circuit is healthy.
+    if (response.status === 401 || response.status === 403) {
+        await breaker.recordSuccess(slug);
         return { status: 'unauthenticated' };
+    }
+
+    // The rest of the 4xx range is about the REQUEST, not the session: 429 is a partner asking us
+    // to back off, 400/404/405 a moved or misconfigured whoami. recordSuccess would clear the brake
+    // for every replica, so these fail like any other fault — loudly.
+    if (response.status >= 400 && response.status < 500) {
+        logger.warn({ slug, status: response.status }, '[auth] whoami rejected the request');
+        await breaker.recordFailure(slug);
+        return { status: 'unavailable', reason: `whoami ${response.status}` };
     }
     if (!response.ok) {
         await breaker.recordFailure(slug);
