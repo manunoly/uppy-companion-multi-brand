@@ -73,9 +73,10 @@ export const fetchFolders = async (
     // malformed/injectable header.
     const cookie = buildForwardedCookie(brand, cookieHeader ?? '');
     if (!cookie) {
-        // A present-but-rejected token (delimiter/control char) is anomalous — a
-        // well-formed session cookie never contains those — so surface it at
-        // debug for diagnosability, without logging the ordinary "no token" case.
+        // Two different causes reach here — the auth cookie is absent, or it carried a
+        // delimiter/control char and buildCookieHeader rejected it. Both are anomalous by the time
+        // we render (the page already required a session), so log once either way; a request with
+        // no cookies at all stays silent.
         if (cookieHeader) {
             logger.debug({ brand: brand.slug }, '[folders] no forwardable session cookie in the request');
         }

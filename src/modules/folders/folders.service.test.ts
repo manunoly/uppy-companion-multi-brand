@@ -81,7 +81,9 @@ describe('fetchFolders', () => {
     // interpolation, so a delimiter/control-character-bearing token can never
     // inject an extra `name=value` pair into the outgoing header.
     it('returns [] and never calls fetch when the cookie token is malformed (delimiter char)', async () => {
-        const folders = await fetchFolders('session=bad%0d%0avalue', makeBrand());
+        // %3B, not a literal ';': a bare semicolon ends the cookie in the header, so the value
+        // would arrive clean and this would test nothing. Decoding is what reaches buildCookieHeader.
+        const folders = await fetchFolders('session=bad%3Bvalue', makeBrand());
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
     });

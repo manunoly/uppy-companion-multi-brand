@@ -176,6 +176,12 @@ export function resolveValidatedAuthOrigin(config: CompanionBrandConfig): Valida
     const issuer = validateWhoamiUrl(eff.authIssuer, eff.authAllowedHosts);
     if (!issuer.ok) return { ok: false, reason: `authIssuer: ${issuer.reason}` };
 
+    // The issuer is used as an ORIGIN to derive the JWKS URL, so a path or query silently points
+    // the key fetch at the wrong place and every request degrades to the whoami.
+    if (issuer.url.pathname !== '/' || issuer.url.search || issuer.url.hash) {
+        return { ok: false, reason: 'authIssuer: must be a bare origin' };
+    }
+
     // The raw value, not issuer.url: the iss claim must match auth-service byte for byte, and
     // URL() normalizes (a trailing slash, a lowercased host) in ways that would silently miss.
     return { ok: true, issuer: eff.authIssuer };

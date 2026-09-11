@@ -29,6 +29,7 @@ vi.mock('./abe-session-verifier.js', () => ({
 }));
 
 const { getRedis, closeRedis } = await import('../../lib/redis.js');
+const { logger } = await import('../../lib/logger.js');
 const { getAbeSessionVerifier } = await import('./abe-session-verifier.js');
 const breaker = await import('./whoami-breaker.js');
 const { resolveSession } = await import('./session-resolver.js');
@@ -397,6 +398,22 @@ describe('resolveSession — abe (kind: capsule)', () => {
         expect(result.status).toBe('authenticated');
         expect(globalThis.fetch).toHaveBeenCalled();
         expect(breaker.recordFailure).not.toHaveBeenCalled();
+    });
+
+    it('a JWKS outage warns once, not once per request', async () => {
+        // The throttle floor is module state that outlives a test, so pin the clock past any
+        // warning an earlier case already recorded.
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 600_000);
+        const warn = vi.spyOn(logger, 'warn');
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'unavailable' });
+        vi.mocked(globalThis.fetch).mockResolvedValue(whoamiOk());
+
+        await resolveSession(abe, token);
+        await resolveSession(abe, token);
+        await resolveSession(abe, token);
+
+        expect(warn.mock.calls.filter(([, msg]) => String(msg).includes('unavailable'))).toHaveLength(1);
+        vi.mocked(Date.now).mockRestore();
     });
 
     it('the whoami fallback still honours requireVerifiedEmail', async () => {

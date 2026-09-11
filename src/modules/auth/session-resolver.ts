@@ -200,7 +200,13 @@ export async function resolveSession(
                 }
                 logger.debug({ slug, cause: verified.cause }, '[auth] abe local verification miss');
                 if (verified.cause === 'unavailable') {
-                    logger.warn({ slug }, '[auth] abe local verification unavailable (JWKS unreachable)');
+                    // Throttled like the others: a JWKS outage hits every request, and a warn per
+                    // request buries the incident it is meant to announce.
+                    warnMissThrottled(
+                        slug,
+                        verified.cause,
+                        '[auth] abe local verification unavailable (JWKS unreachable)',
+                    );
                 } else if (verified.cause === 'credential-mismatch') {
                     credentialOnly = true;
                     warnMissThrottled(
