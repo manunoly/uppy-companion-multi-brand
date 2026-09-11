@@ -64,13 +64,13 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
         // mechanism (identity.ts) can never touch this field.
         companionHosts: ['companion.abeduls.com', 'companion.abeduls.local'],
         auth: {
-            // Standalone Companion validates the forwarded capsule cookie against an
-            // EXTERNAL whoami (D5.b) — same flow as any partner; `kind` is cosmetic.
-            kind: 'partner-whoami',
+            // kind selects the resolver branch: capsule verifies session_data locally, partners always forward.
+            kind: 'capsule',
             signInUrl: 'https://www.abeduls.com/sign-in',
             whoamiUrl: 'https://www.abeduls.com/api/user',
             whoamiAllowedHosts: ['www.abeduls.com'],
-            sessionCookieName: 'abes_session',
+            authIssuer: 'https://auth.abeduls.com',
+            authAllowedHosts: ['abeduls.com'],
             responseMapping: { idField: 'id', emailField: 'email', nameField: 'displayName', imageField: 'imageUrl' },
             // Parity with capsule's proxy gate: an unverified-email user resolves as unauthenticated.
             requireVerifiedEmail: true,

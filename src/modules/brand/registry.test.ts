@@ -70,16 +70,19 @@ describe('registry: edo (servable, MVP brand)', () => {
 describe('registry: abe (servable, P1-C1)', () => {
     const abe = getBaseBrandConfig('abe');
 
-    it('is a partner-whoami brand', () => {
-        expect(abe.auth.kind).toBe('partner-whoami');
+    it('is a capsule brand with a gated auth origin', () => {
+        expect(abe.auth.kind).toBe('capsule');
+        if (abe.auth.kind !== 'capsule') throw new Error('unreachable');
+        expect(abe.auth.authIssuer).toBe('https://auth.abeduls.com');
+        expect(abe.auth.authAllowedHosts).toEqual(['abeduls.com']);
     });
 
     it('has the www.abeduls.com SSRF allowlist', () => {
         expect(abe.auth.whoamiAllowedHosts).toEqual(['www.abeduls.com']);
     });
 
-    it('uses the abes_session cookie and the capsule /api/user responseMapping', () => {
-        expect(abe.auth.sessionCookieName).toBe('abes_session');
+    it('configures no session cookie name and the capsule /api/user responseMapping', () => {
+        expect(abe.auth.sessionCookieName).toBeUndefined();
         expect(abe.auth.responseMapping).toEqual({
             idField: 'id',
             emailField: 'email',

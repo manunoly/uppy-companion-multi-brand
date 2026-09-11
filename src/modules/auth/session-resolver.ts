@@ -134,6 +134,10 @@ export async function resolveSession(
 
     // 1. Extract the raw cookie VALUE by the brand's effective cookie name.
     const cookieName = resolveEffectiveSessionCookieName(brand);
+    if (!cookieName) {
+        logger.error({ slug }, '[auth] brand missing sessionCookieName');
+        return { status: 'misconfigured', reason: 'missing sessionCookieName' };
+    }
     const cookieValue = extractCookieValue(cookieHeader, cookieName);
     if (cookieValue === null) return { status: 'unauthenticated' };
 
@@ -146,7 +150,7 @@ export async function resolveSession(
     }
 
     // 3. Build the forwarded Cookie header. MUST precede the breaker check.
-    const forwardedCookie = buildCookieHeader(target.sessionCookieName, cookieValue);
+    const forwardedCookie = buildCookieHeader(target.sessionCookieName ?? cookieName, cookieValue);
     if (forwardedCookie === null) return { status: 'unauthenticated' };
 
     // 4. Redis cache — full serialized BrandUser, only ever written on success.

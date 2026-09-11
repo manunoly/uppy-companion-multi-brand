@@ -281,7 +281,10 @@ export const serveUppyPage = async (
     // Folders fetch happens only when we are about to render — saves a
     // round-trip when the request would have redirected. The raw session
     // cookie value (not req.user) is what gets forwarded to foldersUrl.
-    const cookieToken = (req.cookies as Record<string, string> | undefined)?.[brand.auth.sessionCookieName] ?? '';
+    const sessionCookieName = brand.auth.sessionCookieName;
+    const cookieToken = sessionCookieName
+        ? ((req.cookies as Record<string, string> | undefined)?.[sessionCookieName] ?? '')
+        : '';
     const folders = await fetchFolders(cookieToken, brand);
 
     try {

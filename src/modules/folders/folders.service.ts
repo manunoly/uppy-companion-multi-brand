@@ -45,7 +45,7 @@ export const fetchFolders = async (
     // interpolation. A delimiter/control-character-bearing token (`;`,
     // CR/LF, ...) returns null here rather than silently producing a
     // malformed/injectable header.
-    const cookie = buildCookieHeader(brand.auth.sessionCookieName, token);
+    const cookie = buildCookieHeader(brand.auth.sessionCookieName ?? '', token);
     if (!cookie) {
         // A present-but-rejected token (delimiter/control char) is anomalous — a
         // well-formed session cookie never contains those — so surface it at

@@ -30,14 +30,28 @@ const authSharedFields = {
     signOutUrl: z.string().optional(),
     whoamiUrl: z.string(),
     whoamiAllowedHosts: z.array(z.string()),
-    sessionCookieName: z.string().min(1),
     responseMapping: brandResponseMappingSchema,
     requireVerifiedEmail: z.boolean().optional(),
 };
 
 export const brandAuthConfigSchema = z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('capsule'), ...authSharedFields }).strict(),
-    z.object({ kind: z.literal('partner-whoami'), ...authSharedFields }).strict(),
+    z
+        .object({
+            kind: z.literal('capsule'),
+            ...authSharedFields,
+            // Derived from authIssuer's protocol, never configured.
+            sessionCookieName: z.string().min(1).optional(),
+            authIssuer: z.string(),
+            authAllowedHosts: z.array(z.string()),
+        })
+        .strict(),
+    z
+        .object({
+            kind: z.literal('partner-whoami'),
+            ...authSharedFields,
+            sessionCookieName: z.string().min(1),
+        })
+        .strict(),
 ]);
 
 export const edoUploadPluginSchema = z.enum(['Facebook', 'Dropbox', 'GooglePhotosPicker', 'GoogleDrivePicker', 'Url']);
