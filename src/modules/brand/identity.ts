@@ -94,8 +94,9 @@ export function readBrandOverride(slug: BrandSlug): Record<string, unknown> | nu
 /**
  * Effective auth = registry auth + `<SLUG>_BRAND_OVERRIDE.auth` (nested JSON).
  * Only string fields already present on the base auth object may be
- * overridden (`whoamiUrl`, `signInUrl`, `signOutUrl`, `sessionCookieName`) —
- * `kind`/`whoamiAllowedHosts` are protected, `responseMapping` is an object
+ * overridden (`whoamiUrl`, `signInUrl`, `signOutUrl`, `sessionCookieName`,
+ * `authIssuer`) — `kind`/`whoamiAllowedHosts`/`authAllowedHosts` are
+ * protected, `responseMapping` is an object
  * (deferred/unsupported), and unknown keys are dropped. Every rejection is
  * logged (`{slug, field}` only — never the attempted value) per the
  * Companion's SA3/D3 divergence from abeduls3 (which does not log).

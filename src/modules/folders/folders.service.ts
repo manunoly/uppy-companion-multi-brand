@@ -39,13 +39,22 @@ export const fetchFolders = async (
         return [];
     }
 
+    // A capsule brand has no single session cookie to forward — it authenticates with the
+    // Better Auth pair, which this endpoint was never wired for. Say so instead of falling
+    // through to buildCookieHeader('', ...) and returning [] by coincidence.
+    const sessionCookieName = brand.auth.sessionCookieName;
+    if (!sessionCookieName) {
+        logger.debug({ brand: brand.slug }, '[folders] brand has no session cookie name — folders not fetched');
+        return [];
+    }
+
     // Hallazgo BAJO-1: build the outgoing Cookie header through
     // buildCookieHeader (identity.ts) — the single auditable point where a
     // brand cookie is forwarded — instead of raw template-string
     // interpolation. A delimiter/control-character-bearing token (`;`,
     // CR/LF, ...) returns null here rather than silently producing a
     // malformed/injectable header.
-    const cookie = buildCookieHeader(brand.auth.sessionCookieName ?? '', token);
+    const cookie = buildCookieHeader(sessionCookieName, token);
     if (!cookie) {
         // A present-but-rejected token (delimiter/control char) is anomalous — a
         // well-formed session cookie never contains those — so surface it at

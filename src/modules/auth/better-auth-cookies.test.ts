@@ -64,11 +64,34 @@ describe('buildBetterAuthPair', () => {
         );
     });
 
-    it('returns null when any value carries a header delimiter', () => {
+    it('an empty cache cookie is a deletion marker — the fresh chunks win', () => {
+        const entries = parseCookieEntries(
+            `${names.sessionToken}=tok.sig; ${names.sessionData}=; ${names.sessionData}.0=a; ${names.sessionData}.1=b`,
+        );
+        expect(buildBetterAuthPair(entries, names)).toBe(
+            `${names.sessionToken}=tok.sig; ${names.sessionData}.0=a; ${names.sessionData}.1=b`,
+        );
+    });
+
+    it('an unusable cache cookie drops the CACHE, never the credential', () => {
         const entries: [string, string][] = [
             [names.sessionToken, 'tok.sig'],
             [names.sessionData, 'jwt;injected=1'],
         ];
+        expect(buildBetterAuthPair(entries, names)).toBe(`${names.sessionToken}=tok.sig`);
+    });
+
+    it('one unusable chunk drops every chunk — a partial reassembly is garbage upstream', () => {
+        const entries: [string, string][] = [
+            [names.sessionToken, 'tok.sig'],
+            [`${names.sessionData}.0`, 'a'],
+            [`${names.sessionData}.1`, 'b;injected=1'],
+        ];
+        expect(buildBetterAuthPair(entries, names)).toBe(`${names.sessionToken}=tok.sig`);
+    });
+
+    it('returns null when the CREDENTIAL itself carries a header delimiter', () => {
+        const entries: [string, string][] = [[names.sessionToken, 'tok.sig;injected=1']];
         expect(buildBetterAuthPair(entries, names)).toBeNull();
     });
 });

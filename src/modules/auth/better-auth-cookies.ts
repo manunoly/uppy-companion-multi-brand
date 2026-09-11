@@ -27,29 +27,42 @@ export function buildBetterAuthPair(
     const token = entries.find(([name]) => name === names.sessionToken)?.[1];
     if (token === undefined) return null;
 
-    const pairs: string[] = [];
-    const push = (name: string, value: string): boolean => {
-        const pair = buildCookieHeader(name, value);
-        if (pair === null) return false;
-        pairs.push(pair);
-        return true;
-    };
-    if (!push(names.sessionToken, token)) return null;
+    const credential = buildCookieHeader(names.sessionToken, token);
+    if (credential === null) return null;
 
+    const cache = buildSessionDataPairs(entries, names);
+    return cache === null ? credential : [credential, ...cache].join('; ');
+}
+
+// Best-effort by contract: session_data's absence is a cache miss, never an authentication
+// failure, so an unusable cache cookie must not suppress the credential alongside it.
+function buildSessionDataPairs(
+    entries: readonly [string, string][],
+    names: BetterAuthCookieNames,
+): string[] | null {
+    // An empty plain value is Better Auth's deletion marker, issued in the same response as
+    // fresh chunks — reading it as the value would mask them.
     const plain = entries.find(([name]) => name === names.sessionData)?.[1];
-    if (plain !== undefined) {
-        if (!push(names.sessionData, plain)) return null;
-    } else {
-        const prefix = `${names.sessionData}.`;
-        const chunks = entries
-            .filter(([name]) => name.startsWith(prefix))
-            .map(([name, value]) => ({ name, value, index: Number.parseInt(name.slice(prefix.length), 10) }))
-            .filter((chunk) => !Number.isNaN(chunk.index));
-        for (const chunk of [...chunks].sort((a, b) => a.index - b.index)) {
-            if (!push(chunk.name, chunk.value)) return null;
-        }
+    if (plain) {
+        const pair = buildCookieHeader(names.sessionData, plain);
+        return pair === null ? null : [pair];
     }
-    return pairs.join('; ');
+
+    const prefix = `${names.sessionData}.`;
+    const chunks = entries
+        .filter(([name]) => name.startsWith(prefix))
+        .map(([name, value]) => ({ name, value, index: Number.parseInt(name.slice(prefix.length), 10) }))
+        .filter((chunk) => !Number.isNaN(chunk.index))
+        .sort((a, b) => a.index - b.index);
+
+    const pairs: string[] = [];
+    for (const chunk of chunks) {
+        const pair = buildCookieHeader(chunk.name, chunk.value);
+        // One bad chunk makes the reassembly garbage upstream — drop the whole cache cookie.
+        if (pair === null) return null;
+        pairs.push(pair);
+    }
+    return pairs.length === 0 ? null : pairs;
 }
 
 // Forwarded instead of the pair on credential-mismatch: capsule never checks the pair, so

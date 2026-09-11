@@ -29,6 +29,7 @@ vi.mock('./abe-session-verifier.js', () => ({
 }));
 
 const { getRedis, closeRedis } = await import('../../lib/redis.js');
+const { getAbeSessionVerifier } = await import('./abe-session-verifier.js');
 const breaker = await import('./whoami-breaker.js');
 const { resolveSession } = await import('./session-resolver.js');
 
@@ -314,15 +315,23 @@ describe('resolveSession (src/modules/auth/session-resolver.ts)', () => {
 void closeRedis;
 
 describe('resolveSession — abe (kind: capsule)', () => {
+    // Mirrors registry.ts's abe entry, requireVerifiedEmail included — without it every
+    // fallback case below would exercise a configuration production never runs.
     const abeAuth = {
         kind: 'capsule',
         whoamiUrl: 'https://api.test.example.com/auth/me',
         whoamiAllowedHosts: ['test.example.com'],
         authIssuer: 'https://auth.test.example.com',
         authAllowedHosts: ['test.example.com'],
+        requireVerifiedEmail: true,
     } as const;
     const abe = makeBrand({ slug: 'abe', auth: { ...abeAuth } });
     const token = '__Secure-better-auth.session_token=tok.sig';
+    const whoamiOk = () =>
+        new Response(
+            JSON.stringify({ id: 'u1', email: 'a@b.test', displayName: 'A', imageUrl: null, emailVerified: true }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+        );
 
     beforeEach(async () => {
         await getRedis().flushall();
@@ -331,6 +340,7 @@ describe('resolveSession — abe (kind: capsule)', () => {
         vi.mocked(breaker.recordFailure).mockReset();
         vi.stubGlobal('fetch', vi.fn());
         abeVerify.mockReset();
+        vi.mocked(getAbeSessionVerifier).mockClear();
     });
 
     afterEach(() => {
@@ -360,22 +370,27 @@ describe('resolveSession — abe (kind: capsule)', () => {
 
     it('requireVerifiedEmail rejects a locally valid session with an unverified email', async () => {
         abeVerify.mockResolvedValue({ status: 'valid', user: makeUser({ id: 'u1' }), emailVerified: false });
-        const gated = makeBrand({ slug: 'abe', auth: { ...abeAuth, requireVerifiedEmail: true } });
 
-        const result = await resolveSession(gated, token);
+        const result = await resolveSession(abe, token);
 
         expect(result.status).toBe('unauthenticated');
         expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
+    it('the local verifier is looked up with THIS brand, and a null one still reaches the whoami', async () => {
+        vi.mocked(getAbeSessionVerifier).mockReturnValueOnce(null);
+        vi.mocked(globalThis.fetch).mockResolvedValue(whoamiOk());
+
+        const result = await resolveSession(abe, token);
+
+        expect(getAbeSessionVerifier).toHaveBeenCalledWith(abe);
+        expect(abeVerify).not.toHaveBeenCalled();
+        expect(result.status).toBe('authenticated');
+    });
+
     it('unavailable falls through to the whoami and NEVER touches the breaker for the local failure', async () => {
         abeVerify.mockResolvedValue({ status: 'miss', cause: 'unavailable' });
-        vi.mocked(globalThis.fetch).mockResolvedValue(
-            new Response(JSON.stringify({ id: 'u1', email: 'a@b.test', displayName: 'A', imageUrl: null }), {
-                status: 200,
-                headers: { 'content-type': 'application/json' },
-            }),
-        );
+        vi.mocked(globalThis.fetch).mockResolvedValue(whoamiOk());
 
         const result = await resolveSession(abe, token);
 
@@ -384,14 +399,40 @@ describe('resolveSession — abe (kind: capsule)', () => {
         expect(breaker.recordFailure).not.toHaveBeenCalled();
     });
 
-    it('poisoned falls through to the whoami and forwards BOTH cookies', async () => {
-        abeVerify.mockResolvedValue({ status: 'miss', cause: 'poisoned' });
+    it('the whoami fallback still honours requireVerifiedEmail', async () => {
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'unavailable' });
         vi.mocked(globalThis.fetch).mockResolvedValue(
             new Response(JSON.stringify({ id: 'u1', email: 'a@b.test', displayName: 'A', imageUrl: null }), {
                 status: 200,
                 headers: { 'content-type': 'application/json' },
             }),
         );
+
+        expect((await resolveSession(abe, token)).status).toBe('unauthenticated');
+    });
+
+    it('a chunked cache cookie alongside its deletion marker still forwards the credential', async () => {
+        // The jar Better Auth actually issues when session_data outgrows ~4050 bytes: an expired
+        // plain cookie plus fresh .0/.1 chunks. A JWKS outage must degrade to the whoami here,
+        // not 401 every chunked user.
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'unavailable' });
+        vi.mocked(globalThis.fetch).mockResolvedValue(whoamiOk());
+
+        const result = await resolveSession(
+            abe,
+            `${token}; __Secure-better-auth.session_data=; __Secure-better-auth.session_data.0=aaa; __Secure-better-auth.session_data.1=bbb`,
+        );
+
+        expect(result.status).toBe('authenticated');
+        const forwarded = vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers as Record<string, string>;
+        expect(forwarded.Cookie).toContain('__Secure-better-auth.session_token=tok.sig');
+        expect(forwarded.Cookie).toContain('__Secure-better-auth.session_data.0=aaa');
+        expect(forwarded.Cookie).toContain('__Secure-better-auth.session_data.1=bbb');
+    });
+
+    it('poisoned falls through to the whoami and forwards BOTH cookies', async () => {
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'poisoned' });
+        vi.mocked(globalThis.fetch).mockResolvedValue(whoamiOk());
 
         await resolveSession(abe, `${token}; __Secure-better-auth.session_data=jwt`);
 
