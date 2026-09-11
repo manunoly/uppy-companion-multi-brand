@@ -17,6 +17,7 @@ export default defineConfig({
                 '**/*.types.ts',
                 '**/*.test.ts',
                 'src/test-utils/**',
+                'src/vendor/**',
                 'dist/**',
                 'node_modules/**',
                 'scripts/**',

@@ -6,7 +6,7 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"includes": ["**", "!!dist", "!!coverage", "!!docs/legacy"]
+		"includes": ["**", "!!dist", "!!coverage", "!!docs/legacy", "!!src/vendor"]
 	},
 	"formatter": {
 		"enabled": true,
