@@ -1,7 +1,33 @@
 import type { Brand } from '../brand/brand.types.js';
-import { buildCookieHeader, validateWhoamiUrl } from '../brand/identity.js';
+import {
+    buildCookieHeader,
+    resolveEffectiveSessionCookieName,
+    resolveValidatedAuthOrigin,
+    validateWhoamiUrl,
+} from '../brand/identity.js';
+import { abeCookieNameCandidates } from '../auth/abe-cookie-names.js';
+import { buildBetterAuthPair, parseCookieEntries } from '../auth/better-auth-cookies.js';
 import type { Folder, FoldersResponse } from './folders.types.js';
 import { logger } from '../../lib/logger.js';
+
+// Same forward shape resolveSession builds: a capsule brand authenticates with the Better Auth
+// pair, a partner brand with its one named cookie.
+function buildForwardedCookie(brand: Brand, cookieHeader: string): string | null {
+    const entries = parseCookieEntries(cookieHeader);
+
+    if (brand.auth.kind === 'capsule') {
+        const origin = resolveValidatedAuthOrigin(brand);
+        const forwards = abeCookieNameCandidates(origin.ok ? origin.issuer : '')
+            .map((names) => buildBetterAuthPair(entries, names))
+            .filter((pair): pair is string => pair !== null);
+        return forwards.length > 0 ? forwards.join('; ') : null;
+    }
+
+    const name = resolveEffectiveSessionCookieName(brand);
+    if (!name) return null;
+    const value = entries.find(([entry]) => entry === name)?.[1];
+    return value === undefined ? null : buildCookieHeader(name, value);
+}
 
 /**
  * Fetches user folders from the brand's folders endpoint (SA3: conserved —
@@ -15,12 +41,12 @@ import { logger } from '../../lib/logger.js';
  * unlike the legacy contract, there is no `public.backendUrl` to resolve a
  * relative path against anymore.
  *
- * @param token - Raw session cookie value forwarded as `Cookie:` to foldersUrl.
+ * @param cookieHeader - The browser's raw `Cookie:` header; the forwarded one is rebuilt from it.
  * @param brand - Resolved brand configuration.
  * @returns Array of folders or empty array on failure/misconfiguration.
  */
 export const fetchFolders = async (
-    token: string,
+    cookieHeader: string | undefined,
     brand: Brand
 ): Promise<Folder[]> => {
     const foldersUrl = brand.public?.foldersUrl;
@@ -39,28 +65,19 @@ export const fetchFolders = async (
         return [];
     }
 
-    // A capsule brand has no single session cookie to forward — it authenticates with the
-    // Better Auth pair, which this endpoint was never wired for. Say so instead of falling
-    // through to buildCookieHeader('', ...) and returning [] by coincidence.
-    const sessionCookieName = brand.auth.sessionCookieName;
-    if (!sessionCookieName) {
-        logger.debug({ brand: brand.slug }, '[folders] brand has no session cookie name — folders not fetched');
-        return [];
-    }
-
     // Hallazgo BAJO-1: build the outgoing Cookie header through
     // buildCookieHeader (identity.ts) — the single auditable point where a
     // brand cookie is forwarded — instead of raw template-string
     // interpolation. A delimiter/control-character-bearing token (`;`,
     // CR/LF, ...) returns null here rather than silently producing a
     // malformed/injectable header.
-    const cookie = buildCookieHeader(sessionCookieName, token);
+    const cookie = buildForwardedCookie(brand, cookieHeader ?? '');
     if (!cookie) {
         // A present-but-rejected token (delimiter/control char) is anomalous — a
         // well-formed session cookie never contains those — so surface it at
         // debug for diagnosability, without logging the ordinary "no token" case.
-        if (token) {
-            logger.debug({ brand: brand.slug }, '[folders] Session cookie token rejected by buildCookieHeader');
+        if (cookieHeader) {
+            logger.debug({ brand: brand.slug }, '[folders] no forwardable session cookie in the request');
         }
         return [];
     }
