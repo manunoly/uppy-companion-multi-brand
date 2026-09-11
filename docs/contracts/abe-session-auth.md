@@ -402,21 +402,27 @@ would not fix. Close it against staging alongside §7 item 9.
 
 ## 7. Implementation checklist
 
-1. Confirm section 6 against production. Record the answer in this file.
-2. Add the brand's `authIssuer` to the registry entry — one value, code-gated by an allowlist, not
-   in the global env schema.
-3. Write the cookie-name derivation in exactly one function. `rg "better-auth\.session"` must then
-   return only that function.
-4. Vendor `auth-verify` into `src/vendor/auth-verify/`, byte-identical, with a sibling
-   `VENDORED.md`, and add `jose` to `dependencies`.
-5. Wire step 4b into `resolveSession`, `abe` only. `unavailable` must not touch the breaker.
-6. Port chunk-aware cookie parsing for `session_data` (5.2).
-7. Tests, mirroring abeduls3's: one per state in section 2, plus a chunked-cookie case, plus the
-   3.1 bypass attempt (valid `session_data` + foreign `session_token` must yield
-   `credential-mismatch`, never `authenticated`).
-8. Record the revocation window (3.3) wherever this repo keeps operational numbers.
-9. **Verify from the logs, not the code**: two uploads inside the window must produce **zero** abe
-   whoami requests; one past the window exactly one. A code review cannot establish this.
+1. ~~Confirm section 6 against production.~~ **Partially done (Task 1)** — recorded in section 6 as
+   source-level evidence. The live one-request check is still open; it rides with item 9.
+2. ~~Add the brand's `authIssuer` to the registry entry.~~ **Done (Task 5)** — `authIssuer` +
+   code-only `authAllowedHosts`, gated by `resolveValidatedAuthOrigin`.
+3. ~~Write the cookie-name derivation in exactly one function.~~ **Done (Task 3)** —
+   `src/modules/auth/abe-cookie-names.ts`; `grep -rn "better-auth.session" src/` returns only that
+   file and its test.
+4. ~~Vendor `auth-verify`.~~ **Done (Task 6)** — `src/vendor/auth-verify/`, byte-identical, with
+   `VENDORED.md`, a `MANIFEST.sha256` enforced by a test, and `jose` in `dependencies`.
+5. ~~Wire step 4b into `resolveSession`.~~ **Done (Task 7)** — `capsule` branch only; `unavailable`
+   logs and falls through without touching the breaker.
+6. ~~Port chunk-aware cookie parsing for `session_data`.~~ **Done (Task 4)** —
+   `src/modules/auth/better-auth-cookies.ts`.
+7. ~~Tests.~~ **Done (Tasks 4, 6, 7)** — one case per state in section 2, numeric-order chunk
+   reassembly, and the 3.1 bypass attempt against the real vendored verifier
+   (`abe-session-verifier.test.ts` → "rejects the same JWT presented with a foreign credential").
+8. ~~Record the revocation window (3.3).~~ **Done (Task 8)** — see 3.3; `CACHE_TTL_SECONDS` is
+   still 45, so the sum stands at ~5 min 45 s.
+9. **OPEN — verify from the logs, not the code**: two uploads inside the window must produce
+   **zero** abe whoami requests; one past the window exactly one. A code review cannot establish
+   this, and neither can a test run. Close it against staging together with section 6's live check.
 
 ### Known consequence of verifying locally
 
