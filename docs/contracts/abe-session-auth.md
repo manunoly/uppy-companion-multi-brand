@@ -111,7 +111,7 @@ type SessionCookieResult =
 | `expired` | Past `exp` or `session.expiresAt` | Ask the origin — the session may still be live |
 | `poisoned` | Bad signature, wrong `typ`/`aud`/`iss`, unparseable | **Stop trusting this copy, but ask the origin.** It says nothing about the credential beside it |
 | `credential-mismatch` | Verified but not bound to the presented credential | Ask the origin, **with the cookie cache bypassed** |
-| `unavailable` | JWKS unreachable, import failed, timeout | **Fail soft** for this request only. Degrade to anonymous, never delete a cookie |
+| `unavailable` | JWKS unreachable, import failed, timeout | **Fail soft.** Ask the origin — the whoami *is* the authoritative layer here. Never delete a cookie, and never record the local failure against the breaker |
 
 Read the table again for the two rows that look like they should behave the same and do not:
 `poisoned` and `unavailable`.
@@ -127,8 +127,10 @@ session_token present -> verify session_data locally (public key from JWKS, no n
     expired | absent | poisoned -> whoami fallback. Only its answer may reject.
     credential-mismatch         -> whoami fallback with the cache bypassed, forwarding the
                                    credential ALONE (see 3.5).
-    unavailable (JWKS down)     -> FAIL SOFT: unauthenticated for THIS REQUEST ONLY.
-                                   Never delete a cookie, never open the breaker.
+    unavailable (JWKS down)     -> FAIL SOFT: whoami fallback, exactly like a cache miss.
+                                   Only if the whoami is ALSO unreachable does the request
+                                   resolve `unavailable`. Never delete a cookie, and never
+                                   record the local failure against the breaker.
 ```
 
 ---
@@ -295,21 +297,39 @@ design. The snippet above is illustrative, not a licence for module-level `proce
 ### 5.1 Where the code goes
 
 `src/modules/auth/session-resolver.ts` already documents its step order as a security property. The
-local verify is a **new step for `abe` only**, between the breaker check and the Redis read:
+local verify is a **new step for `abe` only**, and it runs *before* both the Redis read and the
+breaker:
 
 ```
-1.  Extract the cookie value by the brand's effective cookie name   <- abe: now the DERIVED names
-2.  SSRF gate (resolveValidatedWhoamiTarget)                           unchanged
+1.  Credential presence, per brand kind      <- abe: the DERIVED names; partner: unchanged
+        none present -> unauthenticated         MUST stay above the SSRF gate
+2.  SSRF gate (resolveValidatedWhoamiTarget)                           unchanged position
 3.  buildCookieHeader — a malformed value is a CLIENT error            unchanged (see 5.3)
-4.  Circuit breaker fail-fast                                          unchanged
-4b. [NEW, abe only] verifyAbeSession(headers)
+3b. [NEW, abe only] verify locally — only when ONE namespace matched
         valid                   -> return authenticated — no Redis, no fetch, no breaker
         unavailable             -> log warn, fall through. Do NOT touch the breaker
         credential-mismatch     -> fall through, forwarding the CREDENTIAL ALONE
         absent|expired|poisoned -> fall through to the normal path
-5.  Redis cache read (45 s)                                            unchanged
+4.  Redis cache read (45 s)
+5.  Circuit breaker fail-fast
 6-9. whoami fetch, status interpretation, body cap, normalize, gate    unchanged
 ```
+
+**Two orderings here are load-bearing, and both differ from an earlier draft of this document.**
+
+Step 1 stays above step 2. Today the resolver extracts the credential first and answers
+`unauthenticated` when it is absent, so an anonymous request never reaches the SSRF gate. Hoisting
+the gate would make an anonymous request against a brand with a broken `whoamiUrl` answer
+`misconfigured`, which `requireAuth` maps to **403** instead of 401 — and `picaboo` ships
+`whoamiUrl: ''` by design.
+
+Step 4 precedes step 5. A cached identity must resolve even while the breaker is open; that is the
+whole point of caching. Verifying locally before either means a valid session is answered while the
+breaker is open too — exactly when local verification is worth the most.
+
+**When both cookie namespaces are present** (prefixed and unprefixed, i.e. two different origins'
+jars in one request), local verification is skipped entirely and the whoami decides. Which
+credential the JWT belongs to is ambiguous, and guessing is how you authenticate the wrong one.
 
 Keep the cache key hashed off the **`session_token` value** (the credential), not off `session_data`
 — a data cookie that rotates every 300 s would otherwise dilute the cache to nothing.
@@ -407,8 +427,9 @@ would not fix. Close it against staging alongside §7 item 9.
 2. ~~Add the brand's `authIssuer` to the registry entry.~~ **Done (Task 5)** — `authIssuer` +
    code-only `authAllowedHosts`, gated by `resolveValidatedAuthOrigin`.
 3. ~~Write the cookie-name derivation in exactly one function.~~ **Done (Task 3)** —
-   `src/modules/auth/abe-cookie-names.ts`; `grep -rn "better-auth.session" src/` returns only that
-   file and its test.
+   `src/modules/auth/abe-cookie-names.ts`. `grep -rn "better-auth.session" src/` also matches the
+   vendored reader and three test files that simulate a cookie jar; no other production module
+   names the cookies.
 4. ~~Vendor `auth-verify`.~~ **Done (Task 6)** — `src/vendor/auth-verify/`, byte-identical, with
    `VENDORED.md`, a `MANIFEST.sha256` enforced by a test, and `jose` in `dependencies`.
 5. ~~Wire step 4b into `resolveSession`.~~ **Done (Task 7)** — `capsule` branch only; `unavailable`

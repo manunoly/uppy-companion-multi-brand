@@ -35,7 +35,9 @@ export type BrandAuthConfig =
           readonly signOutUrl?: string;
           readonly whoamiUrl: string;
           readonly whoamiAllowedHosts: readonly string[];
-          // Absent by design: the names are derived from authIssuer's protocol, never configured.
+          // Never set it on a capsule brand: the names are derived from authIssuer's protocol, and
+          // resolveSession ignores this field entirely. It stays only so the partner-only readers
+          // (folders, uppy page, admin dump) compile without narrowing on `kind`.
           readonly sessionCookieName?: string;
           readonly authIssuer: string;
           readonly authAllowedHosts: readonly string[];

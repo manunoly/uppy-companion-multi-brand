@@ -242,6 +242,18 @@ describe('resolveValidatedAuthOrigin', () => {
         expect(result.ok).toBe(false);
     });
 
+    it("the registry's own dev issuer passes the registry's own allowlist", () => {
+        // The override .env.example prescribes points at auth.abeduls.local. When that host is not
+        // in authAllowedHosts the verifier is never created and local verification silently never
+        // runs — the only symptom is one warn at boot.
+        const abe = getBaseBrandConfig('abe');
+        if (abe.auth.kind !== 'capsule') throw new Error('abe must be a capsule brand');
+
+        expect(resolveValidatedAuthOrigin(abe).ok).toBe(true);
+        const dev: CompanionBrandConfig = { ...abe, auth: { ...abe.auth, authIssuer: 'https://auth.abeduls.local' } };
+        expect(resolveValidatedAuthOrigin(dev)).toEqual({ ok: true, issuer: 'https://auth.abeduls.local' });
+    });
+
     it('rejects an issuer whose host is outside authAllowedHosts', () => {
         const evil = makeBrand({
             slug: 'abe',

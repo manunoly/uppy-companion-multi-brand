@@ -26,6 +26,18 @@ export type SessionResolution =
 
 const CACHE_TTL_SECONDS = 45;
 const CACHE_NAMESPACE = 'companion-whoami'; // own namespace — does NOT collide with node-socket's `socket-whoami:`
+const VERIFY_MISS_WARN_INTERVAL_MS = 60_000;
+
+// Per slug+cause floor: a silent per-request local miss is how a misconfigured issuer hides as a
+// slow whoami. Keyed by cause so one noisy brand cannot mute another.
+const lastMissWarnAt = new Map<string, number>();
+function warnMissThrottled(slug: string, cause: string, message: string): void {
+    const key = `${slug}:${cause}`;
+    const now = Date.now();
+    if (now - (lastMissWarnAt.get(key) ?? 0) < VERIFY_MISS_WARN_INTERVAL_MS) return;
+    lastMissWarnAt.set(key, now);
+    logger.warn({ slug, cause }, message);
+}
 
 function cacheKeyFor(slug: string, cookieValue: string): string {
     const hash = createHash('sha256').update(cookieValue).digest('hex');
@@ -186,10 +198,22 @@ export async function resolveSession(
                     }
                     return { status: 'authenticated', user: verified.user };
                 }
+                logger.debug({ slug, cause: verified.cause }, '[auth] abe local verification miss');
                 if (verified.cause === 'unavailable') {
                     logger.warn({ slug }, '[auth] abe local verification unavailable (JWKS unreachable)');
                 } else if (verified.cause === 'credential-mismatch') {
                     credentialOnly = true;
+                    warnMissThrottled(
+                        slug,
+                        verified.cause,
+                        '[auth] abe session_data does not belong to the presented credential — forwarding the credential alone',
+                    );
+                } else if (verified.cause === 'poisoned') {
+                    warnMissThrottled(
+                        slug,
+                        verified.cause,
+                        '[auth] abe local verification rejected the token — check authIssuer matches auth-service BETTER_AUTH_URL byte for byte',
+                    );
                 }
             }
         }

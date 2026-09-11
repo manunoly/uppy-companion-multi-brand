@@ -74,7 +74,9 @@ describe('registry: abe (servable, P1-C1)', () => {
         expect(abe.auth.kind).toBe('capsule');
         if (abe.auth.kind !== 'capsule') throw new Error('unreachable');
         expect(abe.auth.authIssuer).toBe('https://auth.abeduls.com');
-        expect(abe.auth.authAllowedHosts).toEqual(['abeduls.com']);
+        // .local is deliberate: the issuer is per-environment, and without it the dev override
+        // .env.example prescribes is rejected and local verification never runs.
+        expect(abe.auth.authAllowedHosts).toEqual(['abeduls.com', 'abeduls.local']);
     });
 
     it('has the www.abeduls.com SSRF allowlist', () => {
