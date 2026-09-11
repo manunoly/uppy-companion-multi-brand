@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeValidEnv } from '../../test-utils/env-fixtures.js';
-import { makeBrand } from '../../test-utils/fixtures.js';
+import { makeBrand, makeUser } from '../../test-utils/fixtures.js';
 
 // Cache layer (step 5) is real Redis logic under test — swap in ioredis-mock.
 vi.mock('ioredis', async () => {
@@ -21,6 +21,11 @@ vi.mock('./whoami-breaker.js', () => ({
     recordSuccess: vi.fn(),
     recordFailure: vi.fn(),
     tryHalfOpen: vi.fn(),
+}));
+
+const abeVerify = vi.fn();
+vi.mock('./abe-session-verifier.js', () => ({
+    getAbeSessionVerifier: vi.fn(() => ({ verify: (...args: unknown[]) => abeVerify(...args) })),
 }));
 
 const { getRedis, closeRedis } = await import('../../lib/redis.js');
@@ -307,3 +312,123 @@ describe('resolveSession (src/modules/auth/session-resolver.ts)', () => {
 // closeRedis is exercised by every other file's own suite (redis.test.ts); no
 // afterAll teardown needed here beyond letting Vitest tear down the process.
 void closeRedis;
+
+describe('resolveSession — abe (kind: capsule)', () => {
+    const abeAuth = {
+        kind: 'capsule',
+        whoamiUrl: 'https://api.test.example.com/auth/me',
+        whoamiAllowedHosts: ['test.example.com'],
+        authIssuer: 'https://auth.test.example.com',
+        authAllowedHosts: ['test.example.com'],
+    } as const;
+    const abe = makeBrand({ slug: 'abe', auth: { ...abeAuth } });
+    const token = '__Secure-better-auth.session_token=tok.sig';
+
+    beforeEach(async () => {
+        await getRedis().flushall();
+        vi.mocked(breaker.isOpen).mockReset().mockResolvedValue(false);
+        vi.mocked(breaker.recordSuccess).mockReset();
+        vi.mocked(breaker.recordFailure).mockReset();
+        vi.stubGlobal('fetch', vi.fn());
+        abeVerify.mockReset();
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('no Better Auth credential at all -> unauthenticated, nothing else runs', async () => {
+        const result = await resolveSession(abe, 'unrelated=1');
+
+        expect(result.status).toBe('unauthenticated');
+        expect(abeVerify).not.toHaveBeenCalled();
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('a locally valid session resolves with NO fetch, NO cache and NO breaker', async () => {
+        // The shape Task 6 actually returns — a complete BrandUser, not a bare id. Asserting only
+        // on `status` here would let `user: undefined` through green.
+        const user = makeUser({ id: 'u1' });
+        abeVerify.mockResolvedValue({ status: 'valid', user, emailVerified: true });
+
+        const result = await resolveSession(abe, token);
+
+        expect(result).toEqual({ status: 'authenticated', user });
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        expect(breaker.isOpen).not.toHaveBeenCalled();
+    });
+
+    it('requireVerifiedEmail rejects a locally valid session with an unverified email', async () => {
+        abeVerify.mockResolvedValue({ status: 'valid', user: makeUser({ id: 'u1' }), emailVerified: false });
+        const gated = makeBrand({ slug: 'abe', auth: { ...abeAuth, requireVerifiedEmail: true } });
+
+        const result = await resolveSession(gated, token);
+
+        expect(result.status).toBe('unauthenticated');
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('unavailable falls through to the whoami and NEVER touches the breaker for the local failure', async () => {
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'unavailable' });
+        vi.mocked(globalThis.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ id: 'u1', email: 'a@b.test', displayName: 'A', imageUrl: null }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+
+        const result = await resolveSession(abe, token);
+
+        expect(result.status).toBe('authenticated');
+        expect(globalThis.fetch).toHaveBeenCalled();
+        expect(breaker.recordFailure).not.toHaveBeenCalled();
+    });
+
+    it('poisoned falls through to the whoami and forwards BOTH cookies', async () => {
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'poisoned' });
+        vi.mocked(globalThis.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ id: 'u1', email: 'a@b.test', displayName: 'A', imageUrl: null }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+
+        await resolveSession(abe, `${token}; __Secure-better-auth.session_data=jwt`);
+
+        const forwarded = vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers as Record<string, string>;
+        expect(forwarded.Cookie).toContain('__Secure-better-auth.session_token=tok.sig');
+        expect(forwarded.Cookie).toContain('__Secure-better-auth.session_data=jwt');
+    });
+
+    it('credential-mismatch forwards the CREDENTIAL ALONE — never the distrusted cache', async () => {
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'credential-mismatch' });
+        vi.mocked(globalThis.fetch).mockResolvedValue(new Response('', { status: 401 }));
+
+        await resolveSession(abe, `${token}; __Secure-better-auth.session_data=jwt`);
+
+        const forwarded = vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers as Record<string, string>;
+        expect(forwarded.Cookie).toContain('__Secure-better-auth.session_token=tok.sig');
+        expect(forwarded.Cookie).not.toContain('session_data');
+    });
+
+    it('an anonymous request against a MISCONFIGURED brand is 401-shaped, not 403-shaped', async () => {
+        // Pins the ordering property: credential presence is checked before the SSRF gate, so a
+        // request with no cookie answers `unauthenticated`, never `misconfigured`. picaboo ships
+        // whoamiUrl: '' by design, so this is its normal anonymous path.
+        const broken = makeBrand({ slug: 'abe', auth: { ...abeAuth, whoamiUrl: '' } });
+
+        expect((await resolveSession(broken, 'unrelated=1')).status).toBe('unauthenticated');
+        expect((await resolveSession(makeBrand({ slug: 'edo', auth: { whoamiUrl: '' } }), 'nothing=1')).status).toBe(
+            'unauthenticated',
+        );
+    });
+
+    it('both cookie namespaces present -> the whoami decides, no local verify', async () => {
+        vi.mocked(globalThis.fetch).mockResolvedValue(new Response('', { status: 401 }));
+
+        await resolveSession(abe, `${token}; better-auth.session_token=other.sig`);
+
+        expect(abeVerify).not.toHaveBeenCalled();
+        expect(globalThis.fetch).toHaveBeenCalled();
+    });
+});

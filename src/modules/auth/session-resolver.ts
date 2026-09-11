@@ -5,6 +5,7 @@ import {
     normalizeBrandUser,
     resolveEffectiveAuth,
     resolveEffectiveSessionCookieName,
+    resolveValidatedAuthOrigin,
     resolveValidatedWhoamiTarget,
     WHOAMI_MAX_BODY_BYTES,
     WHOAMI_TIMEOUT_MS,
@@ -13,6 +14,9 @@ import { getRedis } from '../../lib/redis.js';
 import { logger } from '../../lib/logger.js';
 import * as breaker from './whoami-breaker.js';
 import { enrichEdoUser } from './enrich-edo.js';
+import { abeCookieNameCandidates } from './abe-cookie-names.js';
+import { buildBetterAuthPair, buildCredentialOnly, parseCookieEntries } from './better-auth-cookies.js';
+import { getAbeSessionVerifier } from './abe-session-verifier.js';
 
 export type SessionResolution =
     | { status: 'authenticated'; user: BrandUser }
@@ -103,7 +107,11 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<str
  * property, not an implementation detail (spec D5.a / plan Task 3.2) —
  * faithfully mirrors abeduls3's `resolvePartnerSocketIdentity.ts:44-73`:
  *
- *   1. Extract the raw cookie VALUE by the brand's effective cookie name.
+ *   1. Credential presence, per brand kind — `capsule` reads the Better Auth
+ *      `session_token` under both derived namespaces, `partner-whoami` the
+ *      registry's cookie name. Absent ⇒ `unauthenticated`. MUST precede
+ *      step 2, or an anonymous request against a brand with a broken
+ *      `whoamiUrl` answers `misconfigured` (403) instead of 401.
  *   2. SSRF gate (resolveValidatedWhoamiTarget) — before anything else
  *      touches the network; `misconfigured` never falls through to fetch.
  *   3. Build the forwarded `Cookie:` header — a malformed/delimiter-bearing
@@ -111,6 +119,10 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<str
  *      breaker, else an unauthenticated attacker could open it for every
  *      user of the brand by spamming malformed cookies (auth DoS). This MUST
  *      precede step 4.
+ *   3b. [capsule only] Verify `session_data` locally against the auth
+ *      origin's JWKS. `valid` returns without Redis, fetch or breaker;
+ *      `unavailable` logs and falls through WITHOUT touching the breaker;
+ *      `credential-mismatch` falls through forwarding the credential ALONE.
  *   4. Redis cache (namespace `companion-whoami:`, TTL 45s, full serialized
  *      `BrandUser` — needed to retain `edoId`/email on a cache hit). Read
  *      BEFORE the breaker: a hot identity needs no fetch, so it must survive
@@ -132,31 +144,91 @@ export async function resolveSession(
 ): Promise<SessionResolution> {
     const slug = brand.slug;
 
-    // 1. Extract the raw cookie VALUE by the brand's effective cookie name.
-    const cookieName = resolveEffectiveSessionCookieName(brand);
-    if (!cookieName) {
-        logger.error({ slug }, '[auth] brand missing sessionCookieName');
-        return { status: 'misconfigured', reason: 'missing sessionCookieName' };
-    }
-    const cookieValue = extractCookieValue(cookieHeader, cookieName);
-    if (cookieValue === null) return { status: 'unauthenticated' };
+    let builtCookieHeader: string;
+    let cacheHashSource: string;
+    let whoamiUrl: URL;
 
-    // 2. SSRF gate: validate + allowlist the whoami target BEFORE anything
-    // else touches the network. Never falls through to fetch on failure.
-    const target = resolveValidatedWhoamiTarget(brand);
-    if (!target.ok) {
-        logger.error({ slug, reason: target.reason }, '[auth] whoami target misconfigured');
-        return { status: 'misconfigured', reason: target.reason };
-    }
+    if (brand.auth.kind === 'capsule') {
+        // An unvalidated issuer yields both namespaces rather than a guess: the forward still works,
+        // the whoami still decides, and a misconfigured origin degrades instead of locking abe out.
+        const authOrigin = resolveValidatedAuthOrigin(brand);
+        const candidates = abeCookieNameCandidates(authOrigin.ok ? authOrigin.issuer : '');
+        const entries = parseCookieEntries(cookieHeader ?? '');
 
-    // 3. Build the forwarded Cookie header. MUST precede the breaker check.
-    const forwardedCookie = buildCookieHeader(target.sessionCookieName ?? cookieName, cookieValue);
-    if (forwardedCookie === null) return { status: 'unauthenticated' };
+        // Same validity test the forward uses, so an unforwardable token cannot count toward ambiguity.
+        const matchedTokens = candidates
+            .map((names) => {
+                const value = entries.find(([name]) => name === names.sessionToken)?.[1];
+                if (value === undefined || value === '') return undefined;
+                return buildCookieHeader(names.sessionToken, value) === null ? undefined : value;
+            })
+            .filter((value): value is string => value !== undefined);
+        if (matchedTokens.length === 0) return { status: 'unauthenticated' };
+
+        // SSRF gate, AFTER the credential check — an anonymous request against a misconfigured
+        // brand must stay 401-shaped, never 403-shaped.
+        const target = resolveValidatedWhoamiTarget(brand);
+        if (!target.ok) {
+            logger.error({ slug, reason: target.reason }, '[auth] whoami target misconfigured');
+            return { status: 'misconfigured', reason: target.reason };
+        }
+        whoamiUrl = target.whoamiUrl;
+
+        let credentialOnly = false;
+        if (matchedTokens.length === 1) {
+            const verifier = getAbeSessionVerifier(brand);
+            if (verifier) {
+                const verified = await verifier.verify(cookieHeader);
+                if (verified.status === 'valid') {
+                    const effectiveAuth = resolveEffectiveAuth(brand);
+                    if (effectiveAuth.requireVerifiedEmail && !verified.emailVerified) {
+                        return { status: 'unauthenticated' };
+                    }
+                    return { status: 'authenticated', user: verified.user };
+                }
+                if (verified.cause === 'unavailable') {
+                    logger.warn({ slug }, '[auth] abe local verification unavailable (JWKS unreachable)');
+                } else if (verified.cause === 'credential-mismatch') {
+                    credentialOnly = true;
+                }
+            }
+        }
+
+        const forwards = candidates
+            .map((names) => (credentialOnly ? buildCredentialOnly(entries, names) : buildBetterAuthPair(entries, names)))
+            .filter((pair): pair is string => pair !== null);
+        if (forwards.length === 0) return { status: 'unauthenticated' };
+
+        builtCookieHeader = forwards.join('; ');
+        cacheHashSource = matchedTokens.join(' ');
+    } else {
+        // Byte-identical to today's order: name -> extract -> unauthenticated -> gate -> build.
+        const cookieName = resolveEffectiveSessionCookieName(brand);
+        if (!cookieName) {
+            logger.error({ slug }, '[auth] partner-whoami brand missing sessionCookieName');
+            return { status: 'misconfigured', reason: 'missing sessionCookieName' };
+        }
+        const cookieValue = extractCookieValue(cookieHeader, cookieName);
+        if (cookieValue === null) return { status: 'unauthenticated' };
+
+        const target = resolveValidatedWhoamiTarget(brand);
+        if (!target.ok) {
+            logger.error({ slug, reason: target.reason }, '[auth] whoami target misconfigured');
+            return { status: 'misconfigured', reason: target.reason };
+        }
+        whoamiUrl = target.whoamiUrl;
+
+        const built = buildCookieHeader(target.sessionCookieName ?? cookieName, cookieValue);
+        if (built === null) return { status: 'unauthenticated' };
+
+        builtCookieHeader = built;
+        cacheHashSource = cookieValue;
+    }
 
     // 4. Redis cache — full serialized BrandUser, only ever written on success.
     // Read before the breaker: a hot identity needs no fetch, so it must survive a partner
     // blip that already opened the breaker.
-    const cacheKey = cacheKeyFor(slug, cookieValue);
+    const cacheKey = cacheKeyFor(slug, cacheHashSource);
     const redis = getRedis();
     try {
         const cached = await redis.get(cacheKey);
@@ -176,9 +248,9 @@ export async function resolveSession(
     // 6. Forward the cookie to the whoami endpoint.
     let response: Response;
     try {
-        response = await fetch(target.whoamiUrl.toString(), {
+        response = await fetch(whoamiUrl.toString(), {
             method: 'GET',
-            headers: { Cookie: forwardedCookie },
+            headers: { Cookie: builtCookieHeader },
             redirect: 'manual',
             signal: AbortSignal.timeout(WHOAMI_TIMEOUT_MS),
         });
