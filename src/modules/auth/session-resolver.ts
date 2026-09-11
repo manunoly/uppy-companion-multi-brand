@@ -19,7 +19,11 @@ import { buildBetterAuthPair, buildCredentialOnly, parseCookieEntries } from './
 import { getAbeSessionVerifier } from './abe-session-verifier.js';
 
 export type SessionResolution =
-    | { status: 'authenticated'; user: BrandUser }
+    // forwardCookie is the header this resolver decided to relay for THIS jar. Any other
+    // service-to-service call made on behalf of the request must reuse it rather than rebuild
+    // one: a rebuilt header cannot know about `credential-mismatch`, and would hand over the
+    // session_data this resolver just refused to trust.
+    | { status: 'authenticated'; user: BrandUser; forwardCookie: string }
     | { status: 'unauthenticated' }
     | { status: 'unavailable'; reason: string }
     | { status: 'misconfigured'; reason: string };
@@ -196,11 +200,22 @@ export async function resolveSession(
                     if (effectiveAuth.requireVerifiedEmail && !verified.emailVerified) {
                         return { status: 'unauthenticated' };
                     }
-                    return { status: 'authenticated', user: verified.user };
+                    // Verified locally, so the pair is coherent and safe to relay onward.
+                    const forwardCookie = candidates
+                        .map((names) => buildBetterAuthPair(entries, names))
+                        .filter((pair): pair is string => pair !== null)
+                        .join('; ');
+                    return { status: 'authenticated', user: verified.user, forwardCookie };
                 }
                 logger.debug({ slug, cause: verified.cause }, '[auth] abe local verification miss');
                 if (verified.cause === 'unavailable') {
-                    logger.warn({ slug }, '[auth] abe local verification unavailable (JWKS unreachable)');
+                    // Throttled like the others: a JWKS outage hits every request, and a warn per
+                    // request buries the incident it is meant to announce.
+                    warnMissThrottled(
+                        slug,
+                        verified.cause,
+                        '[auth] abe local verification unavailable (JWKS unreachable)',
+                    );
                 } else if (verified.cause === 'credential-mismatch') {
                     credentialOnly = true;
                     warnMissThrottled(
@@ -258,7 +273,7 @@ export async function resolveSession(
         const cached = await redis.get(cacheKey);
         if (cached !== null) {
             const user = JSON.parse(cached) as BrandUser;
-            return { status: 'authenticated', user };
+            return { status: 'authenticated', user, forwardCookie: builtCookieHeader };
         }
     } catch (err) {
         logger.warn({ err, slug }, '[auth] whoami cache read failed; falling through to fetch');
@@ -349,5 +364,5 @@ export async function resolveSession(
         logger.warn({ err, slug }, '[auth] whoami cache write failed');
     }
 
-    return { status: 'authenticated', user };
+    return { status: 'authenticated', user, forwardCookie: builtCookieHeader };
 }

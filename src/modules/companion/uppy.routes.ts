@@ -278,14 +278,14 @@ export const serveUppyPage = async (
         return;
     }
 
-    // Folders fetch happens only when we are about to render — saves a
-    // round-trip when the request would have redirected. The raw session
-    // cookie value (not req.user) is what gets forwarded to foldersUrl.
-    const sessionCookieName = brand.auth.sessionCookieName;
-    const cookieToken = sessionCookieName
-        ? ((req.cookies as Record<string, string> | undefined)?.[sessionCookieName] ?? '')
-        : '';
-    const folders = await fetchFolders(cookieToken, brand);
+    // Folders fetch happens only when we are about to render — saves a round-trip when the
+    // request would have redirected. It relays the header resolveSession already decided on,
+    // never a rebuilt one: only the resolver knows whether it distrusted this jar's session_data.
+    const session = req.sessionResult;
+    const folders = await fetchFolders(
+        session?.status === 'authenticated' ? session.forwardCookie : undefined,
+        brand,
+    );
 
     try {
         const htmlPath = path.join(__dirname, 'uppy.html');

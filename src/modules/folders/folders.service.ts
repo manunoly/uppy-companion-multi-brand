@@ -1,5 +1,5 @@
 import type { Brand } from '../brand/brand.types.js';
-import { buildCookieHeader, validateWhoamiUrl } from '../brand/identity.js';
+import { validateWhoamiUrl } from '../brand/identity.js';
 import type { Folder, FoldersResponse } from './folders.types.js';
 import { logger } from '../../lib/logger.js';
 
@@ -15,12 +15,13 @@ import { logger } from '../../lib/logger.js';
  * unlike the legacy contract, there is no `public.backendUrl` to resolve a
  * relative path against anymore.
  *
- * @param token - Raw session cookie value forwarded as `Cookie:` to foldersUrl.
+ * @param forwardCookie - The `Cookie:` header resolveSession already decided to relay for this
+ *   jar. Never rebuild one here: only the resolver knows whether `session_data` was distrusted.
  * @param brand - Resolved brand configuration.
  * @returns Array of folders or empty array on failure/misconfiguration.
  */
 export const fetchFolders = async (
-    token: string,
+    forwardCookie: string | undefined,
     brand: Brand
 ): Promise<Folder[]> => {
     const foldersUrl = brand.public?.foldersUrl;
@@ -39,29 +40,10 @@ export const fetchFolders = async (
         return [];
     }
 
-    // A capsule brand has no single session cookie to forward — it authenticates with the
-    // Better Auth pair, which this endpoint was never wired for. Say so instead of falling
-    // through to buildCookieHeader('', ...) and returning [] by coincidence.
-    const sessionCookieName = brand.auth.sessionCookieName;
-    if (!sessionCookieName) {
-        logger.debug({ brand: brand.slug }, '[folders] brand has no session cookie name — folders not fetched');
-        return [];
-    }
-
-    // Hallazgo BAJO-1: build the outgoing Cookie header through
-    // buildCookieHeader (identity.ts) — the single auditable point where a
-    // brand cookie is forwarded — instead of raw template-string
-    // interpolation. A delimiter/control-character-bearing token (`;`,
-    // CR/LF, ...) returns null here rather than silently producing a
-    // malformed/injectable header.
-    const cookie = buildCookieHeader(sessionCookieName, token);
-    if (!cookie) {
-        // A present-but-rejected token (delimiter/control char) is anomalous — a
-        // well-formed session cookie never contains those — so surface it at
-        // debug for diagnosability, without logging the ordinary "no token" case.
-        if (token) {
-            logger.debug({ brand: brand.slug }, '[folders] Session cookie token rejected by buildCookieHeader');
-        }
+    // The header was built and validated by resolveSession (buildCookieHeader is the single
+    // auditable point where a brand cookie is forwarded); an absent one means the request has no
+    // relayable session and there is nothing to ask on its behalf.
+    if (!forwardCookie) {
         return [];
     }
 
@@ -69,7 +51,7 @@ export const fetchFolders = async (
         const response = await fetch(target.url, {
             method: 'GET',
             headers: {
-                'Cookie': cookie,
+                'Cookie': forwardCookie,
             },
             // N5 (mismo patrón que session-resolver whoami): NO seguir redirects.
             // El gate SSRF solo valida la URL inicial; un 3xx desde el host

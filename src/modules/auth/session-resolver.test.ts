@@ -29,6 +29,7 @@ vi.mock('./abe-session-verifier.js', () => ({
 }));
 
 const { getRedis, closeRedis } = await import('../../lib/redis.js');
+const { logger } = await import('../../lib/logger.js');
 const { getAbeSessionVerifier } = await import('./abe-session-verifier.js');
 const breaker = await import('./whoami-breaker.js');
 const { resolveSession } = await import('./session-resolver.js');
@@ -345,6 +346,9 @@ describe('resolveSession — abe (kind: capsule)', () => {
 
     afterEach(() => {
         vi.unstubAllGlobals();
+        // The throttle test pins Date.now; restore it here so a failing assertion cannot leave
+        // the clock frozen for every case after it.
+        vi.restoreAllMocks();
     });
 
     it('no Better Auth credential at all -> unauthenticated, nothing else runs', async () => {
@@ -363,7 +367,13 @@ describe('resolveSession — abe (kind: capsule)', () => {
 
         const result = await resolveSession(abe, token);
 
-        expect(result).toEqual({ status: 'authenticated', user });
+        // forwardCookie travels with the result so a later S2S call relays what the resolver
+        // decided, instead of rebuilding a header that cannot know what was distrusted.
+        expect(result).toEqual({
+            status: 'authenticated',
+            user,
+            forwardCookie: '__Secure-better-auth.session_token=tok.sig',
+        });
         expect(globalThis.fetch).not.toHaveBeenCalled();
         expect(breaker.isOpen).not.toHaveBeenCalled();
     });
@@ -397,6 +407,21 @@ describe('resolveSession — abe (kind: capsule)', () => {
         expect(result.status).toBe('authenticated');
         expect(globalThis.fetch).toHaveBeenCalled();
         expect(breaker.recordFailure).not.toHaveBeenCalled();
+    });
+
+    it('a JWKS outage warns once, not once per request', async () => {
+        // The throttle floor is module state that outlives a test, so pin the clock past any
+        // warning an earlier case already recorded.
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 600_000);
+        const warn = vi.spyOn(logger, 'warn');
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'unavailable' });
+        vi.mocked(globalThis.fetch).mockResolvedValue(whoamiOk());
+
+        await resolveSession(abe, token);
+        await resolveSession(abe, token);
+        await resolveSession(abe, token);
+
+        expect(warn.mock.calls.filter(([, msg]) => String(msg).includes('unavailable'))).toHaveLength(1);
     });
 
     it('the whoami fallback still honours requireVerifiedEmail', async () => {
@@ -450,6 +475,20 @@ describe('resolveSession — abe (kind: capsule)', () => {
         const forwarded = vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers as Record<string, string>;
         expect(forwarded.Cookie).toContain('__Secure-better-auth.session_token=tok.sig');
         expect(forwarded.Cookie).not.toContain('session_data');
+    });
+
+    it('a credential-mismatch that the whoami accepts still carries the credential ALONE onward', async () => {
+        // The distrusted session_data must not reach a second relay either. Anything acting on
+        // this request reads forwardCookie; nothing rebuilds a header from the raw jar.
+        abeVerify.mockResolvedValue({ status: 'miss', cause: 'credential-mismatch' });
+        vi.mocked(globalThis.fetch).mockResolvedValue(whoamiOk());
+
+        const result = await resolveSession(abe, `${token}; __Secure-better-auth.session_data=jwt`);
+
+        expect(result.status).toBe('authenticated');
+        if (result.status !== 'authenticated') throw new Error('unreachable');
+        expect(result.forwardCookie).toBe('__Secure-better-auth.session_token=tok.sig');
+        expect(result.forwardCookie).not.toContain('session_data');
     });
 
     it('an anonymous request against a MISCONFIGURED brand is 401-shaped, not 403-shaped', async () => {

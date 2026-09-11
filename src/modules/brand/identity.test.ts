@@ -242,6 +242,27 @@ describe('resolveValidatedAuthOrigin', () => {
         expect(result.ok).toBe(false);
     });
 
+    it('rejects an issuer carrying a path, query or fragment', () => {
+        // It is used as an origin to derive <issuer>/api/auth/jwks, so a path aims the key fetch
+        // somewhere else and every request quietly falls back to the whoami.
+        for (const bad of [
+            'https://auth.example.test/some/path',
+            'https://auth.example.test/?a=1',
+            'https://auth.example.test/#frag',
+            // The trailing slash is the one that actually happens: the JWKS fetch tolerates it,
+            // so keys load and only the byte-for-byte `iss` comparison fails.
+            'https://auth.example.test/',
+        ]) {
+            const brand: CompanionBrandConfig = {
+                ...capsuleBrand,
+                auth: { ...capsuleBrand.auth, authIssuer: bad } as typeof capsuleBrand.auth,
+            };
+            expect(resolveValidatedAuthOrigin(brand).ok).toBe(false);
+        }
+
+        expect(resolveValidatedAuthOrigin(capsuleBrand).ok).toBe(true);
+    });
+
     it("the registry's own dev issuer passes the registry's own allowlist", () => {
         // The override .env.example prescribes points at auth.abeduls.local. When that host is not
         // in authAllowedHosts the verifier is never created and local verification silently never

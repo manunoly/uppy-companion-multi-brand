@@ -176,6 +176,13 @@ export function resolveValidatedAuthOrigin(config: CompanionBrandConfig): Valida
     const issuer = validateWhoamiUrl(eff.authIssuer, eff.authAllowedHosts);
     if (!issuer.ok) return { ok: false, reason: `authIssuer: ${issuer.reason}` };
 
+    // Must equal its own origin, so a path, a query, a fragment, an explicit :443 or the trailing
+    // slash are all rejected. The slash is the one that matters: the JWKS fetch tolerates it, so
+    // the keys load and only the byte-for-byte `iss` comparison fails — every request poisoned.
+    if (eff.authIssuer !== issuer.url.origin) {
+        return { ok: false, reason: 'authIssuer: must be a bare origin' };
+    }
+
     // The raw value, not issuer.url: the iss claim must match auth-service byte for byte, and
     // URL() normalizes (a trailing slash, a lowercased host) in ways that would silently miss.
     return { ok: true, issuer: eff.authIssuer };

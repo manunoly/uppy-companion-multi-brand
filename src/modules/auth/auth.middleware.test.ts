@@ -35,7 +35,7 @@ describe('attachUser', () => {
 
     it('populates req.user and records the user id in the log context on authenticated', async () => {
         const user = makeUser({ id: 'u1' });
-        resolveSessionMock.mockResolvedValue({ status: 'authenticated', user });
+        resolveSessionMock.mockResolvedValue({ status: 'authenticated', user, forwardCookie: 'session=tok' });
         const req = makeAppRequest({ brand: makeBrand(), headers: { cookie: 'session=tok' } } as never);
         const next = vi.fn();
 
@@ -80,7 +80,7 @@ describe('attachUser', () => {
     // downstream requireAuth can reuse it instead of resolving the session a
     // second time.
     it.each([
-        { status: 'authenticated', user: makeUser({ id: 'u1' }) } as const,
+        { status: 'authenticated', user: makeUser({ id: 'u1' }), forwardCookie: 'session=tok' } as const,
         { status: 'unauthenticated' } as const,
         { status: 'unavailable', reason: 'breaker open' } as const,
         { status: 'misconfigured', reason: 'whoamiUrl: host not allowed' } as const,
@@ -145,7 +145,7 @@ describe('requireAuth', () => {
 
     it('populates req.user and calls next on authenticated', async () => {
         const user = makeUser({ id: 'u9' });
-        resolveSessionMock.mockResolvedValue({ status: 'authenticated', user });
+        resolveSessionMock.mockResolvedValue({ status: 'authenticated', user, forwardCookie: 'session=tok' });
         const req = makeAppRequest({ brand: makeBrand() });
         const next = vi.fn();
         await requireAuth(req, makeRes(), next);
@@ -179,7 +179,7 @@ describe('requireAuth', () => {
         const next = vi.fn();
         const req = makeAppRequest({
             brand: makeBrand(),
-            sessionResult: { status: 'authenticated', user },
+            sessionResult: { status: 'authenticated', user, forwardCookie: 'session=tok' },
         } as never);
         await requireAuth(req, res, next);
         expect(req.user).toEqual(user);

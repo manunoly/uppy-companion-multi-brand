@@ -14,14 +14,14 @@ describe('fetchFolders', () => {
 
     it('returns [] when foldersUrl is not configured', async () => {
         const brand = makeBrand({ public: { foldersUrl: undefined } });
-        const folders = await fetchFolders('tok', brand);
+        const folders = await fetchFolders('session=tok', brand);
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
     it('returns [] when public block is absent entirely', async () => {
         const brand = makeBrand({ public: undefined });
-        const folders = await fetchFolders('tok', brand);
+        const folders = await fetchFolders('session=tok', brand);
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
     });
@@ -31,7 +31,7 @@ describe('fetchFolders', () => {
             ok: true,
             json: async () => ({ success: true, data: [{ id: '1', name: 'F1' }] }),
         });
-        const folders = await fetchFolders('tok', makeBrand());
+        const folders = await fetchFolders('session=tok', makeBrand());
         expect(folders).toEqual([{ id: '1', name: 'F1' }]);
     });
 
@@ -40,7 +40,7 @@ describe('fetchFolders', () => {
             ok: true,
             json: async () => ({ success: false, data: [] }),
         });
-        const folders = await fetchFolders('tok', makeBrand());
+        const folders = await fetchFolders('session=tok', makeBrand());
         expect(folders).toEqual([]);
     });
 
@@ -49,19 +49,19 @@ describe('fetchFolders', () => {
             ok: true,
             json: async () => ({ success: true, data: { not: 'array' } }),
         });
-        const folders = await fetchFolders('tok', makeBrand());
+        const folders = await fetchFolders('session=tok', makeBrand());
         expect(folders).toEqual([]);
     });
 
     it('returns [] on non-ok response', async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, status: 401 });
-        const folders = await fetchFolders('tok', makeBrand());
+        const folders = await fetchFolders('session=tok', makeBrand());
         expect(folders).toEqual([]);
     });
 
     it('returns [] when fetch throws', async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('ETIMEDOUT'));
-        const folders = await fetchFolders('tok', makeBrand());
+        const folders = await fetchFolders('session=tok', makeBrand());
         expect(folders).toEqual([]);
     });
 
@@ -70,45 +70,20 @@ describe('fetchFolders', () => {
             ok: true,
             json: async () => ({ success: true, data: [] }),
         });
-        await fetchFolders('cookietok', makeBrand());
+        await fetchFolders('session=cookietok', makeBrand());
         const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
         expect(call[1]?.headers?.Cookie).toBe('session=cookietok');
     });
 
-    // Hallazgo BAJO-1: the outgoing Cookie header must be built through
-    // buildCookieHeader (identity.ts) — the single auditable point where a
-    // brand cookie is forwarded — instead of raw template-string
-    // interpolation, so a delimiter/control-character-bearing token can never
-    // inject an extra `name=value` pair into the outgoing header.
-    it('returns [] and never calls fetch when the cookie token is malformed (delimiter char)', async () => {
-        const folders = await fetchFolders('bad;value', makeBrand());
-        expect(folders).toEqual([]);
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
-
-    it('returns [] and never calls fetch when the cookie token contains a control character (CRLF)', async () => {
-        const folders = await fetchFolders('bad\r\nvalue', makeBrand());
-        expect(folders).toEqual([]);
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
-
     it('returns [] and never calls fetch when the cookie token is empty', async () => {
-        const folders = await fetchFolders('', makeBrand());
+        const folders = await fetchFolders(undefined, makeBrand());
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
-
-    // A present-but-rejected token is anomalous and logged at debug for
-    // diagnosability; the ordinary "no token" case stays silent (no noise).
-    it('logs a debug line when a non-empty token is rejected by buildCookieHeader', async () => {
-        const debugSpy = vi.spyOn(logger, 'debug');
-        await fetchFolders('bad;value', makeBrand());
-        expect(debugSpy).toHaveBeenCalledTimes(1);
     });
 
     it('does NOT log when the token is empty (no session ≠ malformed cookie)', async () => {
         const debugSpy = vi.spyOn(logger, 'debug');
-        await fetchFolders('', makeBrand());
+        await fetchFolders(undefined, makeBrand());
         expect(debugSpy).not.toHaveBeenCalled();
     });
 
@@ -117,7 +92,7 @@ describe('fetchFolders', () => {
             ok: true,
             json: async () => ({ success: true, data: [] }),
         });
-        await fetchFolders('t', makeBrand({
+        await fetchFolders('session=t', makeBrand({
             public: { foldersUrl: 'https://x.test.example.com/api/folders' },
         }));
         const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -128,9 +103,25 @@ describe('fetchFolders', () => {
         const brand = makeBrand({
             public: { foldersUrl: 'https://folders.evil.com/api/folders' }, // no está bajo test.example.com
         });
-        const folders = await fetchFolders('tok', brand);
+        const folders = await fetchFolders('session=tok', brand);
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    // fetchFolders builds nothing: it relays the header resolveSession decided on, verbatim.
+    // That is what keeps a distrusted session_data from reaching a second relay.
+    it("forwards the resolver's header verbatim, whatever it carries", async () => {
+        (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ success: true, data: [{ id: '1', name: 'F1' }] }),
+        });
+        const pair = '__Secure-better-auth.session_token=tok.sig; __Secure-better-auth.session_data=jwt';
+
+        const folders = await fetchFolders(pair, makeBrand());
+
+        expect(folders).toEqual([{ id: '1', name: 'F1' }]);
+        const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+        expect(call[1]?.headers?.Cookie).toBe(pair);
     });
 
     // N5 (hallazgo codex): el gate SSRF solo valida la URL inicial; seguir un
@@ -142,7 +133,7 @@ describe('fetchFolders', () => {
             ok: true,
             json: async () => ({ success: true, data: [] }),
         });
-        await fetchFolders('t', makeBrand());
+        await fetchFolders('session=t', makeBrand());
         const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
         expect(call[1]?.redirect).toBe('manual');
     });
