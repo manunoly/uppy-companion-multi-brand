@@ -87,9 +87,9 @@ const BASE_REGISTRY: BrandRegistry = deepFreeze({
             maxUploadBytes: 50 * 1024 * 1024,
             allowedContentTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif'],
         },
-        // Inert: a capsule brand has no single session cookie to forward, and this endpoint was
-        // never wired for the Better Auth pair, so fetchFolders returns [] for abe. Do NOT add a
-        // sessionCookieName here to "fix" it — the contract forbids naming the cookie at all.
+        // Reached with the Better Auth pair resolveSession relays, same as the whoami. Do NOT add
+        // a sessionCookieName here — the contract forbids naming the cookie at all, and nothing
+        // reads one for a capsule brand.
         public: { foldersUrl: 'https://www.abeduls.com/api/folders' },
         // S2S ingest-callback target: capsule's internal media-ingest endpoint. Host
         // (www.abeduls.com) sits under whoamiAllowedHosts, so it passes the SSRF gate.

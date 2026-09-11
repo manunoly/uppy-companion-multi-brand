@@ -75,37 +75,10 @@ describe('fetchFolders', () => {
         expect(call[1]?.headers?.Cookie).toBe('session=cookietok');
     });
 
-    // Hallazgo BAJO-1: the outgoing Cookie header must be built through
-    // buildCookieHeader (identity.ts) — the single auditable point where a
-    // brand cookie is forwarded — instead of raw template-string
-    // interpolation, so a delimiter/control-character-bearing token can never
-    // inject an extra `name=value` pair into the outgoing header.
-    it('returns [] and never calls fetch when the cookie token is malformed (delimiter char)', async () => {
-        // %3B, not a literal ';': a bare semicolon ends the cookie in the header, so the value
-        // would arrive clean and this would test nothing. Decoding is what reaches buildCookieHeader.
-        const folders = await fetchFolders('session=bad%3Bvalue', makeBrand());
-        expect(folders).toEqual([]);
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
-
-    it('returns [] and never calls fetch when the cookie token contains a control character (CRLF)', async () => {
-        const folders = await fetchFolders('session=bad%0d%0amore', makeBrand());
-        expect(folders).toEqual([]);
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
-
     it('returns [] and never calls fetch when the cookie token is empty', async () => {
         const folders = await fetchFolders(undefined, makeBrand());
         expect(folders).toEqual([]);
         expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
-
-    // A present-but-rejected token is anomalous and logged at debug for
-    // diagnosability; the ordinary "no token" case stays silent (no noise).
-    it('logs a debug line when a non-empty token is rejected by buildCookieHeader', async () => {
-        const debugSpy = vi.spyOn(logger, 'debug');
-        await fetchFolders('session=bad%0d%0avalue', makeBrand());
-        expect(debugSpy).toHaveBeenCalledTimes(1);
     });
 
     it('does NOT log when the token is empty (no session ≠ malformed cookie)', async () => {
@@ -135,38 +108,26 @@ describe('fetchFolders', () => {
         expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
-    // N5 (hallazgo codex): el gate SSRF solo valida la URL inicial; seguir un
-    // redirect 3xx del host permitido saldría del allowlist. El fetch debe usar
-    // redirect: 'manual' (mismo patrón que whoami) para que un 3xx caiga en
-    // !response.ok y degrade a [].
-    // A capsule brand authenticates with the Better Auth pair. Forwarding one named cookie
-    // silently returned [] for abe, which is the empty folder dropdown.
-    it('forwards the Better Auth PAIR for a capsule brand, not a single named cookie', async () => {
+    // fetchFolders builds nothing: it relays the header resolveSession decided on, verbatim.
+    // That is what keeps a distrusted session_data from reaching a second relay.
+    it("forwards the resolver's header verbatim, whatever it carries", async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
             ok: true,
             json: async () => ({ success: true, data: [{ id: '1', name: 'F1' }] }),
         });
-        const abe = makeBrand({
-            slug: 'abe',
-            auth: {
-                kind: 'capsule',
-                authIssuer: 'https://auth.test.example.com',
-                authAllowedHosts: ['test.example.com'],
-            },
-            public: { foldersUrl: 'https://api.test.example.com/api/folders' },
-        } as Parameters<typeof makeBrand>[0]);
+        const pair = '__Secure-better-auth.session_token=tok.sig; __Secure-better-auth.session_data=jwt';
 
-        const folders = await fetchFolders(
-            '__Secure-better-auth.session_token=tok.sig; __Secure-better-auth.session_data=jwt',
-            abe,
-        );
+        const folders = await fetchFolders(pair, makeBrand());
 
         expect(folders).toEqual([{ id: '1', name: 'F1' }]);
         const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-        expect(call[1]?.headers?.Cookie).toContain('__Secure-better-auth.session_token=tok.sig');
-        expect(call[1]?.headers?.Cookie).toContain('__Secure-better-auth.session_data=jwt');
+        expect(call[1]?.headers?.Cookie).toBe(pair);
     });
 
+    // N5 (hallazgo codex): el gate SSRF solo valida la URL inicial; seguir un
+    // redirect 3xx del host permitido saldría del allowlist. El fetch debe usar
+    // redirect: 'manual' (mismo patrón que whoami) para que un 3xx caiga en
+    // !response.ok y degrade a [].
     it("usa redirect: 'manual' para que un 3xx no salga del allowlist SSRF", async () => {
         (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
             ok: true,

@@ -14,10 +14,9 @@ export interface AbeSessionVerifier {
 
 export function createAbeSessionVerifier(brand: Brand): AbeSessionVerifier | null {
     const origin = resolveValidatedAuthOrigin(brand);
-    if (!origin.ok) {
-        logger.warn({ slug: brand.slug, reason: origin.reason }, '[auth] no abe auth origin; local verification is off');
-        return null;
-    }
+    // getAbeSessionVerifier is the only caller and it validates first, so this is unreachable in
+    // production; it stays as the guard a direct test caller relies on. The warning lives there.
+    if (!origin.ok) return null;
 
     const jwks = createJwksCache({ authOrigin: origin.issuer });
     const { sessionToken: sessionTokenName, sessionData: sessionDataName } = abeCookieNamesFor(origin.issuer);
@@ -66,9 +65,20 @@ const verifiers = new Map<string, AbeSessionVerifier>();
 
 // createJwksCache keeps the key set in a closure, so one instance per (brand, issuer) must
 // outlive the request. Keyed on the resolved issuer so an override change still takes effect.
+const originWarnedFor = new Set<string>();
+
 export function getAbeSessionVerifier(brand: Brand): AbeSessionVerifier | null {
     const origin = resolveValidatedAuthOrigin(brand);
-    if (!origin.ok) return null;
+    if (!origin.ok) {
+        // Once per brand+reason: a rejected origin turns local verification off for good, and
+        // relaying every request to the whoami looks exactly like working, only slower.
+        const warned = `${brand.slug}|${origin.reason}`;
+        if (!originWarnedFor.has(warned)) {
+            originWarnedFor.add(warned);
+            logger.warn({ slug: brand.slug, reason: origin.reason }, '[auth] abe local verification is OFF');
+        }
+        return null;
+    }
 
     const key = `${brand.slug}|${origin.issuer}`;
     const cached = verifiers.get(key);

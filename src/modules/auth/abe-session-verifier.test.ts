@@ -27,6 +27,26 @@ describe('createAbeSessionVerifier', () => {
         expect(createAbeSessionVerifier(makeBrand({ slug: 'edo' }))).toBeNull();
     });
 
+    it('a rejected auth origin says so — turning verification off must not be silent', async () => {
+        // Relaying every request to the whoami looks exactly like working, only slower, so the
+        // one thing that cannot happen here is no log line at all.
+        const { logger } = await import('../../lib/logger.js');
+        const warn = vi.spyOn(logger, 'warn');
+        const broken = makeBrand({
+            slug: 'abe',
+            auth: { kind: 'capsule', authIssuer: 'https://auth.example.test/with/path', authAllowedHosts: ['example.test'] },
+        });
+
+        expect(getAbeSessionVerifier(broken)).toBeNull();
+
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]?.[0]).toMatchObject({ slug: 'abe', reason: expect.stringContaining('bare origin') });
+        // Once per brand+reason, not once per request.
+        expect(getAbeSessionVerifier(broken)).toBeNull();
+        expect(warn).toHaveBeenCalledTimes(1);
+        warn.mockRestore();
+    });
+
     it('getAbeSessionVerifier returns the SAME instance across calls (the JWKS cache must outlive the request)', () => {
         const first = getAbeSessionVerifier(abe);
         const second = getAbeSessionVerifier(abe);

@@ -176,9 +176,10 @@ export function resolveValidatedAuthOrigin(config: CompanionBrandConfig): Valida
     const issuer = validateWhoamiUrl(eff.authIssuer, eff.authAllowedHosts);
     if (!issuer.ok) return { ok: false, reason: `authIssuer: ${issuer.reason}` };
 
-    // The issuer is used as an ORIGIN to derive the JWKS URL, so a path or query silently points
-    // the key fetch at the wrong place and every request degrades to the whoami.
-    if (issuer.url.pathname !== '/' || issuer.url.search || issuer.url.hash) {
+    // Must equal its own origin, so a path, a query, a fragment, an explicit :443 or the trailing
+    // slash are all rejected. The slash is the one that matters: the JWKS fetch tolerates it, so
+    // the keys load and only the byte-for-byte `iss` comparison fails — every request poisoned.
+    if (eff.authIssuer !== issuer.url.origin) {
         return { ok: false, reason: 'authIssuer: must be a bare origin' };
     }
 

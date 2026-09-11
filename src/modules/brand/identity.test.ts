@@ -249,6 +249,9 @@ describe('resolveValidatedAuthOrigin', () => {
             'https://auth.example.test/some/path',
             'https://auth.example.test/?a=1',
             'https://auth.example.test/#frag',
+            // The trailing slash is the one that actually happens: the JWKS fetch tolerates it,
+            // so keys load and only the byte-for-byte `iss` comparison fails.
+            'https://auth.example.test/',
         ]) {
             const brand: CompanionBrandConfig = {
                 ...capsuleBrand,
