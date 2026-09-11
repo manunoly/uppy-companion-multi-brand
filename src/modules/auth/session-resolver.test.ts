@@ -70,6 +70,7 @@ describe('resolveSession (src/modules/auth/session-resolver.ts)', () => {
         expect(result.status).toBe('unauthenticated');
         expect(breaker.recordFailure).not.toHaveBeenCalled();
         expect(globalThis.fetch).not.toHaveBeenCalled();
+        expect(breaker.isOpen).not.toHaveBeenCalled();
     });
 
     it('misconfigured whoami target (off-allowlist) -> misconfigured, no fetch, no breaker touch', async () => {
@@ -204,8 +205,8 @@ describe('resolveSession (src/modules/auth/session-resolver.ts)', () => {
         expect(breaker.recordFailure).toHaveBeenCalledTimes(1);
     });
 
-    it('4xx other than 401 -> unavailable + recordFailure', async () => {
-        globalThis.fetch = vi.fn(async () => new Response('nope', { status: 403 }));
+    it('4xx other than 401/403 -> unavailable + recordFailure', async () => {
+        globalThis.fetch = vi.fn(async () => new Response('nope', { status: 400 }));
         const result = await resolveSession(edo, 'session=abc');
         expect(result.status).toBe('unavailable');
         expect(breaker.recordFailure).toHaveBeenCalledTimes(1);
@@ -239,6 +240,67 @@ describe('resolveSession (src/modules/auth/session-resolver.ts)', () => {
         const result = await resolveSession(edo, 'session=abc');
         expect(result.status).toBe('unavailable');
         expect(breaker.recordFailure).toHaveBeenCalledTimes(1);
+    });
+
+    it('whoami 403 -> unauthenticated, and the breaker records a SUCCESS (upstream is healthy)', async () => {
+        vi.mocked(globalThis.fetch).mockResolvedValue(new Response('', { status: 403 }));
+
+        const result = await resolveSession(edo, 'session=abc');
+
+        expect(result.status).toBe('unauthenticated');
+        expect(breaker.recordSuccess).toHaveBeenCalled();
+        expect(breaker.recordFailure).not.toHaveBeenCalled();
+    });
+
+    it('whoami 429 -> unavailable and a FAILURE — never clear a brake the partner just asked for', async () => {
+        vi.mocked(globalThis.fetch).mockResolvedValue(new Response('', { status: 429 }));
+
+        const result = await resolveSession(edo, 'session=abc');
+
+        expect(result.status).toBe('unavailable');
+        expect(breaker.recordFailure).toHaveBeenCalled();
+        expect(breaker.recordSuccess).not.toHaveBeenCalled();
+    });
+
+    it('whoami 404 -> unavailable and a FAILURE (a moved whoami route must be visible, not a silent 401)', async () => {
+        vi.mocked(globalThis.fetch).mockResolvedValue(new Response('', { status: 404 }));
+
+        const result = await resolveSession(edo, 'session=abc');
+
+        expect(result.status).toBe('unavailable');
+        expect(breaker.recordFailure).toHaveBeenCalled();
+        expect(breaker.recordSuccess).not.toHaveBeenCalled();
+    });
+
+    it('whoami 500 -> unavailable, and the breaker records a FAILURE', async () => {
+        vi.mocked(globalThis.fetch).mockResolvedValue(new Response('', { status: 500 }));
+
+        const result = await resolveSession(edo, 'session=abc');
+
+        expect(result.status).toBe('unavailable');
+        expect(breaker.recordFailure).toHaveBeenCalled();
+    });
+
+    it('a cached identity resolves even while the breaker is OPEN (cache is read first)', async () => {
+        vi.mocked(globalThis.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ id: 'u1', email: 'a@b.test', name: 'A', imageUrl: null }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+
+        // Warm the cache with the breaker closed.
+        const first = await resolveSession(edo, 'session=abc');
+        expect(first.status).toBe('authenticated');
+
+        // Now the partner goes down hard and the breaker opens.
+        vi.mocked(breaker.isOpen).mockResolvedValue(true);
+        vi.mocked(globalThis.fetch).mockClear();
+
+        const second = await resolveSession(edo, 'session=abc');
+
+        expect(second.status).toBe('authenticated');
+        expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 });
 

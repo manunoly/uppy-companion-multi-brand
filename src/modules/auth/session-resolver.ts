@@ -111,12 +111,16 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<str
  *      breaker, else an unauthenticated attacker could open it for every
  *      user of the brand by spamming malformed cookies (auth DoS). This MUST
  *      precede step 4.
- *   4. Circuit breaker — fail-fast BEFORE the cache/fetch.
- *   5. Redis cache (namespace `companion-whoami:`, TTL 45s, full serialized
- *      `BrandUser` — needed to retain `edoId`/email on a cache hit).
+ *   4. Redis cache (namespace `companion-whoami:`, TTL 45s, full serialized
+ *      `BrandUser` — needed to retain `edoId`/email on a cache hit). Read
+ *      BEFORE the breaker: a hot identity needs no fetch, so it must survive
+ *      a partner blip that has already opened the shared breaker.
+ *   5. Circuit breaker — fail-fast BEFORE the fetch.
  *   6. Forward the cookie to the whoami endpoint (`redirect:'manual'`, 5s
  *      timeout).
- *   7. Interpret the response status (every redirect form is failure).
+ *   7. Interpret the response status (every redirect form is failure; 401/403
+ *      is a client condition the upstream answered, the rest of the 4xx range
+ *      is about the REQUEST and fails like any other fault).
  *   8. Body cap (16 KB) via streaming — never trust `Content-Length` alone.
  *   9. Normalize, apply the registry email-verified gate (unverified ⇒
  *      unauthenticated, never cached), then (edo-only) enrich with
@@ -145,12 +149,9 @@ export async function resolveSession(
     const forwardedCookie = buildCookieHeader(target.sessionCookieName, cookieValue);
     if (forwardedCookie === null) return { status: 'unauthenticated' };
 
-    // 4. Circuit breaker — fail-fast BEFORE the cache/fetch.
-    if (await breaker.isOpen(slug)) {
-        return { status: 'unavailable', reason: 'breaker open' };
-    }
-
-    // 5. Redis cache — full serialized BrandUser, only ever written on success.
+    // 4. Redis cache — full serialized BrandUser, only ever written on success.
+    // Read before the breaker: a hot identity needs no fetch, so it must survive a partner
+    // blip that already opened the breaker.
     const cacheKey = cacheKeyFor(slug, cookieValue);
     const redis = getRedis();
     try {
@@ -161,6 +162,11 @@ export async function resolveSession(
         }
     } catch (err) {
         logger.warn({ err, slug }, '[auth] whoami cache read failed; falling through to fetch');
+    }
+
+    // 5. Circuit breaker — fail-fast BEFORE the fetch.
+    if (await breaker.isOpen(slug)) {
+        return { status: 'unavailable', reason: 'breaker open' };
     }
 
     // 6. Forward the cookie to the whoami endpoint.
@@ -185,9 +191,19 @@ export async function resolveSession(
         await breaker.recordFailure(slug);
         return { status: 'unavailable', reason: 'whoami redirect' };
     }
-    if (response.status === 401) {
-        await breaker.recordSuccess(slug); // partner answered — circuit is healthy
+    // The upstream answered about THIS session, so the circuit is healthy.
+    if (response.status === 401 || response.status === 403) {
+        await breaker.recordSuccess(slug);
         return { status: 'unauthenticated' };
+    }
+
+    // The rest of the 4xx range is about the REQUEST, not the session: 429 is a partner asking us
+    // to back off, 400/404/405 a moved or misconfigured whoami. recordSuccess would clear the brake
+    // for every replica, so these fail like any other fault — loudly.
+    if (response.status >= 400 && response.status < 500) {
+        logger.warn({ slug, status: response.status }, '[auth] whoami rejected the request');
+        await breaker.recordFailure(slug);
+        return { status: 'unavailable', reason: `whoami ${response.status}` };
     }
     if (!response.ok) {
         await breaker.recordFailure(slug);
