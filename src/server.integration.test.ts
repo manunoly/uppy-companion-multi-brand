@@ -331,7 +331,7 @@ describe('server integration', () => {
             const { buildSessionOptions } = await import('./server.js');
             const options = buildSessionOptions(makeValidEnv());
             expect(options.name).toBe('companion.sid');
-            expect(options.cookie?.path).toBe('/');
+            expect(options.cookie).toMatchObject({ path: '/' });
         });
 
         // Security review MEDIO-2: previously `saveUninitialized: true`, which
