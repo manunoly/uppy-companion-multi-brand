@@ -491,6 +491,11 @@ export const assembleApp = ({
         next();
     });
 
+    // Serve a blank index instead of falling through to Companion's 404.
+    app.get('/', (_req, res) => {
+        res.type('html').send('');
+    });
+
     // Companion's own session (OAuth handshake state), independent of the
     // brand's partner session cookie. Single static config (D7): the cookie
     // name/path no longer vary per brand — isolation across brands is now
